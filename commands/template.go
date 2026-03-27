@@ -13,10 +13,10 @@ import (
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 
-	"test-go/cmd/taufinity/internal/api"
-	"test-go/cmd/taufinity/internal/archive"
-	"test-go/cmd/taufinity/internal/auth"
-	"test-go/cmd/taufinity/internal/config"
+	"github.com/taufinity/cli/internal/api"
+	"github.com/taufinity/cli/internal/archive"
+	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/config"
 )
 
 var templateCmd = &cobra.Command{

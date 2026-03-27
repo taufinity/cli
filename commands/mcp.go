@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"test-go/cmd/taufinity/internal/auth"
+	"github.com/taufinity/cli/internal/auth"
 )
 
 const (

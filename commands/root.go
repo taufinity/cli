@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"test-go/cmd/taufinity/internal/config"
+	"github.com/taufinity/cli/internal/config"
 )
 
 // DefaultAPIURL is the default Taufinity API endpoint.

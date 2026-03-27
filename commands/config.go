@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"test-go/cmd/taufinity/internal/config"
+	"github.com/taufinity/cli/internal/config"
 )
 
 var configCmd = &cobra.Command{

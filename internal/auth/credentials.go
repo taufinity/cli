@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"test-go/cmd/taufinity/internal/config"
+	"github.com/taufinity/cli/internal/config"
 )
 
 // ExpiryBuffer is subtracted from expiry time to refresh tokens early.

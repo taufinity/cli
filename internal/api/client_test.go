@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"test-go/cmd/taufinity/internal/auth"
+	"github.com/taufinity/cli/internal/auth"
 )
 
 func TestClient_Get(t *testing.T) {

@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"test-go/cmd/taufinity/internal/api"
-	"test-go/cmd/taufinity/internal/auth"
+	"github.com/taufinity/cli/internal/api"
+	"github.com/taufinity/cli/internal/auth"
 )
 
 var playbookCmd = &cobra.Command{

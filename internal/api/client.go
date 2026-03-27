@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"test-go/cmd/taufinity/internal/auth"
-	"test-go/internal/httpclient"
+	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/httpclient"
 )
 
 // Client is the Taufinity API client with retry/backoff and auth support.
