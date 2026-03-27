@@ -1,0 +1,11 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <title>Quote about {{.Custom.Quote.Theme}}</title>
+</head>
+<body>
+    <h1>{{.Article.Title}}</h1>
+    <div class="content">{{.Translation.Content | safeHTML}}</div>
+    <p class="author">By: {{.Custom.Author.Name}}</p>
+</body>
+</html>

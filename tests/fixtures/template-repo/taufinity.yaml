@@ -1,0 +1,6 @@
+site: test_site_nl
+template: templates/article.html
+
+ignore:
+  - "*.test.html"
+  - "dev/"

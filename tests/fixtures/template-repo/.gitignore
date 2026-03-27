@@ -1,0 +1,8 @@
+# Secrets
+secrets/
+*.env
+.env*
+
+# Build artifacts
+dist/
+*.log

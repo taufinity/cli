@@ -1,0 +1,25 @@
+{
+  "Article": {
+    "Title": "Test quote text for preview"
+  },
+  "Translation": {
+    "Content": "<p>A detailed reflection on friendship and human connection.</p>"
+  },
+  "Quote": {
+    "Text": "Test quote text for preview",
+    "Theme": "Friendship",
+    "TargetAudience": "General",
+    "Arousal": 4,
+    "Valence": 6,
+    "VoorPositiviteitMatch": 95,
+    "EmotionalProfile": {
+      "PrimaryEmotion": "Gratitude",
+      "SecondaryEmotion": "Connection"
+    }
+  },
+  "Author": {
+    "URL": "https://example.com",
+    "Name": "Test Author",
+    "JobTitle": "Content Creator"
+  }
+}

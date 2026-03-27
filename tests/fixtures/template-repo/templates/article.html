@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{ .Article.Title }}</title>
+</head>
+<body>
+    <header>
+        <h1>{{ .Article.Title }}</h1>
+        {{ if .Article.Subtitle }}<p class="subtitle">{{ .Article.Subtitle }}</p>{{ end }}
+    </header>
+    <article>
+        {{ .Translation.Content }}
+    </article>
+    <footer>
+        <p>Published: {{ .Article.PublishedAt }}</p>
+        <p>Site: {{ .Site.Name }}</p>
+    </footer>
+</body>
+</html>

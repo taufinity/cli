@@ -1,0 +1,3 @@
+site: test_site_nl
+template: templates/quote.html
+preview_data: test-data/preview.json
