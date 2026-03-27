@@ -8,7 +8,7 @@ LDFLAGS    := -X 'github.com/taufinity/cli/commands.Version=$(VERSION)' \
               -X 'github.com/taufinity/cli/commands.BuildTime=$(BUILD_TIME)'
 
 install:
-	go install -ldflags "$(LDFLAGS)" ./cmd/taufinity
+	GOBIN=$(HOME)/bin go install -ldflags "$(LDFLAGS)" ./cmd/taufinity
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o taufinity ./cmd/taufinity
