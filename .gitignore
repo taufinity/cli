@@ -1,0 +1,16 @@
+# Binaries
+taufinity
+*.exe
+
+# Credentials — never commit
+credentials.json
+.env
+.env.*
+*.key
+*.pem
+*.p12
+
+# IDE
+.idea/
+.vscode/
+*.swp
