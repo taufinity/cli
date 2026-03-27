@@ -198,10 +198,12 @@ func saveMCPConfig(path string, cfg *mcpConfig) error {
 
 	data = append(data, '\n')
 
-	// Preserve existing file permissions, default to 0600 (contains auth tokens)
+	// Default to 0600 (contains auth tokens). If the file already exists,
+	// preserve its permissions but enforce a maximum of 0600 — never allow
+	// group or world read even if the existing file was more permissive.
 	mode := os.FileMode(0600)
 	if info, err := os.Stat(path); err == nil {
-		mode = info.Mode().Perm()
+		mode = info.Mode().Perm() & 0600
 	}
 
 	// Ensure parent directory exists (needed for --global on fresh systems)
