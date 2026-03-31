@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -73,17 +74,30 @@ func Execute() error {
 // resolveAPIURL determines the API URL from flags, env, config, or default.
 func resolveAPIURL() {
 	if flagAPIURL != "" {
+		warnIfLocalhost()
 		return // Flag takes precedence
 	}
 	if env := os.Getenv("TAUFINITY_API_URL"); env != "" {
 		flagAPIURL = env
+		warnIfLocalhost()
 		return
 	}
 	if cfg != nil && cfg.APIURL != "" {
 		flagAPIURL = cfg.APIURL
+		warnIfLocalhost()
 		return
 	}
 	flagAPIURL = DefaultAPIURL
+}
+
+// warnIfLocalhost prints a warning to stderr when the API URL points to localhost.
+func warnIfLocalhost() {
+	if IsQuiet() {
+		return
+	}
+	if strings.Contains(flagAPIURL, "localhost") || strings.Contains(flagAPIURL, "127.0.0.1") {
+		fmt.Fprintf(os.Stderr, "Warning: API URL points to localhost (%s) — you may be talking to a dev server instead of production.\n", flagAPIURL)
+	}
 }
 
 // siteSource tracks where flagSite was set from, for priority resolution.
