@@ -1,5 +1,6 @@
 # Binaries
 /taufinity
+/taufinity-*
 *.exe
 
 # Credentials — never commit
