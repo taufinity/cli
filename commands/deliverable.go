@@ -82,7 +82,7 @@ func init() {
 	deliverableCmd.AddCommand(deliverableListCmd)
 	deliverableCmd.AddCommand(deliverableDeleteCmd)
 
-	deliverableUploadCmd.Flags().StringVar(&deliverableFile, "file", "", "Path to the deliverable file (required)")
+	deliverableUploadCmd.Flags().StringVarP(&deliverableFile, "file", "f", "", "Path to the deliverable file (required)")
 	deliverableUploadCmd.Flags().StringVar(&deliverableName, "name", "", "Deliverable name (required)")
 	deliverableUploadCmd.Flags().StringVar(&deliverableOrg, "org", "", "Organization ID (numeric)")
 	deliverableUploadCmd.Flags().StringVar(&deliverableDescription, "description", "", "Deliverable description")
@@ -161,7 +161,7 @@ func runDeliverableUpload(cmd *cobra.Command, args []string) error {
 
 	Print("Uploading deliverable %q...\n", deliverableName)
 
-	resp, err := client.PostMultipart(context.Background(), "/api/deliverables", &buf, writer.FormDataContentType())
+	resp, err := client.PostMultipart(context.Background(), "/api/admin/deliverables", &buf, writer.FormDataContentType())
 	if err != nil {
 		return fmt.Errorf("upload deliverable: %w", err)
 	}
@@ -200,26 +200,35 @@ func runDeliverableList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("list deliverables failed: %s", string(resp.Body))
 	}
 
+	items, err := parseDeliverableList(resp.Body)
+	if err != nil {
+		return err
+	}
+
 	switch GetFormat() {
 	case "json":
 		fmt.Println(string(resp.Body))
 		return nil
 	case "yaml":
-		var items []deliverableListItem
-		if err := json.Unmarshal(resp.Body, &items); err != nil {
-			return fmt.Errorf("decode response: %w", err)
-		}
 		return printYAML(items)
 	default:
-		return printDeliverableTable(resp.Body)
+		return printDeliverableTable(items)
 	}
 }
 
-func printDeliverableTable(body []byte) error {
-	var items []deliverableListItem
-	if err := json.Unmarshal(body, &items); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+// parseDeliverableList decodes the backend response, which wraps the list
+// in an envelope: {"deliverables": [...]}.
+func parseDeliverableList(body []byte) ([]deliverableListItem, error) {
+	var envelope struct {
+		Deliverables []deliverableListItem `json:"deliverables"`
 	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+	return envelope.Deliverables, nil
+}
+
+func printDeliverableTable(items []deliverableListItem) error {
 
 	if len(items) == 0 {
 		PrintLn("No deliverables found.")
