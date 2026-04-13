@@ -181,6 +181,40 @@ func (c *Client) GetWithAuth(ctx context.Context, path string) (*Response, error
 	}, nil
 }
 
+// DeleteWithAuth performs an authenticated DELETE request.
+func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, error) {
+	token, err := c.getToken()
+	if err != nil {
+		c.logTokenError(err)
+		return nil, err
+	}
+
+	if c.dryRun {
+		c.printDryRun("DELETE", path, "", nil)
+		return &Response{StatusCode: http.StatusOK}, nil
+	}
+
+	url := c.baseURL + path
+	c.logRequest("DELETE", url, token, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	c.setOrgHeader(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	c.logResponse(resp.StatusCode, resp.Body)
+	return &Response{
+		StatusCode: resp.StatusCode,
+		Headers:    resp.Headers,
+		Body:       resp.Body,
+	}, nil
+}
+
 // PostJSON performs a POST request with JSON body.
 func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response, error) {
 	jsonBody, err := json.Marshal(body)
