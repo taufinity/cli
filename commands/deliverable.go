@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/taufinity/cli/internal/api"
+	"github.com/taufinity/cli/internal/archive"
 	"github.com/taufinity/cli/internal/auth"
 )
 
@@ -25,18 +26,23 @@ var deliverableCmd = &cobra.Command{
 
 var deliverableUploadCmd = &cobra.Command{
 	Use:   "upload",
-	Short: "Upload a deliverable",
-	Long: `Upload a deliverable file to an organization.
+	Short: "Upload a deliverable (zip or folder)",
+	Long: `Upload a deliverable to an organization.
+
+The --file flag accepts either a .zip archive or a folder. Folders are
+zipped on the fly, honoring .gitignore / .dockerignore / .taufinityignore
+plus hardcoded security excludes (.env, *.key, node_modules, .git, etc).
 
 Examples:
-  # Upload a ZIP file
-  taufinity deliverable upload --file ./build.zip --name "Frontend v2" --org 12
+  # Upload a folder (zipped in-memory before upload)
+  taufinity deliverable upload --file ./dist --name "Frontend v2" --slug frontend-v2 --org 12
 
-  # Upload with description and slug
-  taufinity deliverable upload --file ./build.zip --name "Frontend v2" --org 12 --description "Production build" --slug frontend-v2
+  # Upload a pre-built ZIP
+  taufinity deliverable upload --file ./build.zip --name "Frontend v2" --slug frontend-v2 --org 12
 
-  # Upload with custom entry file
-  taufinity deliverable upload --file ./build.zip --name "Frontend v2" --org 12 --entry-file index.html
+  # With description and custom entry file
+  taufinity deliverable upload --file ./dist --name "Frontend v2" --slug frontend-v2 --org 12 \
+      --description "Production build" --entry-file index.html
 `,
 	RunE: runDeliverableUpload,
 }
@@ -118,24 +124,45 @@ func runDeliverableUpload(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated. Run 'taufinity auth login' first")
 	}
 
-	// Open and stat the file
-	file, err := os.Open(deliverableFile)
+	info, err := os.Stat(deliverableFile)
 	if err != nil {
-		return fmt.Errorf("open file: %w", err)
+		return fmt.Errorf("stat %s: %w", deliverableFile, err)
 	}
-	defer file.Close()
 
 	// Build multipart body
 	var buf bytes.Buffer
 	writer := multipart.NewWriter(&buf)
 
-	// Add file part
-	part, err := writer.CreateFormFile("file", filepath.Base(deliverableFile))
-	if err != nil {
-		return fmt.Errorf("create form file: %w", err)
-	}
-	if _, err := io.Copy(part, file); err != nil {
-		return fmt.Errorf("copy file: %w", err)
+	uploadFilename := filepath.Base(deliverableFile)
+	if info.IsDir() {
+		// Fold the directory into a zip on the fly. The backend requires
+		// ZIP, so we always emit that regardless of what the folder holds.
+		uploadFilename = filepath.Base(deliverableFile) + ".zip"
+		Print("Zipping %s ...\n", deliverableFile)
+
+		part, err := writer.CreateFormFile("file", uploadFilename)
+		if err != nil {
+			return fmt.Errorf("create form file: %w", err)
+		}
+		fileCount, zipErr := archive.CreateZip(deliverableFile, part)
+		if zipErr != nil {
+			return fmt.Errorf("zip folder: %w", zipErr)
+		}
+		Print("Zipped %d files.\n", fileCount)
+	} else {
+		file, err := os.Open(deliverableFile)
+		if err != nil {
+			return fmt.Errorf("open file: %w", err)
+		}
+		defer file.Close()
+
+		part, err := writer.CreateFormFile("file", uploadFilename)
+		if err != nil {
+			return fmt.Errorf("create form file: %w", err)
+		}
+		if _, err := io.Copy(part, file); err != nil {
+			return fmt.Errorf("copy file: %w", err)
+		}
 	}
 
 	// Add form fields
