@@ -154,6 +154,55 @@ func TestMCPInstall_RefusesWhenNotLoggedIn(t *testing.T) {
 	}
 }
 
+func TestMCPUninstall_RemovesNamedEntryPreservesOthers(t *testing.T) {
+	resetGlobals(t)
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	initial := `{"mcpServers":{"taufinity-studio":{"url":"x"},"keep-me":{"url":"y"}},"otherTopLevel":true}`
+	if err := os.WriteFile(cfgPath, []byte(initial), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "uninstall",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, _ := os.ReadFile(cfgPath)
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	servers := got["mcpServers"].(map[string]any)
+	if _, ok := servers["taufinity-studio"]; ok {
+		t.Error("taufinity-studio still present after uninstall")
+	}
+	if _, ok := servers["keep-me"]; !ok {
+		t.Error("keep-me was clobbered")
+	}
+	if got["otherTopLevel"] != true {
+		t.Error("otherTopLevel was clobbered")
+	}
+}
+
+func TestMCPUninstall_MissingFileNoError(t *testing.T) {
+	resetGlobals(t)
+	cfgDir := t.TempDir()
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", filepath.Join(cfgDir, "absent.json"))
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "uninstall",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("uninstall on missing file should be a no-op, got: %v", err)
+	}
+}
+
 func TestMCPInstall_RefusesOverwriteWithoutForce(t *testing.T) {
 	resetGlobals(t)
 	home := t.TempDir()

@@ -1,6 +1,6 @@
 # Taufinity CLI
 
-Command-line tool for the [Taufinity](https://studio.taufinity.io) content platform. Manage templates, trigger playbooks, and configure Claude Code MCP integration.
+Command-line tool for the [Taufinity](https://studio.taufinity.io) content platform. Manage templates, trigger playbooks, and configure Claude Code / Claude Desktop MCP integration.
 
 ## Installation
 
@@ -60,7 +60,20 @@ taufinity playbook trigger <playbook-id>
 | `playbook runs <id>` | Show recent runs |
 | `org list` | List organizations |
 | `mcp login` | Write credentials to `.mcp.json` for Claude Code |
+| `mcp install` | Add Taufinity Studio to Claude Desktop's config |
+| `mcp uninstall` | Remove Taufinity Studio from Claude Desktop's config |
+| `mcp print` | Print the Claude Desktop server JSON block to stdout |
 | `version` | Print version info |
+
+### Claude Desktop one-command install
+
+After `taufinity auth login`:
+
+    taufinity mcp install
+
+Writes a server entry to Claude Desktop's config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows). Restart Claude Desktop to load it. The bearer used is the one `taufinity auth login` issued — revoke from the Studio admin UI if compromised.
+
+For Claude Code (`.mcp.json`), use `taufinity mcp login` instead.
 
 Run any command with `--help` for full flag documentation.
 
