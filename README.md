@@ -63,6 +63,7 @@ taufinity playbook trigger <playbook-id>
 | `mcp install` | Add Taufinity Studio to Claude Desktop's config |
 | `mcp uninstall` | Remove Taufinity Studio from Claude Desktop's config |
 | `mcp print` | Print the Claude Desktop server JSON block to stdout |
+| `mcp stdio` | Run a stdio MCP bridge to Studio's `/mcp` endpoint (for stdio-only clients) |
 | `version` | Print version info |
 
 ### Claude Desktop one-command install
@@ -76,6 +77,30 @@ Writes a server entry to Claude Desktop's config (`~/Library/Application Support
 For Claude Code (`.mcp.json`), use `taufinity mcp login` instead.
 
 Run any command with `--help` for full flag documentation.
+
+### MCP stdio bridge
+
+Modern Claude Desktop and Claude Code talk to MCP servers over HTTP and can use the `.mcp.json` config produced by `taufinity mcp login`. For stdio-only clients (older Claude Desktop releases, `mcp-inspector`, custom clients), `taufinity mcp stdio` runs a thin local bridge that forwards JSON-RPC frames over stdio to Studio's remote `/mcp` endpoint.
+
+The bridge is a pure passthrough — it does not register tools locally. It reuses the same credentials as the rest of the CLI (run `taufinity auth login` first).
+
+Example Claude Desktop config:
+
+```jsonc
+{
+  "mcpServers": {
+    "taufinity-studio": {
+      "command": "taufinity",
+      "args": ["mcp", "stdio"]
+    }
+  }
+}
+```
+
+Flags:
+
+- `--api-url URL` — override the upstream (defaults to `$TAUFINITY_API_URL`, then config, then `https://studio.taufinity.io`).
+- `--timeout DURATION` — per-request timeout (default 5m, accommodates BigQuery-backed tools).
 
 ## Configuration
 

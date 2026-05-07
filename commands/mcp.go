@@ -29,10 +29,15 @@ var (
 var mcpCmd = &cobra.Command{
 	Use:   "mcp",
 	Short: "Manage MCP (Claude Code) integration",
-	Long: `Configure .mcp.json for Claude Code MCP server integration.
+	Long: `Configure .mcp.json for Claude Code MCP server integration, or run a
+stdio MCP bridge for stdio-only clients.
 
-These commands update the .mcp.json file in your project directory
-with credentials from 'taufinity auth login'.
+The login/switch-org/status subcommands update the .mcp.json file in your
+project directory with credentials from 'taufinity auth login'.
+
+The 'stdio' subcommand runs a local bridge that forwards JSON-RPC frames
+over stdio to Studio's remote /mcp endpoint, for older Claude Desktop
+versions, mcp-inspector, or custom clients that only speak stdio.
 
 Use --global to target ~/.claude/mcp.json (user-level config) instead
 of the project-level .mcp.json.`,
