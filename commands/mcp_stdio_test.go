@@ -13,6 +13,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 // mockUpstream simulates the Studio /mcp endpoint over Streamable HTTP.
@@ -134,25 +137,35 @@ func (t *threadSafeBuffer) String() string {
 
 // readNextFrame reads one JSON line from the buffer, retrying briefly to
 // handle the bridge's async write timing.
+//
+// The drain step takes the lock for the entire read-modify-write sequence
+// to avoid losing concurrent writes that arrive between snapshot and reset.
+// (Earlier revisions called String() to snapshot, then Lock+Reset+WriteString
+// the remainder — anything written between snapshot and Reset was discarded,
+// which dropped server-pushed notifications that arrived back-to-back with
+// tool results in TestStdioBridge_AgainstRealStreamableHTTPServer.)
 func readNextFrame(t *testing.T, buf *threadSafeBuffer, timeout time.Duration) []byte {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		s := buf.String()
+		buf.mu.Lock()
+		s := buf.buf.String()
 		idx := strings.IndexByte(s, '\n')
 		if idx >= 0 {
 			line := []byte(s[:idx])
-			// drain that much from the buffer
 			rest := s[idx+1:]
-			buf.mu.Lock()
 			buf.buf.Reset()
 			buf.buf.WriteString(rest)
 			buf.mu.Unlock()
 			return line
 		}
+		buf.mu.Unlock()
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("no frame on stdout within %s; have: %q", timeout, buf.String())
+	buf.mu.Lock()
+	have := buf.buf.String()
+	buf.mu.Unlock()
+	t.Fatalf("no frame on stdout within %s; have: %q", timeout, have)
 	return nil
 }
 
@@ -255,7 +268,15 @@ func TestStdioBridge_AuthFailedMapsTo32001(t *testing.T) {
 	<-done
 }
 
-func TestStdioBridge_RateLimitedMapsTo32003(t *testing.T) {
+// TestStdioBridge_Non401MapsTo32000Network verifies that any non-auth
+// upstream failure (429, 5xx, broken JSON, ...) collapses into the generic
+// -32000 "network" code with err.Error() preserved in data.upstream.
+//
+// Earlier revisions parsed status codes from the transport's error string
+// and emitted a dedicated -32003 rate_limited code; that regex was brittle
+// against mcp-go upgrades, so we dropped it. See MEDIUM-4 in the Phase 2
+// review.
+func TestStdioBridge_Non401MapsTo32000Network(t *testing.T) {
 	mu := newMockUpstream()
 	defer mu.close()
 	mu.responseStatus.Store(int32(http.StatusTooManyRequests))
@@ -278,11 +299,14 @@ func TestStdioBridge_RateLimitedMapsTo32003(t *testing.T) {
 	if err := json.Unmarshal(line, &resp); err != nil {
 		t.Fatalf("decode: %v: %s", err, line)
 	}
-	if resp.Error.Code != errCodeRateLimited {
-		t.Errorf("code = %d, want %d", resp.Error.Code, errCodeRateLimited)
+	if resp.Error.Code != errCodeNetwork {
+		t.Errorf("code = %d, want %d (errCodeNetwork)", resp.Error.Code, errCodeNetwork)
 	}
-	if resp.Error.Data["error"] != "rate_limited" {
-		t.Errorf("data.error = %v, want rate_limited", resp.Error.Data["error"])
+	if resp.Error.Data["error"] != "network" {
+		t.Errorf("data.error = %v, want network", resp.Error.Data["error"])
+	}
+	if up, _ := resp.Error.Data["upstream"].(string); up == "" {
+		t.Errorf("data.upstream missing; want raw transport error: %+v", resp.Error.Data)
 	}
 
 	_ = in.Close()
@@ -453,4 +477,258 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+// runBridgeAsyncWithConfig is like runBridgeAsync but accepts a fully-formed
+// StdioBridgeConfig so tests can inject TokenSource, MaxFrameBytes, etc.
+// The caller must populate UpstreamURL; Stdin/Stdout/Stderr are set up here.
+func runBridgeAsyncWithConfig(t *testing.T, ctx context.Context, cfg StdioBridgeConfig) (
+	io.WriteCloser, *threadSafeBuffer, *bytes.Buffer, chan struct{},
+) {
+	t.Helper()
+
+	pr, pw := io.Pipe()
+	outBuf := &threadSafeBuffer{}
+	errBuf := &bytes.Buffer{}
+	cfg.Stdin = pr
+	cfg.Stdout = outBuf
+	cfg.Stderr = errBuf
+	if cfg.Timeout == 0 {
+		cfg.Timeout = 5 * time.Second
+	}
+
+	d := make(chan struct{})
+	go func() {
+		defer close(d)
+		_ = RunStdioBridge(ctx, cfg)
+	}()
+	return pw, outBuf, errBuf, d
+}
+
+// TestStdioBridge_TokenRefreshOnEachRequest pins HIGH-1: the bridge must
+// pick up rotated tokens without restarting. We rotate the TokenSource
+// output mid-test and assert the bearer changes on the next upstream call.
+//
+// The token cache only refreshes when expiry is within tokenRefreshLeeway
+// (60s), so we deliberately set short expiries that fall inside the window
+// — every request triggers a TokenSource call.
+func TestStdioBridge_TokenRefreshOnEachRequest(t *testing.T) {
+	mu := newMockUpstream()
+	defer mu.close()
+
+	var mut sync.Mutex
+	currentToken := "token-A"
+	// expiresAt is set inside the leeway window so every request reloads.
+	tokenSource := func(_ context.Context) (string, time.Time, error) {
+		mut.Lock()
+		defer mut.Unlock()
+		return currentToken, time.Now().Add(10 * time.Second), nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	in, out, _, done := runBridgeAsyncWithConfig(t, ctx, StdioBridgeConfig{
+		UpstreamURL: mu.url(),
+		TokenSource: tokenSource,
+		UserAgent:   "taufinity-cli/test (mcp-stdio)",
+	})
+	defer func() {
+		_ = in.Close()
+		<-done
+	}()
+
+	send := func(id int) {
+		frame := []byte(`{"jsonrpc":"2.0","id":` + itoa(id) + `,"method":"tools/list"}` + "\n")
+		if _, err := in.Write(frame); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+		_ = readNextFrame(t, out, 5*time.Second)
+	}
+
+	// First batch: 3 requests with token-A.
+	for i := 1; i <= 3; i++ {
+		send(i)
+	}
+
+	// Rotate token mid-session. Real-world equivalent: user re-runs
+	// `taufinity auth login`, which writes a new credentials.json.
+	mut.Lock()
+	currentToken = "token-B"
+	mut.Unlock()
+
+	// Next 2 requests should carry the new bearer.
+	for i := 4; i <= 5; i++ {
+		send(i)
+	}
+
+	mu.mu.Lock()
+	auths := append([]string(nil), mu.authHeaders...)
+	mu.mu.Unlock()
+
+	if len(auths) < 5 {
+		t.Fatalf("upstream saw %d auth headers, want >=5: %v", len(auths), auths)
+	}
+
+	// First three must be Bearer token-A; last two must be Bearer token-B.
+	// (We tolerate extra requests — Streamable HTTP may emit a session GET
+	// or similar — by only checking specific positions.)
+	for i := 0; i < 3; i++ {
+		if auths[i] != "Bearer token-A" {
+			t.Errorf("auth[%d] = %q, want Bearer token-A", i, auths[i])
+		}
+	}
+	// Find the first occurrence of token-B after position 2.
+	sawNewToken := false
+	for i := 3; i < len(auths); i++ {
+		if auths[i] == "Bearer token-B" {
+			sawNewToken = true
+			break
+		}
+	}
+	if !sawNewToken {
+		t.Errorf("expected Bearer token-B after rotation, got: %v", auths)
+	}
+}
+
+// TestStdioBridge_AgainstRealStreamableHTTPServer drives the bridge against
+// mcp-go's real NewStreamableHTTPServer. The hand-rolled mockUpstream above
+// covers error paths cleanly but does not exercise session-ID propagation,
+// the initialize handshake, or SSE framing — a regression in any of those
+// would slip past the mock-only tests. This one rounds out the protocol
+// contract.
+//
+// HIGH-2 in the Phase 2 review.
+func TestStdioBridge_AgainstRealStreamableHTTPServer(t *testing.T) {
+	// Build a minimal MCP server with two tools:
+	//   echo: synchronous text result.
+	//   slow: sleeps briefly, then returns text. Used to prove tool/call
+	//         doesn't get truncated by an early-return on the SSE stream.
+	mcpServer := mcpserver.NewMCPServer("test-bridge", "0.0.0",
+		mcpserver.WithToolCapabilities(true),
+	)
+
+	mcpServer.AddTool(mcp.Tool{Name: "echo"},
+		func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText("echo-ok"), nil
+		},
+	)
+	mcpServer.AddTool(mcp.Tool{Name: "slow"},
+		func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			select {
+			case <-time.After(100 * time.Millisecond):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return mcp.NewToolResultText("slow-done"), nil
+		},
+	)
+
+	streamable := mcpserver.NewStreamableHTTPServer(mcpServer,
+		mcpserver.WithEndpointPath("/mcp"),
+		// Stateful: server tracks Mcp-Session-Id, exercises the bridge's
+		// session-id propagation through the streamable HTTP transport.
+		mcpserver.WithStateful(true),
+	)
+
+	srv := httptest.NewServer(streamable)
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	in, out, errBuf, done := runBridgeAsyncWithConfig(t, ctx, StdioBridgeConfig{
+		UpstreamURL: srv.URL + "/mcp",
+		Token:       "test-token",
+		UserAgent:   "taufinity-cli/test (mcp-stdio)",
+		Timeout:     10 * time.Second,
+	})
+	defer func() {
+		_ = in.Close()
+		<-done
+		if t.Failed() {
+			t.Logf("bridge stderr:\n%s", errBuf.String())
+		}
+	}()
+
+	send := func(frame string) {
+		if _, err := in.Write([]byte(frame + "\n")); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+	}
+
+	// 1. Initialize handshake. The real Streamable HTTP server requires
+	//    this before tool calls, and the response must round-trip the id.
+	send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}`)
+	initLine := readNextFrame(t, out, 5*time.Second)
+	var initResp struct {
+		ID     float64        `json:"id"`
+		Result map[string]any `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(initLine, &initResp); err != nil {
+		t.Fatalf("decode init: %v: %s", err, initLine)
+	}
+	if initResp.Error != nil {
+		t.Fatalf("initialize error: %+v", initResp.Error)
+	}
+	if initResp.ID != 1 {
+		t.Errorf("initialize id = %v, want 1 (id round-trip is part of the protocol contract)", initResp.ID)
+	}
+	if initResp.Result["protocolVersion"] == nil {
+		t.Errorf("initialize result missing protocolVersion: %+v", initResp.Result)
+	}
+
+	// Per MCP spec: send notifications/initialized after init succeeds.
+	send(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+
+	// 2. tools/list — both server-registered tools come back.
+	send(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	listLine := readNextFrame(t, out, 5*time.Second)
+	var listResp struct {
+		ID     float64 `json:"id"`
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(listLine, &listResp); err != nil {
+		t.Fatalf("decode tools/list: %v: %s", err, listLine)
+	}
+	if listResp.ID != 2 {
+		t.Errorf("tools/list id = %v, want 2", listResp.ID)
+	}
+	names := map[string]bool{}
+	for _, tool := range listResp.Result.Tools {
+		names[tool.Name] = true
+	}
+	if !names["echo"] || !names["slow"] {
+		t.Errorf("tools/list missing expected tools, got: %+v", listResp.Result.Tools)
+	}
+
+	// 3. tools/call → echo (synchronous).
+	send(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{}}}`)
+	echoLine := readNextFrame(t, out, 5*time.Second)
+	if !strings.Contains(string(echoLine), "echo-ok") {
+		t.Errorf("echo result missing 'echo-ok': %s", echoLine)
+	}
+
+	// 4. tools/call → slow (handler sleeps before returning). Proves the
+	//    bridge waits for the tool to finish rather than racing the SSE
+	//    response.
+	send(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"slow","arguments":{}}}`)
+	slowLine := readNextFrame(t, out, 5*time.Second)
+	if !strings.Contains(string(slowLine), "slow-done") {
+		t.Errorf("slow result missing 'slow-done': %s", slowLine)
+	}
+	var slowResp struct {
+		ID float64 `json:"id"`
+	}
+	if err := json.Unmarshal(slowLine, &slowResp); err == nil && slowResp.ID != 4 {
+		t.Errorf("slow result id = %v, want 4 (id round-trip across multiple in-flight requests)", slowResp.ID)
+	}
 }

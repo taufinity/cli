@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -25,8 +24,14 @@ import (
 )
 
 var (
-	flagMCPStdioTimeout time.Duration
+	flagMCPStdioTimeout       time.Duration
+	flagMCPStdioMaxFrameBytes int
 )
+
+// defaultMaxFrameBytes is the default max stdin frame size (16 MiB).
+// Large tools/list responses or rich tool results can exceed the bufio
+// default of 64 KiB.
+const defaultMaxFrameBytes = 16 * 1024 * 1024
 
 var mcpStdioCmd = &cobra.Command{
 	Use:   "stdio",
@@ -60,6 +65,7 @@ All log output goes to stderr; JSON-RPC frames go to stdout.`,
 func init() {
 	mcpCmd.AddCommand(mcpStdioCmd)
 	mcpStdioCmd.Flags().DurationVar(&flagMCPStdioTimeout, "timeout", 300*time.Second, "Per-request HTTP timeout (BigQuery-backed tools can run long)")
+	mcpStdioCmd.Flags().IntVar(&flagMCPStdioMaxFrameBytes, "max-frame-bytes", defaultMaxFrameBytes, "Maximum size of a single JSON-RPC frame read from stdin (bytes); raise if tools/list or rich results are truncated")
 }
 
 // jsonRPCFrame is a minimal envelope used to peek at id/method
@@ -72,11 +78,14 @@ type jsonRPCFrame struct {
 }
 
 // JSON-RPC error codes used by the bridge.
+//
+// We deliberately collapse rate-limited/5xx into errCodeNetwork rather than
+// pattern-matching transport error strings (see mapTransportError). The
+// upstream message is preserved in error data.upstream.
 const (
-	errCodeNetwork     = -32000
-	errCodeAuthFailed  = -32001
-	errCodeRateLimited = -32003
-	errCodeMethodNF    = -32601
+	errCodeNetwork    = -32000
+	errCodeAuthFailed = -32001
+	errCodeMethodNF   = -32601
 )
 
 func runMCPStdio(cmd *cobra.Command, args []string) error {
@@ -86,12 +95,13 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	if !auth.HasCredentials() {
 		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
 	}
+	// Probe once to fail fast at startup if we have no usable token.
+	// The bridge itself reloads on every request via TokenSource below.
 	creds, err := auth.LoadCredentials()
 	if err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
-	token, err := creds.GetValidToken()
-	if err != nil {
+	if _, err := creds.GetValidToken(); err != nil {
 		return fmt.Errorf("run 'taufinity auth login' to re-authenticate: %w", err)
 	}
 
@@ -99,26 +109,67 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	userAgent := fmt.Sprintf("taufinity-cli/%s (mcp-stdio)", Version)
 
 	return RunStdioBridge(ctx, StdioBridgeConfig{
-		UpstreamURL: upstreamURL,
-		Token:       token,
-		UserAgent:   userAgent,
-		Timeout:     flagMCPStdioTimeout,
-		Stdin:       os.Stdin,
-		Stdout:      os.Stdout,
-		Stderr:      os.Stderr,
+		UpstreamURL:   upstreamURL,
+		TokenSource:   defaultTokenSource,
+		UserAgent:     userAgent,
+		Timeout:       flagMCPStdioTimeout,
+		MaxFrameBytes: flagMCPStdioMaxFrameBytes,
+		Stdin:         os.Stdin,
+		Stdout:        os.Stdout,
+		Stderr:        os.Stderr,
 	})
 }
 
-// StdioBridgeConfig configures the stdio MCP bridge.
-type StdioBridgeConfig struct {
-	UpstreamURL string
-	Token       string
-	UserAgent   string
-	Timeout     time.Duration
-	Stdin       io.Reader
-	Stdout      io.Writer
-	Stderr      io.Writer
+// defaultTokenSource reloads credentials from disk on every call so the
+// bridge picks up tokens rotated by an out-of-process re-login (the user
+// running `taufinity auth login` again, or a future in-process refresh).
+// Long-lived Claude Desktop subprocesses must NOT cache the bearer that
+// was valid at startup; that is what HIGH-1 was about.
+func defaultTokenSource(_ context.Context) (token string, expiresAt time.Time, err error) {
+	creds, err := auth.LoadCredentials()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	tok, err := creds.GetValidToken()
+	if err != nil {
+		return "", creds.ExpiresAt, err
+	}
+	return tok, creds.ExpiresAt, nil
 }
+
+// TokenSource produces a bearer token for the upstream /mcp endpoint.
+// It is called once per outbound HTTP request (via WithHTTPHeaderFunc),
+// with results cached in-memory until the token is within tokenRefreshLeeway
+// of expiry. Implementations should be cheap (single file read) but safe
+// to call concurrently. Returning an error suppresses the Authorization
+// header for that request, surfacing a clear upstream 401 to the client
+// rather than silently sending a stale bearer.
+type TokenSource func(ctx context.Context) (token string, expiresAt time.Time, err error)
+
+// StdioBridgeConfig configures the stdio MCP bridge.
+//
+// Either TokenSource or Token may be set. TokenSource is preferred — it
+// is called per-request so a token rotated outside the process (e.g. user
+// re-running `taufinity auth login`) is picked up without restarting the
+// bridge. Token is a static fallback for tests and embedded callers; it
+// never expires for the bridge's purposes.
+type StdioBridgeConfig struct {
+	UpstreamURL   string
+	TokenSource   TokenSource
+	Token         string // static fallback; ignored if TokenSource is set
+	UserAgent     string
+	Timeout       time.Duration
+	MaxFrameBytes int // 0 → defaultMaxFrameBytes
+	Stdin         io.Reader
+	Stdout        io.Writer
+	Stderr        io.Writer
+}
+
+// tokenRefreshLeeway is how close to expiry we re-read credentials from disk.
+// Anything under this threshold triggers a refresh on the next request; above
+// it, the cached token is reused to keep the per-request overhead at one map
+// allocation.
+const tokenRefreshLeeway = 60 * time.Second
 
 // RunStdioBridge runs the stdio bridge against the configured upstream.
 // It blocks until ctx is canceled, stdin reaches EOF, or a fatal error occurs.
@@ -138,18 +189,28 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 300 * time.Second
 	}
-
-	headers := map[string]string{}
-	if cfg.Token != "" {
-		headers["Authorization"] = "Bearer " + cfg.Token
+	if cfg.MaxFrameBytes <= 0 {
+		cfg.MaxFrameBytes = defaultMaxFrameBytes
 	}
-	if cfg.UserAgent != "" {
-		headers["User-Agent"] = cfg.UserAgent
+
+	br := &bridge{
+		stdout:        cfg.Stdout,
+		stderr:        cfg.Stderr,
+		timeout:       cfg.Timeout,
+		maxFrameBytes: cfg.MaxFrameBytes,
+		userAgent:     cfg.UserAgent,
+		tokenSource:   cfg.TokenSource,
+		staticToken:   cfg.Token,
 	}
 
 	tr, err := transport.NewStreamableHTTP(
 		cfg.UpstreamURL,
-		transport.WithHTTPHeaders(headers),
+		// All headers — Authorization, User-Agent, etc — flow through this
+		// per-request callback. We never call WithHTTPHeaders, because that
+		// would freeze the bearer at bridge startup; Claude Desktop keeps the
+		// subprocess alive for hours/days, and the original token will expire
+		// mid-session. See HIGH-1 in the Phase 2 review.
+		transport.WithHTTPHeaderFunc(br.requestHeaders),
 		transport.WithHTTPTimeout(cfg.Timeout),
 	)
 	if err != nil {
@@ -160,12 +221,7 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 		return fmt.Errorf("start upstream transport: %w", err)
 	}
 
-	br := &bridge{
-		transport: tr,
-		stdout:    cfg.Stdout,
-		stderr:    cfg.Stderr,
-		timeout:   cfg.Timeout,
-	}
+	br.transport = tr
 
 	// Server -> client notifications: write to stdout.
 	tr.SetNotificationHandler(br.handleServerNotification)
@@ -192,22 +248,116 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 
 // bridge holds the runtime state for an active stdio bridge.
 type bridge struct {
-	transport transport.Interface
-	stdout    io.Writer
-	stderr    io.Writer
-	timeout   time.Duration
+	transport     transport.Interface
+	stdout        io.Writer
+	stderr        io.Writer
+	timeout       time.Duration
+	maxFrameBytes int
+	userAgent     string
+
+	tokenSource TokenSource
+	staticToken string
+
+	tokenMu        sync.Mutex // guards cachedToken/cachedExpiresAt/cachedHeaders
+	cachedToken    string
+	cachedExpires  time.Time
+	cachedHeaders  map[string]string
+	tokenLoadCount int64 // observability: how often we hit the TokenSource
 
 	writeMu sync.Mutex // guards writes to stdout
 	wg      sync.WaitGroup
 }
 
+// requestHeaders is invoked by the StreamableHTTP transport for every
+// outbound request (POST /mcp, the GET listening connection, session
+// terminate, etc). It returns the headers map for that request — fresh
+// bearer token, User-Agent, and any future per-request metadata.
+//
+// Caching policy:
+//   - Static token (cfg.Token, no TokenSource) → never refreshes.
+//   - TokenSource → refresh on first call, or when current token expires
+//     within tokenRefreshLeeway. We do NOT block other requests during the
+//     refresh; the mutex is held only while reading the cache or swapping it.
+//   - On TokenSource error, log to stderr and reuse the previous cached
+//     headers if any — better to let upstream return 401 with a clear
+//     trace_id than to silently drop the Authorization header.
+func (b *bridge) requestHeaders(ctx context.Context) map[string]string {
+	b.tokenMu.Lock()
+	cached := b.cachedHeaders
+	cachedExpires := b.cachedExpires
+	b.tokenMu.Unlock()
+
+	// Static-token mode (tests, embedded callers).
+	if b.tokenSource == nil {
+		if cached != nil {
+			return cached
+		}
+		h := b.buildHeaders(b.staticToken)
+		b.tokenMu.Lock()
+		b.cachedHeaders = h
+		b.tokenMu.Unlock()
+		return h
+	}
+
+	// Cache hit: token still has comfortable headroom.
+	if cached != nil && !cachedExpires.IsZero() && time.Until(cachedExpires) > tokenRefreshLeeway {
+		return cached
+	}
+
+	token, expiresAt, err := b.tokenSource(ctx)
+	b.tokenMu.Lock()
+	b.tokenLoadCount++
+	if err != nil {
+		// Reuse previous headers if any. The next request will retry.
+		// If we have no cache yet, return headers without Authorization
+		// so the upstream returns 401 — clear failure mode.
+		b.logf("token refresh failed (request will use stale or no bearer): %v", err)
+		if b.cachedHeaders != nil {
+			result := b.cachedHeaders
+			b.tokenMu.Unlock()
+			return result
+		}
+		h := b.buildHeaders("")
+		b.cachedHeaders = h
+		b.tokenMu.Unlock()
+		return h
+	}
+
+	h := b.buildHeaders(token)
+	b.cachedToken = token
+	b.cachedExpires = expiresAt
+	b.cachedHeaders = h
+	b.tokenMu.Unlock()
+	return h
+}
+
+// buildHeaders constructs the per-request header map. token may be empty
+// if the source failed and we have no prior cache.
+func (b *bridge) buildHeaders(token string) map[string]string {
+	h := make(map[string]string, 2)
+	if token != "" {
+		h["Authorization"] = "Bearer " + token
+	}
+	if b.userAgent != "" {
+		h["User-Agent"] = b.userAgent
+	}
+	return h
+}
+
 // readLoop reads JSON-RPC frames (one per line) from r and dispatches them.
 func (b *bridge) readLoop(ctx context.Context, r io.Reader) error {
 	scanner := bufio.NewScanner(r)
-	// Allow large frames: tools/list responses or rich tool results
-	// can easily exceed the default 64 KiB.
-	buf := make([]byte, 0, 1024*1024)
-	scanner.Buffer(buf, 16*1024*1024)
+	max := b.maxFrameBytes
+	if max <= 0 {
+		max = defaultMaxFrameBytes
+	}
+	// Start with a 1 MiB buffer; bufio grows up to max as needed.
+	initial := 1024 * 1024
+	if initial > max {
+		initial = max
+	}
+	buf := make([]byte, 0, initial)
+	scanner.Buffer(buf, max)
 
 	// Run the scan in its own goroutine so ctx cancel unblocks us.
 	lineCh := make(chan []byte)
@@ -230,6 +380,10 @@ func (b *bridge) readLoop(ctx context.Context, r io.Reader) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-errCh:
+			if errors.Is(err, bufio.ErrTooLong) {
+				b.logf("stdin frame exceeded --max-frame-bytes (%d); raise the flag to allow larger JSON-RPC frames", max)
+				return fmt.Errorf("stdin frame exceeded --max-frame-bytes=%d: %w", max, err)
+			}
 			return err
 		case line, ok := <-lineCh:
 			if !ok {
@@ -444,6 +598,16 @@ func (b *bridge) writeErrorResponse(id mcp.RequestId, args ...any) {
 }
 
 // mapTransportError turns a transport-layer error into a (code, message, data) triple.
+//
+// We only special-case auth — everything else collapses into -32000 "network".
+// Earlier revisions parsed status codes out of the transport's error string
+// (e.g. "request failed with status 429: ..."), but that regex is fragile
+// against mcp-go version changes. The cost of losing the rate_limited / 5xx
+// distinction is small: the raw upstream error is preserved in data.upstream
+// so a client (or operator reading the trace) can still see what happened.
+//
+// MEDIUM-4 in the Phase 2 review: keep this surface small.
+//
 // Note: data is never the raw bearer token.
 func mapTransportError(err error) (int, string, map[string]any) {
 	traceID := newTraceID()
@@ -456,60 +620,11 @@ func mapTransportError(err error) (int, string, map[string]any) {
 		}
 	}
 
-	if status, ok := statusCodeFromError(err); ok {
-		switch {
-		case status == http.StatusUnauthorized:
-			return errCodeAuthFailed, "auth_failed", map[string]any{
-				"error":    "auth_failed",
-				"hint":     "run taufinity auth login",
-				"trace_id": traceID,
-			}
-		case status == http.StatusTooManyRequests:
-			return errCodeRateLimited, "rate_limited", map[string]any{
-				"error":    "rate_limited",
-				"trace_id": traceID,
-			}
-		case status >= 500 && status < 600:
-			return errCodeNetwork, "network", map[string]any{
-				"error":    "network",
-				"upstream": fmt.Sprintf("status %d", status),
-				"trace_id": traceID,
-			}
-		}
-	}
-
 	return errCodeNetwork, "network", map[string]any{
 		"error":    "network",
 		"upstream": err.Error(),
 		"trace_id": traceID,
 	}
-}
-
-// statusCodeFromError tries to extract an HTTP status code from the
-// transport's error message format ("request failed with status %d: ...").
-func statusCodeFromError(err error) (int, bool) {
-	if err == nil {
-		return 0, false
-	}
-	s := err.Error()
-	const marker = "status "
-	idx := strings.Index(s, marker)
-	if idx < 0 {
-		return 0, false
-	}
-	rest := s[idx+len(marker):]
-	end := 0
-	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
-		end++
-	}
-	if end == 0 {
-		return 0, false
-	}
-	n := 0
-	for i := 0; i < end; i++ {
-		n = n*10 + int(rest[i]-'0')
-	}
-	return n, true
 }
 
 // newTraceID generates a short hex trace id for error correlation.
