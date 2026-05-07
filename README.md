@@ -4,22 +4,48 @@ Command-line tool for the [Taufinity](https://studio.taufinity.io) content platf
 
 ## Installation
 
-### Public (once repo is public)
+### macOS / Linux (Go 1.21+)
 
 ```bash
 go install github.com/taufinity/cli/cmd/taufinity@latest
 ```
 
-Requires Go 1.21+. The binary is installed as `taufinity` in your `$GOPATH/bin`.
+The binary is installed as `taufinity` in `$GOPATH/bin` (usually `~/go/bin`). Make sure that directory is in your `$PATH`:
 
-### Private (current — internal use only)
+```bash
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
+
+### Verify installation
+
+```bash
+taufinity version
+```
+
+### Update
+
+Re-run the same install command — Go fetches the latest release and overwrites the binary in place:
+
+```bash
+go install github.com/taufinity/cli/cmd/taufinity@latest
+```
+
+Add an alias to make updating one word:
+
+```bash
+echo "alias taufinity-update='go install github.com/taufinity/cli/cmd/taufinity@latest'" >> ~/.zshrc
+```
+
+### Build from source (internal / development)
 
 ```bash
 export GOPRIVATE=github.com/taufinity/cli
 git clone git@github.com:taufinity/cli.git
 cd cli
-make install
+make install    # installs to ~/bin/taufinity
 ```
+
+To update: `git pull && make install`.
 
 ## Authentication
 
