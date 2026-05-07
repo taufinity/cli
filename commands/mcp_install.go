@@ -1,9 +1,15 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/desktopconfig"
 )
 
 // Sibling subcommands to the existing mcpLoginCmd / mcpSwitchOrgCmd / mcpStatusCmd
@@ -57,17 +63,92 @@ func init() {
 	mcpUninstallCmd.Flags().StringVar(&flagMCPInstallLabel, "label", "taufinity-studio", "Server entry name to remove")
 }
 
-// Stubs — implemented in Task 3.
 func runMCPInstall(cmd *cobra.Command, args []string) error {
-	return fmt.Errorf("not implemented")
+	if !auth.HasCredentials() {
+		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
+	}
+	creds, err := auth.LoadCredentials()
+	if err != nil {
+		return fmt.Errorf("load credentials: %w", err)
+	}
+	token, err := creds.GetValidToken()
+	if err != nil {
+		return fmt.Errorf("%w — run 'taufinity auth login' to refresh", err)
+	}
+
+	apiURL := GetAPIURL()
+	server := desktopconfig.RemoteServer{
+		Type: "http",
+		URL:  strings.TrimRight(apiURL, "/") + "/mcp",
+		Headers: map[string]string{
+			"Authorization": "Bearer " + token,
+		},
+	}
+
+	label := flagMCPInstallLabel
+	if label == "" {
+		label = "taufinity-studio"
+	}
+
+	switch flagMCPInstallClient {
+	case "print":
+		out := map[string]any{"mcpServers": map[string]any{label: server}}
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+
+	case "claude-desktop":
+		path := claudeDesktopConfigPath()
+		if path == "" {
+			path, err = desktopconfig.DefaultClaudeDesktopPath()
+			if err != nil {
+				return err
+			}
+		}
+		if !flagMCPInstallForce {
+			if existing, _ := desktopconfig.HasServer(path, label); existing {
+				return fmt.Errorf("entry %q already exists in %s; pass --force to overwrite", label, path)
+			}
+		}
+		if err := desktopconfig.UpsertServer(path, label, server); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s\nRestart Claude Desktop to load the new server.\n", label, path)
+		return nil
+
+	default:
+		return fmt.Errorf("unknown --client %q (use claude-desktop or print)", flagMCPInstallClient)
+	}
 }
 
 func runMCPUninstall(cmd *cobra.Command, args []string) error {
-	return fmt.Errorf("not implemented")
+	label := flagMCPInstallLabel
+	if label == "" {
+		label = "taufinity-studio"
+	}
+	path := claudeDesktopConfigPath()
+	if path == "" {
+		var err error
+		path, err = desktopconfig.DefaultClaudeDesktopPath()
+		if err != nil {
+			return err
+		}
+	}
+	if err := desktopconfig.RemoveServer(path, label); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Removed %q from %s\n", label, path)
+	return nil
 }
 
 func runMCPPrint(cmd *cobra.Command, args []string) error {
-	// Same flow as install with --client print.
 	flagMCPInstallClient = "print"
 	return runMCPInstall(cmd, args)
+}
+
+// claudeDesktopConfigPath returns the path override from the env var, or empty
+// for the per-OS default. The env var is mainly for tests; users should rely
+// on the default path.
+func claudeDesktopConfigPath() string {
+	return os.Getenv("TAUFINITY_DESKTOP_CONFIG")
 }
