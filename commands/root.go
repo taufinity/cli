@@ -1,15 +1,20 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/taufinity/cli/internal/buildinfo"
 	"github.com/taufinity/cli/internal/config"
+	"github.com/taufinity/cli/internal/updatecheck"
 )
 
 // DefaultAPIURL is the default Taufinity API endpoint.
@@ -68,7 +73,114 @@ func init() {
 
 // Execute runs the root command.
 func Execute() error {
-	return rootCmd.Execute()
+	// Wire the staleness check around the cobra invocation. We always run the
+	// command itself even if the check stalls or errors — the check is a side
+	// effect, never a gate.
+	checker := startUpdateCheck()
+	err := rootCmd.Execute()
+	maybeWarnAtExit(checker)
+	return err
+}
+
+// updateChecker captures the inputs needed to print the staleness warning at
+// exit. We resolve the running command's annotations and the user-config flag
+// up front so the background goroutine can run independently of cobra state.
+type updateChecker struct {
+	runner          *updatecheck.Runner
+	suppressByCmd   bool
+	configDisabled  bool
+}
+
+// startUpdateCheck kicks off the staleness check in a background goroutine if
+// the command and environment allow it. Returns a checker the caller passes to
+// maybeWarnAtExit. Always returns a non-nil pointer to keep the call sites
+// trivial.
+func startUpdateCheck() *updateChecker {
+	c := &updateChecker{}
+
+	// Quick reject: env opt-out — skip both the goroutine and the warning.
+	if os.Getenv(updatecheck.EnvDisable) == "1" {
+		return c
+	}
+
+	// Resolve the command being run (without executing it). cobra exposes a
+	// dry-run Find; if it errors out (e.g. unknown command, --help), we just
+	// skip the check rather than guessing.
+	args := os.Args[1:]
+	cmd, _, err := rootCmd.Find(args)
+	if err != nil || cmd == nil {
+		return c
+	}
+	if hasSuppressAnnotation(cmd) {
+		c.suppressByCmd = true
+		return c
+	}
+
+	// Config opt-out (read here once, used both to skip the goroutine and to
+	// pass into MaybeWarn at exit for completeness).
+	if cfg != nil && cfg.UpdateCheck == "false" {
+		c.configDisabled = true
+		return c
+	}
+
+	// Cache fresh? Skip the network entirely.
+	cache := updatecheck.LoadCache()
+	if cache.IsFresh(time.Now(), updatecheck.DefaultCacheMaxAge) {
+		return c
+	}
+
+	c.runner = &updatecheck.Runner{
+		Debug: debugWriter(),
+	}
+	// Use Background, not cmd.Context() — cobra contexts get cancelled the
+	// moment a RunE returns, and the goroutine should be allowed to complete
+	// its bounded wait independently.
+	c.runner.Start(context.Background())
+	return c
+}
+
+// maybeWarnAtExit waits briefly for the background check (if one was started)
+// and prints the warning to stderr if the running binary is behind.
+func maybeWarnAtExit(c *updateChecker) {
+	if c == nil || c.suppressByCmd {
+		return
+	}
+	if c.runner != nil {
+		// 100ms is enough for a healthy local network; longer would noticeably
+		// delay short-lived commands like `auth status`. If the goroutine isn't
+		// done, we just don't write the cache this run — next run picks it up.
+		c.runner.Wait(100 * time.Millisecond)
+	}
+	cache := updatecheck.LoadCache()
+	info := buildinfo.FromBuildtime(Version, GitCommit, BuildTime)
+	updatecheck.MaybeWarn(os.Stderr, info, cache, updatecheck.Options{
+		Quiet:           IsQuiet(),
+		ConfigDisabled:  c.configDisabled,
+		CommandSuppress: c.suppressByCmd,
+	})
+}
+
+// hasSuppressAnnotation walks the cobra command tree from the resolved command
+// up to root and returns true if any node carries the suppress annotation. The
+// tree walk lets us suppress whole subtrees (e.g. all `mcp` subcommands) by
+// annotating an ancestor, though today we annotate per-command.
+func hasSuppressAnnotation(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Annotations[updatecheck.AnnotationSuppress] == "true" {
+			return true
+		}
+	}
+	return false
+}
+
+// debugWriter returns os.Stderr when --debug is set, otherwise io.Discard.
+// (We can't call IsDebug() here without parsing flags first; this is invoked
+// before cobra has resolved global flags. Fall back to env-only check.)
+func debugWriter() io.Writer {
+	if os.Getenv("TAUFINITY_DEBUG") == "1" {
+		return os.Stderr
+	}
+	return io.Discard
 }
 
 // resolveAPIURL determines the API URL from flags, env, config, or default.

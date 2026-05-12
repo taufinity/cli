@@ -85,14 +85,17 @@ Same annotation also gates whether the **background goroutine** runs at all — 
 ### 6. `taufinity update` command
 
 ```
-taufinity update          # run go install ...@latest, print before/after version
-taufinity update --check  # report only, no install
+taufinity update             # backup → install → smoke test → restore on failure
+taufinity update --check     # report only, no install
+taufinity update --rollback  # restore the previous binary from backup
 ```
 
 **Implementation order:**
 
 1. **Pre-flight: is `go` installed?** `exec.LookPath("go")` — if missing, exit with a clear message pointing to https://go.dev/dl/. Do not attempt the install.
+1a. **Backup the currently-running binary** to `os.Executable() + ".prev"` *only* when the upcoming `go install` target directory matches the running binary's directory (we resolve the target first via `go env GOBIN / GOPATH`). If the target directory differs, no backup is needed: the running binary is untouched. We use `os.Link` first (instant, hardlink) and fall back to byte copy if hardlinking fails (different filesystem, etc.). On failure to back up, we **abort the update** — better to refuse than to leave the user without a revert path.
 2. **Run `go install`:** `exec.Command("go", "install", "github.com/taufinity/cli/cmd/taufinity@latest")` with stdout/stderr streamed through so the user sees module-download progress.
+2a. **Smoke test the new binary**: exec the new binary with a 3-second timeout running `version --format json` (or just `version`) and check exit code 0. If the smoke test fails AND we made a backup, atomically restore `<path>.prev` over `<path>` and exit non-zero with a clear "update failed, reverted to previous binary" message. If we didn't back up (GOBIN ≠ running-binary dir), warn that the new binary is broken at its location but the running binary is untouched.
 3. **Post-install binary-path check** *(this is the biggest UX trap):* after install, resolve where Go actually wrote the new binary:
    - Read `go env GOBIN` — if non-empty, that's the target.
    - Else read `go env GOPATH` and use `$GOPATH/bin`.
@@ -108,6 +111,15 @@ taufinity update --check  # report only, no install
    - If they match, print `Updated. Run \`taufinity version\` to confirm.` — we deliberately do NOT auto-exec the new binary (different process, would surprise the user).
 4. **`--check` flag:** skip steps 1–3, just call the same `updatecheck.Check()` used by the background goroutine and print `current` vs `latest` to stdout. Exit code 0 if up to date, 1 if behind, 2 on network error — script-friendly.
 
+5. **`--rollback` flag:** if `os.Executable() + ".prev"` exists, atomically swap it back into place using tmp + rename. Print the version of the restored binary so the user can confirm. If no `.prev` exists, exit with a message explaining there's nothing to roll back to. This is a manual escape hatch — we never auto-roll-back outside of the smoke-test failure path in step 2a, because rolling back silently would hide bugs.
+
+**Backup lifecycle:**
+- Created in step 1a on every successful update path.
+- Auto-overwritten by the next update (only one backup is kept — keeping a stack of N backups adds disk debt for no clear gain; the user can `go install ...@<sha>` to pin an older version if they need history).
+- Auto-consumed on smoke-test failure (the file is moved over the broken new binary).
+- Manually consumed by `--rollback`.
+- Never auto-cleaned: it sits next to the binary as a tangible "I can undo this" affordance. If the user finds it dusty months later, they can delete it themselves.
+
 ## Plan
 
 1. [ ] Add `internal/buildinfo/` package — single source of truth for version/commit, with `BuildInfo()` returning resolved values using the fallback chain (including `+dirty` suffix and `IsDirty()` accessor).
@@ -120,12 +132,12 @@ taufinity update --check  # report only, no install
 4. [ ] Wire startup background check into `Execute()` in `commands/root.go` — kick off goroutine before `rootCmd.Execute()`, wait up to 100ms after it returns, then call `MaybeWarn`. Skip entirely if dirty tree, opt-out, or suppressed-annotation command.
 5. [ ] Place `defer maybeWarn()` inside `Execute()` after `rootCmd.Execute()` — fires on RunE errors and cobra usage errors. (No `cobra.OnFinalize`; that's less predictable on error paths.)
 6. [ ] Add `update_check` field to `UserConfig` as `string` (`""` = default-on, `"false"` = disabled) to stay consistent with existing `site` / `api_url` `string` keys. Update `config.Set/Get/List/Unset` to accept the new key.
-7. [ ] Add `commands/update.go`: `taufinity update` (pre-flight `go` check, `go install ...@latest`, **binary-path mismatch warning** comparing GOBIN/GOPATH+bin to `os.Executable()`) and `taufinity update --check` (no install; exit code 0/1/2 = up-to-date/behind/error).
+7. [ ] Add `commands/update.go`: `taufinity update` (pre-flight `go` check → backup running binary to `.prev` when target == running dir → `go install ...@latest` → smoke test new binary → restore `.prev` on smoke-test failure → **binary-path mismatch warning** comparing GOBIN/GOPATH+bin to `os.Executable()`), `taufinity update --check` (exit 0/1/2 = up-to-date/behind/error), and `taufinity update --rollback` (atomic restore from `.prev`).
 8. [ ] MCP stdio suppression: set `Annotations: map[string]string{"suppress-update-warning": "true"}` on the stdio cobra command in `commands/mcp_stdio.go`. Check the annotation in `Execute()` to skip both the background goroutine and the warning.
 9. [ ] Tests:
    - `internal/buildinfo`: resolution-order table test (ldflag > Main.Version > vcs.revision > dev), `(devel)` is ignored, `+dirty` rendering, `IsDirty()` accessor.
    - `internal/updatecheck`:
-     - cache atomic write (simulate mid-write exit by killing the write goroutine; ensure either old or new content is present, never empty)
+     - cache atomic write (verify tmp file is cleaned up; verify rename produces well-formed JSON)
      - cache parse error → treated as missing
      - `Check` against `httptest.NewServer` for: 200 with SHA, 403, 5xx, network error → each writes appropriate cache state
      - `MaybeWarn` opt-out matrix: env var, config flag, quiet, dirty tree, suppress-annotation command, in-date cache, out-of-date cache
@@ -134,6 +146,9 @@ taufinity update --check  # report only, no install
      - missing `go` (mock `exec.LookPath`)
      - `--check` exit codes
      - binary-path mismatch warning fires when `os.Executable()` differs from resolved install dir
+     - **backup created** when target dir == running dir; not created when they differ
+     - **smoke test failure triggers rollback** (use a fake `go install` that writes a `false`-style binary that exits non-zero)
+     - **`--rollback` restores `.prev`** atomically and fails cleanly when no `.prev` exists
 10. [ ] Docs: append a "Self-update" section to README.md with: how the check works, opt-out instructions, manual update command, security note ("anyone with commit access to `main` ships to all CLI users until we move to tagged releases").
 
 ## Failure routing
@@ -155,7 +170,8 @@ taufinity update --check  # report only, no install
 - `make install` — installs to `~/bin/taufinity`
 - `~/bin/taufinity version` — shows real SHA from BuildInfo (not "unknown")
 - `~/bin/taufinity update --check` — reports current vs latest, exits 0 or 1
-- `~/bin/taufinity update` — full install path; if GOBIN ≠ `~/bin`, prints the binary-path-mismatch warning
+- `~/bin/taufinity update` — full install path; if GOBIN ≠ `~/bin`, prints the binary-path-mismatch warning. When dirs match, a `~/bin/taufinity.prev` file should appear and the smoke test should pass.
+- `~/bin/taufinity update --rollback` — swaps `.prev` back in; running `version` after should show the old SHA.
 - `TAUFINITY_NO_UPDATE_CHECK=1 ~/bin/taufinity version` — no warning printed
 - `rm -f ~/.config/taufinity/update-check.json && ~/bin/taufinity version` — populates cache file with atomic write (verify `update-check.json.tmp` doesn't linger)
 - `~/bin/taufinity mcp stdio < /dev/null` — no warning on stderr (manual eyeball)
@@ -186,6 +202,17 @@ Considered shelling out to `git ls-remote git@github.com:taufinity/cli.git main`
 ### 2026-05-12 — Decision: stderr warning, not blocking prompt
 
 The warning is informational — the user can ignore it for the entire session if they want. A blocking prompt ("update now? [y/N]") would break scripts and feel pushy. One stderr line per stale day is the right dosage.
+
+### 2026-05-12 — Added rollback / backup / smoke test (Robin's ask)
+
+After CTO review, Robin asked: "deal with potential rollbacks? smoke test post install? keep previous binary for manual revert?"
+
+Added to Section 6:
+- **Backup**: before `go install`, hardlink `os.Executable()` to `.prev` when the install target dir matches the running binary's dir. Hardlink for speed (instant on same FS, falls back to byte copy across FS boundaries).
+- **Smoke test**: exec the new binary with a 3s timeout right after install; expect exit 0 on `version`.
+- **Auto-rollback on smoke failure**: rename `.prev` over the broken new binary. User sees a clear "reverted to previous" message and a non-zero exit.
+- **Manual rollback**: `taufinity update --rollback` for the case "the new binary works but I don't like it" — explicit, no auto-fire.
+- **One backup, not a stack**: trade-off — keeps disk usage bounded and avoids "which `.prev.2` is the good one?" decisions. Users wanting older versions can `go install ...@<sha>`.
 
 ### 2026-05-12 — Plan revision after CTO review
 

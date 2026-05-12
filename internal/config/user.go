@@ -13,6 +13,11 @@ type UserConfig struct {
 	Site   string `yaml:"site,omitempty"`
 	APIURL string `yaml:"api_url,omitempty"`
 	Org    string `yaml:"org,omitempty"`
+
+	// UpdateCheck controls the background staleness check. Empty = enabled,
+	// "false" = disabled. Kept as a string to stay consistent with the other
+	// string-valued config keys handled by Set/Get/List.
+	UpdateCheck string `yaml:"update_check,omitempty"`
 }
 
 // Dir returns the path to the taufinity config directory.
@@ -78,8 +83,13 @@ func Set(key, value string) error {
 		cfg.Site = value
 	case "api_url":
 		cfg.APIURL = value
+	case "update_check":
+		if value != "" && value != "true" && value != "false" {
+			return fmt.Errorf("update_check must be true, false, or empty (got %q)", value)
+		}
+		cfg.UpdateCheck = value
 	default:
-		return fmt.Errorf("unknown config key: %s (valid: site, api_url)", key)
+		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check)", key)
 	}
 
 	return cfg.Save()
@@ -97,8 +107,10 @@ func Get(key string) (string, error) {
 		return cfg.Site, nil
 	case "api_url":
 		return cfg.APIURL, nil
+	case "update_check":
+		return cfg.UpdateCheck, nil
 	default:
-		return "", fmt.Errorf("unknown config key: %s (valid: site, api_url)", key)
+		return "", fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check)", key)
 	}
 }
 
@@ -110,8 +122,9 @@ func List() (map[string]string, error) {
 	}
 
 	return map[string]string{
-		"site":    cfg.Site,
-		"api_url": cfg.APIURL,
+		"site":         cfg.Site,
+		"api_url":      cfg.APIURL,
+		"update_check": cfg.UpdateCheck,
 	}, nil
 }
 
@@ -136,8 +149,10 @@ func Unset(key string) error {
 		cfg.Site = ""
 	case "api_url":
 		cfg.APIURL = ""
+	case "update_check":
+		cfg.UpdateCheck = ""
 	default:
-		return fmt.Errorf("unknown config key: %s (valid: site, api_url)", key)
+		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check)", key)
 	}
 
 	return cfg.Save()
