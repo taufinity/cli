@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -17,16 +18,16 @@ import (
 // Desktop (claude_desktop_config.json).
 
 var (
-	flagMCPInstallClient string
-	flagMCPInstallLabel  string
-	flagMCPInstallForce  bool
+	flagMCPInstallClient    string
+	flagMCPInstallLabel     string
+	flagMCPInstallForce     bool
+	flagMCPInstallTransport string // "", "auto", "stdio", or "http"
 )
 
 var mcpInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install Taufinity Studio as an MCP server in Claude Desktop",
-	Long: `Reads your bearer token via 'taufinity auth token' and writes a server entry
-to Claude Desktop's config file:
+	Long: `Install Taufinity Studio as an MCP server entry in Claude Desktop's config:
   macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json
   Windows: %APPDATA%\Claude\claude_desktop_config.json
 
@@ -34,8 +35,18 @@ For Claude Code (project-level .mcp.json or ~/.claude.json) use 'taufinity mcp l
 
 Use --client print to emit the JSON block to stdout without writing to disk.
 
-The token is the same one 'taufinity auth login' issued — no new key is minted.
-Revoke from the Studio admin UI if compromised.`,
+By default this installs the stdio bridge shape for claude-desktop: Claude
+Desktop launches the local taufinity CLI as a subprocess (taufinity mcp stdio),
+which forwards JSON-RPC frames to Studio's /mcp endpoint and reads credentials
+from disk at startup. No bearer token is written to the Claude Desktop config.
+
+Global flags --org and --api-url are honored: their values are embedded into
+the bridge subprocess args so Claude Desktop launches the CLI already scoped
+to the right organization and Studio endpoint.
+
+Pass --transport http to force the legacy HTTP shape (bearer embedded in the
+config) — useful for Claude Desktop builds that support remote MCP natively.
+--client print always emits HTTP, regardless of --transport.`,
 	RunE: runMCPInstall,
 }
 
@@ -59,30 +70,22 @@ func init() {
 	mcpInstallCmd.Flags().StringVar(&flagMCPInstallClient, "client", "claude-desktop", "Client to install into: claude-desktop, print")
 	mcpInstallCmd.Flags().StringVar(&flagMCPInstallLabel, "label", "taufinity-studio", "Server entry name in claude_desktop_config.json")
 	mcpInstallCmd.Flags().BoolVar(&flagMCPInstallForce, "force", false, "Overwrite existing entry without prompting")
+	mcpInstallCmd.Flags().StringVar(&flagMCPInstallTransport, "transport", "",
+		"MCP transport: stdio, http, or auto (default: stdio for claude-desktop, http for print)")
 
 	mcpUninstallCmd.Flags().StringVar(&flagMCPInstallLabel, "label", "taufinity-studio", "Server entry name to remove")
 }
 
+// orgIDPattern matches the org identifiers we're willing to embed verbatim
+// into stdio-bridge args. The CLI uses numeric IDs in practice; we also
+// accept slugs (letters/digits/dash/underscore) for future-proofing. The
+// restriction prevents accidental config corruption from quoted values in
+// shell-config files and forecloses any future shell-out scenarios.
+var orgIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
 func runMCPInstall(cmd *cobra.Command, args []string) error {
 	if !auth.HasCredentials() {
 		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
-	}
-	creds, err := auth.LoadCredentials()
-	if err != nil {
-		return fmt.Errorf("load credentials: %w", err)
-	}
-	token, err := creds.GetValidToken()
-	if err != nil {
-		return fmt.Errorf("%w — run 'taufinity auth login' to refresh", err)
-	}
-
-	apiURL := GetAPIURL()
-	server := desktopconfig.RemoteServer{
-		Type: "http",
-		URL:  strings.TrimRight(apiURL, "/") + "/mcp",
-		Headers: map[string]string{
-			"Authorization": "Bearer " + token,
-		},
 	}
 
 	label := flagMCPInstallLabel
@@ -90,35 +93,226 @@ func runMCPInstall(cmd *cobra.Command, args []string) error {
 		label = "taufinity-studio"
 	}
 
-	switch flagMCPInstallClient {
-	case "print":
-		out := map[string]any{"mcpServers": map[string]any{label: server}}
+	apiURL := strings.TrimRight(GetAPIURL(), "/")
+	if strings.Contains(apiURL, "localhost") || strings.Contains(apiURL, "127.0.0.1") {
+		fmt.Fprintln(cmd.ErrOrStderr(), "warning: API URL is localhost — installed config will only work for local Studio")
+	}
+
+	transport, err := resolveTransport(flagMCPInstallClient, flagMCPInstallTransport)
+	if err != nil {
+		return err
+	}
+
+	// --client print is a neutral copy-paste artifact and always emits HTTP.
+	// Reject an explicit --transport stdio rather than silently downgrading it
+	// (the bridge JSON needs a real binary path; print has no client context).
+	if flagMCPInstallClient == "print" && strings.ToLower(flagMCPInstallTransport) == "stdio" {
+		return fmt.Errorf("--client print emits HTTP only; --transport stdio is not supported for print (use --client claude-desktop for stdio bridge install)")
+	}
+	if flagMCPInstallClient == "print" {
+		entry, err := buildHTTPEntry(apiURL)
+		if err != nil {
+			return err
+		}
+		out := map[string]any{"mcpServers": map[string]any{label: entry}}
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(out)
+	}
 
-	case "claude-desktop":
-		path := claudeDesktopConfigPath()
-		if path == "" {
-			path, err = desktopconfig.DefaultClaudeDesktopPath()
-			if err != nil {
-				return err
-			}
-		}
-		if !flagMCPInstallForce {
-			if existing, _ := desktopconfig.HasServer(path, label); existing {
-				return fmt.Errorf("entry %q already exists in %s; pass --force to overwrite", label, path)
-			}
-		}
-		if err := desktopconfig.UpsertServer(path, label, server); err != nil {
-			return err
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s\nRestart Claude Desktop to load the new server.\n", label, path)
-		return nil
-
-	default:
+	if flagMCPInstallClient != "claude-desktop" {
 		return fmt.Errorf("unknown --client %q (use claude-desktop or print)", flagMCPInstallClient)
 	}
+
+	path := claudeDesktopConfigPath()
+	if path == "" {
+		path, err = desktopconfig.DefaultClaudeDesktopPath()
+		if err != nil {
+			return err
+		}
+	}
+
+	// Build the server entry up front so we know the target transport before
+	// the existence check (used to produce a clearer upgrade hint).
+	var entry any
+	switch transport {
+	case "stdio":
+		entry, err = buildStdioEntry(apiURL)
+	case "http":
+		entry, err = buildHTTPEntry(apiURL)
+	}
+	if err != nil {
+		return err
+	}
+
+	if !flagMCPInstallForce {
+		exists, _ := desktopconfig.HasServer(path, label)
+		if exists {
+			return fmt.Errorf("entry %q already exists in %s; pass --force to overwrite%s",
+				label, path, upgradeHint(path, label, transport))
+		}
+	}
+
+	if err := desktopconfig.UpsertServer(path, label, entry); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s\nRestart Claude Desktop to load the new server.\n", label, path)
+	return nil
+}
+
+// resolveTransport picks the on-disk shape. The explicit --transport flag
+// wins; otherwise the default depends on the client: stdio for claude-desktop
+// (the only shape it reliably launches today), http for print (neutral).
+func resolveTransport(client, override string) (string, error) {
+	switch strings.ToLower(override) {
+	case "stdio":
+		return "stdio", nil
+	case "http":
+		return "http", nil
+	case "", "auto":
+		if client == "claude-desktop" {
+			return "stdio", nil
+		}
+		return "http", nil
+	default:
+		return "", fmt.Errorf("invalid --transport %q: want stdio, http, or auto", override)
+	}
+}
+
+// buildHTTPEntry produces a RemoteServer carrying the bearer token. Used for
+// --client print and --transport http overrides.
+func buildHTTPEntry(apiURL string) (desktopconfig.RemoteServer, error) {
+	creds, err := auth.LoadCredentials()
+	if err != nil {
+		return desktopconfig.RemoteServer{}, fmt.Errorf("load credentials: %w", err)
+	}
+	token, err := creds.GetValidToken()
+	if err != nil {
+		return desktopconfig.RemoteServer{}, fmt.Errorf("%w — run 'taufinity auth login' to refresh", err)
+	}
+	return desktopconfig.RemoteServer{
+		Type:    "http",
+		URL:     apiURL + "/mcp",
+		Headers: map[string]string{"Authorization": "Bearer " + token},
+	}, nil
+}
+
+// buildStdioEntry produces a StdioServer pointing at this very binary as a
+// bridge subprocess. No bearer token is embedded — the bridge reads
+// credentials.json at startup. --org and a non-default --api-url are passed
+// through as flags so the bridge runs already scoped.
+func buildStdioEntry(apiURL string) (desktopconfig.StdioServer, error) {
+	bin, err := taufinityExecutable()
+	if err != nil {
+		return desktopconfig.StdioServer{}, err
+	}
+	org := GetOrg()
+	if org != "" && !orgIDPattern.MatchString(org) {
+		return desktopconfig.StdioServer{}, fmt.Errorf("invalid org %q for stdio bridge args: expected numeric ID or slug matching %s", org, orgIDPattern.String())
+	}
+	return desktopconfig.StdioServer{
+		Command: bin,
+		Args:    buildStdioArgs(apiURL, org),
+	}, nil
+}
+
+// buildStdioArgs renders the args Claude Desktop should pass when launching
+// the CLI as a bridge. Only non-default flags are embedded so the resulting
+// config stays minimal (omit --api-url when using prod, omit --org when no
+// org override is set).
+func buildStdioArgs(apiURL, org string) []string {
+	var args []string
+	if org != "" {
+		args = append(args, "--org", org)
+	}
+	if apiURL != "" && apiURL != strings.TrimRight(DefaultAPIURL, "/") {
+		args = append(args, "--api-url", apiURL)
+	}
+	args = append(args, "mcp", "stdio")
+	return args
+}
+
+// upgradeHint returns a short message appended to the "already exists" error
+// when the existing entry uses a transport different from what we were about
+// to write — typically a legacy HTTP entry left behind by an older CLI run.
+// Empty string when the file is unreadable, the entry isn't found, or the
+// shapes match.
+func upgradeHint(path, label, targetTransport string) string {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		MCPServers map[string]json.RawMessage `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return ""
+	}
+	rawEntry, ok := doc.MCPServers[label]
+	if !ok {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(rawEntry, &fields); err != nil {
+		return ""
+	}
+	_, hasCmd := fields["command"]
+	_, hasType := fields["type"]
+	switch {
+	case targetTransport == "stdio" && !hasCmd && hasType:
+		return " (existing entry uses the legacy HTTP transport; rerun with --force to upgrade to the stdio bridge)"
+	case targetTransport == "http" && hasCmd && !hasType:
+		return " (existing entry uses the stdio bridge; rerun with --force to switch to HTTP)"
+	}
+	return ""
+}
+
+// taufinityExecutable returns the path to the running CLI binary, as
+// reported by the OS — symlinks are intentionally NOT resolved. For
+// Homebrew installs the stable path is the symlink (e.g.
+// /opt/homebrew/bin/taufinity); resolving it would pin to a specific
+// keg (.../Cellar/taufinity/X.Y.Z/bin/...) that disappears on
+// 'brew upgrade'. The symlink itself is what we want embedded in
+// Claude Desktop's config so the bridge keeps working across upgrades.
+//
+// Temporary paths (e.g. those produced by 'go run', which lands in
+// /private/var/folders or os.TempDir) are rejected because they vanish
+// at session end, leaving Claude Desktop with a broken install.
+// Override via TAUFINITY_BINARY_PATH for tests; the override bypasses
+// the temp-path check.
+func taufinityExecutable() (string, error) {
+	if override := os.Getenv("TAUFINITY_BINARY_PATH"); override != "" {
+		return override, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve taufinity binary path: %w", err)
+	}
+	if isTempPath(exe) {
+		return "", fmt.Errorf("taufinity binary resolves to a temporary path (%s); install to a stable location first (e.g. 'go install github.com/taufinity/cli/cmd/taufinity@latest' or Homebrew) before running 'mcp install'", exe)
+	}
+	return exe, nil
+}
+
+// isTempPath reports whether the given absolute path lives under a
+// temporary-files prefix that won't survive a reboot or a `go run` exit.
+func isTempPath(p string) bool {
+	prefixes := []string{
+		os.TempDir(),
+		"/tmp",
+		"/private/var/folders", // macOS `go run` exe path
+		"/private/tmp",
+	}
+	for _, prefix := range prefixes {
+		if prefix == "" {
+			continue
+		}
+		trimmed := strings.TrimRight(prefix, "/")
+		if p == trimmed || strings.HasPrefix(p, trimmed+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func runMCPUninstall(cmd *cobra.Command, args []string) error {
@@ -142,6 +336,11 @@ func runMCPUninstall(cmd *cobra.Command, args []string) error {
 }
 
 func runMCPPrint(cmd *cobra.Command, args []string) error {
+	// runMCPInstall reads the package-level flag; save/restore so a 'mcp print'
+	// invocation in the same process (or test binary) doesn't leak "print" into
+	// a subsequent 'mcp install' invocation.
+	prev := flagMCPInstallClient
+	defer func() { flagMCPInstallClient = prev }()
 	flagMCPInstallClient = "print"
 	return runMCPInstall(cmd, args)
 }
@@ -152,3 +351,4 @@ func runMCPPrint(cmd *cobra.Command, args []string) error {
 func claudeDesktopConfigPath() string {
 	return os.Getenv("TAUFINITY_DESKTOP_CONFIG")
 }
+
