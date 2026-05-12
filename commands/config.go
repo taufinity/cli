@@ -22,8 +22,9 @@ var configSetCmd = &cobra.Command{
 	Long: `Set a configuration property.
 
 Available properties:
-  site      Default site ID (e.g., voorpositiviteit_nl)
-  api_url   API base URL (default: https://studio.taufinity.io)`,
+  site          Default site ID (e.g., acme_nl)
+  api_url       API base URL (default: https://studio.taufinity.io)
+  update_check  Background staleness check: "false" to disable`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		key, value := args[0], args[1]
