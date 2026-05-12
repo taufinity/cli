@@ -142,6 +142,59 @@ func TestEqualFoldASCII(t *testing.T) {
 	}
 }
 
+func TestResolveGoInstallDir_EmptyGOBIN(t *testing.T) {
+	// Simulate `go env GOBIN GOPATH` when GOBIN is unset. The real `go env`
+	// emits a blank line for empty values; we shell out to /bin/sh -c to
+	// mimic that output without needing the real Go toolchain.
+	fake := writeFakeGoEnv(t, "\n/Users/test/go\n")
+	got, err := resolveGoInstallDir(fake)
+	if err != nil {
+		t.Fatalf("resolveGoInstallDir: %v", err)
+	}
+	want := filepath.Join("/Users/test/go", "bin")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestResolveGoInstallDir_GOBINSet(t *testing.T) {
+	fake := writeFakeGoEnv(t, "/Users/test/custom/bin\n/Users/test/go\n")
+	got, err := resolveGoInstallDir(fake)
+	if err != nil {
+		t.Fatalf("resolveGoInstallDir: %v", err)
+	}
+	if got != "/Users/test/custom/bin" {
+		t.Errorf("GOBIN should win; got %q", got)
+	}
+}
+
+// writeFakeGoEnv writes a tiny shell script that ignores its args and prints
+// the given output. We use it to drive resolveGoInstallDir without depending
+// on the real `go` binary's environment.
+func writeFakeGoEnv(t *testing.T, output string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "go")
+	script := "#!/bin/sh\nprintf '%s' " + shellQuote(output) + "\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func shellQuote(s string) string {
+	// Wrap in single quotes; replace any embedded single quote with '\''.
+	out := "'"
+	for _, r := range s {
+		if r == '\'' {
+			out += `'\''`
+		} else {
+			out += string(r)
+		}
+	}
+	return out + "'"
+}
+
 func TestBinaryName(t *testing.T) {
 	got := binaryName()
 	if got != "taufinity" && got != "taufinity.exe" {

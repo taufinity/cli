@@ -272,12 +272,16 @@ func restoreBackup(src, dst string) error {
 
 // resolveGoInstallDir asks `go env` where the binary will land. GOBIN takes
 // precedence; otherwise GOPATH+/bin.
+//
+// `go env KEY1 KEY2` prints one value per line in argument order — including a
+// blank line for empty values. We split first and trim per-line so a blank
+// GOBIN doesn't collapse the response down to a single token.
 func resolveGoInstallDir(goBin string) (string, error) {
 	out, err := exec.Command(goBin, "env", "GOBIN", "GOPATH").Output()
 	if err != nil {
 		return "", err
 	}
-	lines := bytes.Split(bytes.TrimSpace(out), []byte("\n"))
+	lines := bytes.Split(out, []byte("\n"))
 	if len(lines) < 2 {
 		return "", fmt.Errorf("unexpected go env output: %q", out)
 	}
