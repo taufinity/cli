@@ -58,6 +58,21 @@ Configure Claude Desktop by adding to its mcpServers config:
     }
   }
 
+To pin a specific organization (e.g. when your global CLI config points to a
+different org), use the --org flag:
+
+  {
+    "mcpServers": {
+      "taufinity-voorpositiviteit": {
+        "command": "taufinity",
+        "args": ["--org", "3", "mcp", "stdio"]
+      }
+    }
+  }
+
+The --org value is sent as X-Organization-ID on every request, overriding the
+organization embedded in the JWT.
+
 All log output goes to stderr; JSON-RPC frames go to stdout.`,
 	RunE: runMCPStdio,
 }
@@ -111,6 +126,7 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	return RunStdioBridge(ctx, StdioBridgeConfig{
 		UpstreamURL:   upstreamURL,
 		TokenSource:   defaultTokenSource,
+		OrgID:         flagOrg,
 		UserAgent:     userAgent,
 		Timeout:       flagMCPStdioTimeout,
 		MaxFrameBytes: flagMCPStdioMaxFrameBytes,
@@ -157,6 +173,7 @@ type StdioBridgeConfig struct {
 	UpstreamURL   string
 	TokenSource   TokenSource
 	Token         string // static fallback; ignored if TokenSource is set
+	OrgID         string // if set, sends X-Organization-ID on every request
 	UserAgent     string
 	Timeout       time.Duration
 	MaxFrameBytes int // 0 → defaultMaxFrameBytes
@@ -199,6 +216,7 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 		timeout:       cfg.Timeout,
 		maxFrameBytes: cfg.MaxFrameBytes,
 		userAgent:     cfg.UserAgent,
+		orgID:         cfg.OrgID,
 		tokenSource:   cfg.TokenSource,
 		staticToken:   cfg.Token,
 	}
@@ -254,6 +272,7 @@ type bridge struct {
 	timeout       time.Duration
 	maxFrameBytes int
 	userAgent     string
+	orgID         string // forwarded as X-Organization-ID if non-empty
 
 	tokenSource TokenSource
 	staticToken string
@@ -334,12 +353,15 @@ func (b *bridge) requestHeaders(ctx context.Context) map[string]string {
 // buildHeaders constructs the per-request header map. token may be empty
 // if the source failed and we have no prior cache.
 func (b *bridge) buildHeaders(token string) map[string]string {
-	h := make(map[string]string, 2)
+	h := make(map[string]string, 3)
 	if token != "" {
 		h["Authorization"] = "Bearer " + token
 	}
 	if b.userAgent != "" {
 		h["User-Agent"] = b.userAgent
+	}
+	if b.orgID != "" {
+		h["X-Organization-ID"] = b.orgID
 	}
 	return h
 }
