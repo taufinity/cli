@@ -195,6 +195,32 @@ func shellQuote(s string) string {
 	return out + "'"
 }
 
+func TestIsDirWritable(t *testing.T) {
+	dir := t.TempDir()
+	if !isDirWritable(dir) {
+		t.Errorf("temp dir %s should be writable", dir)
+	}
+
+	// Make the dir read-only and re-test. Skip on platforms where chmod
+	// doesn't restrict writes the way we expect (e.g. when the test runs
+	// as root, the read-only bit doesn't matter).
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; permission bits don't gate writes")
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	defer os.Chmod(dir, 0o700) //nolint:errcheck // best-effort cleanup
+	if isDirWritable(dir) {
+		t.Errorf("read-only dir reported writable")
+	}
+
+	// Non-existent dir is not writable.
+	if isDirWritable(filepath.Join(dir, "does-not-exist")) {
+		t.Error("non-existent dir reported writable")
+	}
+}
+
 func TestBinaryName(t *testing.T) {
 	got := binaryName()
 	if got != "taufinity" && got != "taufinity.exe" {
