@@ -98,7 +98,9 @@ After `taufinity auth login`:
 
     taufinity mcp install
 
-Writes a server entry to Claude Desktop's config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows). Restart Claude Desktop to load it. The bearer used is the one `taufinity auth login` issued — revoke from the Studio admin UI if compromised.
+Writes a server entry to Claude Desktop's config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows). Restart Claude Desktop to load it.
+
+**Note:** `mcp install` bakes the current bearer token into the config. When your session expires, Claude Desktop will silently start returning auth errors. Re-run `taufinity mcp install --force` to refresh it, or use the stdio bridge below which refreshes tokens automatically.
 
 For Claude Code (`.mcp.json`), use `taufinity mcp login` instead.
 
@@ -106,9 +108,7 @@ Run any command with `--help` for full flag documentation.
 
 ### MCP stdio bridge
 
-Modern Claude Desktop and Claude Code talk to MCP servers over HTTP and can use the `.mcp.json` config produced by `taufinity mcp login`. For stdio-only clients (older Claude Desktop releases, `mcp-inspector`, custom clients), `taufinity mcp stdio` runs a thin local bridge that forwards JSON-RPC frames over stdio to Studio's remote `/mcp` endpoint.
-
-The bridge is a pure passthrough — it does not register tools locally. It reuses the same credentials as the rest of the CLI (run `taufinity auth login` first).
+For automatic token refresh and multi-org setups, use `taufinity mcp stdio`. It forwards JSON-RPC from Claude Desktop over stdio to Studio's `/mcp` endpoint, reloading credentials from disk on every request.
 
 Example Claude Desktop config:
 
@@ -123,8 +123,24 @@ Example Claude Desktop config:
 }
 ```
 
+**Pinning a specific organization** — if your global CLI config points to a different org than the MCP server should use, pass `--org` with the organization ID:
+
+```jsonc
+{
+  "mcpServers": {
+    "taufinity-voorpositiviteit": {
+      "command": "taufinity",
+      "args": ["--org", "3", "mcp", "stdio"]
+    }
+  }
+}
+```
+
+This sends `X-Organization-ID: 3` on every request, overriding the org embedded in the JWT.
+
 Flags:
 
+- `--org ID` — pin to a specific organization (overrides JWT org).
 - `--api-url URL` — override the upstream (defaults to `$TAUFINITY_API_URL`, then config, then `https://studio.taufinity.io`).
 - `--timeout DURATION` — per-request timeout (default 5m, accommodates BigQuery-backed tools).
 
