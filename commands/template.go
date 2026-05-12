@@ -422,7 +422,7 @@ Example 1: Quote page
       "Quote": {
         "Text": "Be yourself; everyone else is taken.",
         "Theme": "Authenticity",
-        "VoorPositiviteitMatch": 92
+        "MatchScore": 92
       },
       "Author": {
         "Name": "Oscar Wilde",
@@ -434,7 +434,7 @@ Example 1: Quote page
   template:
     <h1>{{.Custom.Quote.Text}}</h1>
     <p>Theme: {{.Custom.Quote.Theme | lower}}</p>
-    <p>Match: {{.Custom.Quote.VoorPositiviteitMatch}}%</p>
+    <p>Match: {{.Custom.Quote.MatchScore}}%</p>
     <a href="{{.Custom.Author.URL}}">{{.Custom.Author.Name}}</a>
 
 Example 2: Product page with a list of features
@@ -660,7 +660,7 @@ Create a JSON file matching your template's expected structure:
     "Quote": {
       "Text": "Sample quote text",
       "Theme": "inspiration",
-      "VoorPositiviteitMatch": 85
+      "MatchScore": 85
     },
     "Author": {
       "Name": "Jane Doe"

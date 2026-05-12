@@ -47,11 +47,10 @@ taufinity config set update_check false         # permanent
 
 `taufinity update` installs from the `main` branch via `go install ...@latest`. Anyone with commit access to `main` ships to all CLI users on their next update. Acceptable for the small internal team today; once we cut tagged releases, the default will move to a tagged version.
 
-### Build from source (internal / development)
+### Build from source
 
 ```bash
-export GOPRIVATE=github.com/taufinity/cli
-git clone git@github.com:taufinity/cli.git
+git clone https://github.com/taufinity/cli.git
 cd cli
 make install    # installs to ~/bin/taufinity
 ```
@@ -140,7 +139,7 @@ Example Claude Desktop config:
 ```jsonc
 {
   "mcpServers": {
-    "taufinity-voorpositiviteit": {
+    "taufinity-acme": {
       "command": "taufinity",
       "args": ["--org", "3", "mcp", "stdio"]
     }
@@ -189,3 +188,7 @@ ignore:
   - node_modules/
   - dist/
 ```
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).

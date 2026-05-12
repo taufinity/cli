@@ -14,10 +14,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Dashboard specs in the felix repo live as JSON files. The `dashboards sync`
-// subcommand walks a directory, resolves the target org + BigQuery provider,
-// and creates or updates each dashboard via the admin API. Every write is
-// snapshotted server-side for rollback.
+// Dashboard specs live as JSON files alongside the dbt views that back them.
+// The `dashboards sync` subcommand walks a directory, resolves the target org
+// + BigQuery provider, and creates or updates each dashboard via the admin
+// API. Every write is snapshotted server-side for rollback.
 //
 // Authentication uses a bootstrap admin API key (X-API-Key header). Supply
 // it via --api-key or the SITEGEN_API_KEY env var. The CLI's normal
@@ -38,8 +38,8 @@ var dashboardsCmd = &cobra.Command{
 definitions from JSON spec files.
 
 The canonical source of truth lives next to the dbt views that back each
-dashboard — e.g. felix/docs/dashboards/felix/*.json for Felix Works.
-Use 'taufinity dashboards sync' to push the specs to a Studio instance.
+dashboard — typically docs/dashboards/<org-slug>/*.json in the customer's
+repo. Use 'taufinity dashboards sync' to push the specs to a Studio instance.
 
 Authentication uses a bootstrap admin API key. Supply it via --api-key or
 SITEGEN_API_KEY env var. Session-based admin auth requires TOTP and is not
@@ -60,19 +60,19 @@ the plan without mutating anything.
 Examples:
   # Local dev (uses SITEGEN_API_KEY env)
   taufinity --api-url http://localhost:8090 dashboards sync \
-      --dir docs/dashboards/felix \
-      --org-slug felix-works \
-      --provider "Felix BigQuery"
+      --dir docs/dashboards/acme \
+      --org-slug acme \
+      --provider "Acme BigQuery"
 
   # Prod (explicit key flag)
   taufinity dashboards sync \
-      --dir docs/dashboards/felix \
-      --org-slug felix-works \
-      --provider "Felix BigQuery" \
+      --dir docs/dashboards/acme \
+      --org-slug acme \
+      --provider "Acme BigQuery" \
       --api-key "$BOOTSTRAP_KEY"
 
   # Dry run to preview
-  taufinity dashboards sync --dir docs/dashboards/felix --org-slug felix-works --dry-run`,
+  taufinity dashboards sync --dir docs/dashboards/acme --org-slug acme --dry-run`,
 	RunE: runDashboardsSync,
 }
 
@@ -81,10 +81,12 @@ func init() {
 	dashboardsCmd.AddCommand(dashboardsSyncCmd)
 
 	dashboardsSyncCmd.Flags().StringVar(&dashboardsDir, "dir", "", "Directory containing *.json spec files (required)")
-	dashboardsSyncCmd.Flags().StringVar(&dashboardsOrgSlug, "org-slug", "felix-works", "Target organization slug")
-	dashboardsSyncCmd.Flags().StringVar(&dashboardsProvider, "provider", "Felix BigQuery", "BigQuery provider name (system-wide, organization_id IS NULL)")
+	dashboardsSyncCmd.Flags().StringVar(&dashboardsOrgSlug, "org-slug", "", "Target organization slug (required)")
+	dashboardsSyncCmd.Flags().StringVar(&dashboardsProvider, "provider", "", "BigQuery provider name as registered in Studio (required; system-wide, organization_id IS NULL)")
 	dashboardsSyncCmd.Flags().StringVar(&dashboardsAPIKey, "api-key", "", "Bootstrap admin API key (overrides SITEGEN_API_KEY env var)")
 	_ = dashboardsSyncCmd.MarkFlagRequired("dir")
+	_ = dashboardsSyncCmd.MarkFlagRequired("org-slug")
+	_ = dashboardsSyncCmd.MarkFlagRequired("provider")
 }
 
 // dashboardSpec is the JSON shape we expect in each spec file.

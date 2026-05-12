@@ -63,7 +63,7 @@ different org), use the --org flag:
 
   {
     "mcpServers": {
-      "taufinity-voorpositiviteit": {
+      "taufinity-acme": {
         "command": "taufinity",
         "args": ["--org", "3", "mcp", "stdio"]
       }
