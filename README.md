@@ -95,25 +95,53 @@ taufinity playbook trigger <playbook-id>
 | `playbook list` | List available playbooks |
 | `playbook runs <id>` | Show recent runs |
 | `org list` | List organizations |
-| `mcp login` | Write credentials to `.mcp.json` for Claude Code |
-| `mcp install` | Add Taufinity Studio to Claude Desktop's config |
-| `mcp uninstall` | Remove Taufinity Studio from Claude Desktop's config |
-| `mcp print` | Print the Claude Desktop server JSON block to stdout |
+| `mcp login` | Write credentials to project `.mcp.json` for Claude Code |
+| `mcp install` | Add Taufinity Studio to one or more clients (`--client`) |
+| `mcp uninstall` | Remove Taufinity Studio from one or more clients (`--client`) |
+| `mcp print` | Print the server JSON block to stdout |
 | `mcp stdio` | Run a stdio MCP bridge to Studio's `/mcp` endpoint (for stdio-only clients) |
 | `update [--check\|--rollback]` | Update taufinity to the latest version (or check/rollback) |
 | `version` | Print version info |
 
-### Claude Desktop one-command install
+### One-command install across MCP clients
 
-After `taufinity auth login`:
+After `taufinity auth login`, install Taufinity Studio's MCP server into any supported client with a single command. By default the stdio bridge shape is written (no bearer token in the config — the bridge subprocess reads `~/.config/taufinity/credentials.json` fresh on every request).
 
-    taufinity mcp install
+```bash
+taufinity mcp install                      # claude-desktop (default)
+taufinity mcp install --client claude-code # ~/.claude.json
+taufinity mcp install --client cursor      # ~/.cursor/mcp.json
+taufinity mcp install --client vscode      # VS Code 1.95+ native MCP
+taufinity mcp install --client antigravity # Google's Antigravity IDE
+taufinity mcp install --client all         # every detected client
+taufinity mcp install --client print       # preview the JSON, write nothing
+```
 
-Writes a server entry to Claude Desktop's config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows). Restart Claude Desktop to load it.
+**Detected** = the client's config directory already exists on disk (which only happens after you've launched the app once). `--client all` skips undetected clients with a summary line and exits 0 if at least one succeeded.
 
-**Note:** `mcp install` bakes the current bearer token into the config. When your session expires, Claude Desktop will silently start returning auth errors. Re-run `taufinity mcp install --force` to refresh it, or use the stdio bridge below which refreshes tokens automatically.
+**Per-customer pinning** — pass `--org` (numeric ID or slug) and a custom `--label` to write a customer-scoped entry. The `--org` value is embedded into the bridge subprocess args, so every launch from that client uses the right organisation regardless of the user's global CLI config:
 
-For Claude Code (`.mcp.json`), use `taufinity mcp login` instead.
+```bash
+taufinity --org 3 mcp install --client all --label taufinity-voorpositiviteit
+```
+
+After install, restart each client to load the new MCP server.
+
+Remove with `taufinity mcp uninstall --client <name> --label <name>` (also supports `--client all`).
+
+#### Config locations per client
+
+| Client | Path | Top-level key |
+|---|---|---|
+| `claude-desktop` | macOS `~/Library/Application Support/Claude/claude_desktop_config.json`<br>Windows `%APPDATA%\Claude\claude_desktop_config.json` | `mcpServers` |
+| `claude-code` | `~/.claude.json` (all OSes) | `mcpServers` |
+| `cursor` | `~/.cursor/mcp.json` (all OSes) | `mcpServers` |
+| `vscode` | macOS `~/Library/Application Support/Code/User/mcp.json`<br>Linux `~/.config/Code/User/mcp.json`<br>Windows `%APPDATA%\Code\User\mcp.json` | `servers` |
+| `antigravity` | macOS `~/Library/Application Support/Antigravity/mcp.json`<br>Linux `~/.config/Antigravity/mcp.json`<br>Windows `%APPDATA%\Antigravity\mcp.json` | `mcpServers` |
+
+Override any path with the matching env var: `TAUFINITY_DESKTOP_CONFIG`, `TAUFINITY_CLAUDE_CODE_CONFIG`, `TAUFINITY_CURSOR_CONFIG`, `TAUFINITY_VSCODE_CONFIG`, `TAUFINITY_ANTIGRAVITY_CONFIG`.
+
+For Claude Code's project-level `.mcp.json` with a bearer token (rather than the global stdio bridge), use `taufinity mcp login` instead.
 
 Run any command with `--help` for full flag documentation.
 
