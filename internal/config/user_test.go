@@ -141,6 +141,56 @@ func TestUserConfig_List(t *testing.T) {
 	}
 }
 
+func TestUserConfig_UpdateCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	// Empty is allowed (default-on).
+	if err := Set("update_check", ""); err != nil {
+		t.Fatalf("Set empty failed: %v", err)
+	}
+
+	// false disables.
+	if err := Set("update_check", "false"); err != nil {
+		t.Fatalf("Set false failed: %v", err)
+	}
+	got, err := Get("update_check")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got != "false" {
+		t.Errorf("Get(update_check) = %q, want false", got)
+	}
+
+	// true re-enables.
+	if err := Set("update_check", "true"); err != nil {
+		t.Fatalf("Set true failed: %v", err)
+	}
+
+	// Invalid value rejected.
+	if err := Set("update_check", "maybe"); err == nil {
+		t.Error("Set(update_check, maybe) should error")
+	}
+
+	// Unset clears.
+	if err := Unset("update_check"); err != nil {
+		t.Fatalf("Unset: %v", err)
+	}
+	got, _ = Get("update_check")
+	if got != "" {
+		t.Errorf("after Unset, Get = %q, want empty", got)
+	}
+
+	// List includes the key.
+	list, err := List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, ok := list["update_check"]; !ok {
+		t.Error("List missing update_check key")
+	}
+}
+
 func TestDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")

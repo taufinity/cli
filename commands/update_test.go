@@ -1,0 +1,184 @@
+package commands
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestBackupBinary_Hardlink(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "bin")
+	dst := filepath.Join(dir, "bin.prev")
+
+	if err := os.WriteFile(src, []byte("original content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backupBinary(src, dst); err != nil {
+		t.Fatalf("backupBinary: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original content" {
+		t.Errorf("backup content = %q, want original content", got)
+	}
+}
+
+func TestBackupBinary_OverwritesStalePrev(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "bin")
+	dst := filepath.Join(dir, "bin.prev")
+
+	if err := os.WriteFile(src, []byte("v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("v0-stale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := backupBinary(src, dst); err != nil {
+		t.Fatalf("backupBinary: %v", err)
+	}
+
+	got, _ := os.ReadFile(dst)
+	if string(got) != "v2" {
+		t.Errorf("backup = %q, want v2 (stale prev was overwritten)", got)
+	}
+}
+
+func TestRestoreBackup_AtomicRename(t *testing.T) {
+	dir := t.TempDir()
+	current := filepath.Join(dir, "bin")
+	backup := filepath.Join(dir, "bin.prev")
+
+	if err := os.WriteFile(current, []byte("broken-new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, []byte("good-old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := restoreBackup(backup, current); err != nil {
+		t.Fatalf("restoreBackup: %v", err)
+	}
+
+	got, _ := os.ReadFile(current)
+	if string(got) != "good-old" {
+		t.Errorf("after restore = %q, want good-old", got)
+	}
+	// .prev should be gone — rename consumed it.
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Errorf("backup still present after restore: %v", err)
+	}
+}
+
+func TestPathsEqual(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"identical", "/usr/local/bin", "/usr/local/bin", true},
+		{"trailing slash", "/usr/local/bin", "/usr/local/bin/", true},
+		{"different", "/usr/local/bin", "/opt/bin", false},
+		{"relative vs absolute", "./bin", "/bin", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pathsEqual(tt.a, tt.b); got != tt.want {
+				t.Errorf("pathsEqual(%q,%q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShortSHA(t *testing.T) {
+	if got := shortSHA("abcdef1234567890"); got != "abcdef1" {
+		t.Errorf("shortSHA long = %q, want abcdef1", got)
+	}
+	if got := shortSHA("abc"); got != "abc" {
+		t.Errorf("shortSHA short = %q, want abc", got)
+	}
+	if got := shortSHA(""); got != "" {
+		t.Errorf("shortSHA empty = %q", got)
+	}
+}
+
+func TestSameSHA(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"both full and equal", "abcdef1234567890abcdef1234567890abcdef12", "abcdef1234567890abcdef1234567890abcdef12", true},
+		{"short matches long prefix", "abcdef1", "abcdef1234567890", true},
+		{"different SHAs", "abcdef1", "1234567", false},
+		{"empty", "", "abc", false},
+		{"both too short", "abc", "abc", false},
+		{"case insensitive", "ABCDEF1", "abcdef1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sameSHA(tt.a, tt.b); got != tt.want {
+				t.Errorf("sameSHA(%q,%q) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEqualFoldASCII(t *testing.T) {
+	if !equalFoldASCII("Abc123", "aBc123") {
+		t.Error("case-insensitive equal failed")
+	}
+	if equalFoldASCII("abc", "abd") {
+		t.Error("unequal returned true")
+	}
+	if equalFoldASCII("abc", "abcd") {
+		t.Error("different lengths returned true")
+	}
+}
+
+func TestBinaryName(t *testing.T) {
+	got := binaryName()
+	if got != "taufinity" && got != "taufinity.exe" {
+		t.Errorf("binaryName = %q, want taufinity or taufinity.exe", got)
+	}
+}
+
+func TestRunRollback_NoBackup(t *testing.T) {
+	// Resolving the test binary's `.prev`. Vanishingly unlikely to exist on
+	// a test runner, but use a temp HOME for hygiene anyway.
+	t.Setenv("HOME", t.TempDir())
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skip("os.Executable unavailable")
+	}
+	// Make sure no stale .prev exists from a previous run.
+	_ = os.Remove(exe + ".prev")
+
+	err = runRollback()
+	if err == nil {
+		t.Fatal("expected error when no .prev exists")
+	}
+	if !contains(err.Error(), "no backup") {
+		t.Errorf("error message = %q, expected to mention 'no backup'", err.Error())
+	}
+}
+
+func contains(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && indexOf(haystack, needle) >= 0
+}
+
+func indexOf(s, substr string) int {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
+}

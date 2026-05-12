@@ -24,17 +24,28 @@ taufinity version
 
 ### Update
 
-Re-run the same install command — Go fetches the latest release and overwrites the binary in place:
+Use the built-in update command:
 
 ```bash
-go install github.com/taufinity/cli/cmd/taufinity@latest
+taufinity update           # install latest, with backup + smoke test
+taufinity update --check   # report current vs latest, no install
+taufinity update --rollback  # restore the previous binary
 ```
 
-Add an alias to make updating one word:
+`taufinity update` backs up the running binary to `<path>.prev` before installing (when the install target is the same directory as the running binary), runs `go install github.com/taufinity/cli/cmd/taufinity@latest`, then smoke-tests the new binary. If the smoke test fails, the previous binary is restored automatically. Use `--rollback` if a working but unwanted version slipped in.
+
+#### Staleness warning
+
+On every invocation, taufinity makes a background call to GitHub (cached for 24h) and prints a one-line stderr warning when a newer commit is available on `main`. The check never blocks the command. Suppress it with:
 
 ```bash
-echo "alias taufinity-update='go install github.com/taufinity/cli/cmd/taufinity@latest'" >> ~/.zshrc
+TAUFINITY_NO_UPDATE_CHECK=1 taufinity ...       # one-off
+taufinity config set update_check false         # permanent
 ```
+
+#### Security note
+
+`taufinity update` installs from the `main` branch via `go install ...@latest`. Anyone with commit access to `main` ships to all CLI users on their next update. Acceptable for the small internal team today; once we cut tagged releases, the default will move to a tagged version.
 
 ### Build from source (internal / development)
 
@@ -90,6 +101,7 @@ taufinity playbook trigger <playbook-id>
 | `mcp uninstall` | Remove Taufinity Studio from Claude Desktop's config |
 | `mcp print` | Print the Claude Desktop server JSON block to stdout |
 | `mcp stdio` | Run a stdio MCP bridge to Studio's `/mcp` endpoint (for stdio-only clients) |
+| `update [--check\|--rollback]` | Update taufinity to the latest version (or check/rollback) |
 | `version` | Print version info |
 
 ### Claude Desktop one-command install
@@ -161,6 +173,7 @@ Config is resolved in this order (highest priority first):
 |----------|-------------|
 | `TAUFINITY_SITE` | Default site ID |
 | `TAUFINITY_API_URL` | API base URL (default: `https://studio.taufinity.io`) |
+| `TAUFINITY_NO_UPDATE_CHECK` | Set to `1` to suppress the background staleness check and warning |
 | `TAUFINITY_ORG` | Default organization ID |
 | `TAUFINITY_DEBUG` | Set to `1` to log all HTTP requests |
 | `TAUFINITY_QUIET` | Set to `1` to suppress output |

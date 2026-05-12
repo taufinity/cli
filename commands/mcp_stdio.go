@@ -75,6 +75,12 @@ organization embedded in the JWT.
 
 All log output goes to stderr; JSON-RPC frames go to stdout.`,
 	RunE: runMCPStdio,
+	Annotations: map[string]string{
+		// Suppress the staleness check and warning while running as an MCP
+		// bridge: the process is long-running, network-noisy chatter is
+		// unwanted, and the client doesn't expect informational stderr.
+		"suppress-update-warning": "true",
+	},
 }
 
 func init() {
