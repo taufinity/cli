@@ -53,6 +53,8 @@ func resetGlobals(t *testing.T) {
 	flagMCPInstallLabel = "taufinity-studio"
 	flagMCPInstallForce = false
 	flagMCPInstallTransport = ""
+	flagMCPUninstallClient = "claude-desktop"
+	flagMCPUninstallLabel = "taufinity-studio"
 }
 
 func TestMCPInstall_PrintsJSONBlockWithBearer(t *testing.T) {

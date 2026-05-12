@@ -55,6 +55,12 @@ func DefaultClaudeDesktopPath() (string, error) {
 	}
 }
 
+// DefaultServersKey is the standard top-level key used by Claude Desktop,
+// Claude Code, Cursor, and most other MCP-aware tools. VS Code uses "servers"
+// instead — callers writing a VS Code config must pass that explicitly via
+// the *InKey variants.
+const DefaultServersKey = "mcpServers"
+
 // UpsertServer reads the JSON file at path (creating it if absent), inserts or
 // updates the named MCP server entry under "mcpServers", and writes the result
 // atomically (temp file + rename). All other top-level keys and sibling server
@@ -64,22 +70,40 @@ func DefaultClaudeDesktopPath() (string, error) {
 // (HTTP) or StdioServer (stdio bridge). The caller picks the shape; this
 // function does not validate it.
 func UpsertServer(path, name string, server any) error {
-	doc, err := readDoc(path)
-	if err != nil {
-		return err
-	}
-	servers, _ := doc["mcpServers"].(map[string]any)
-	if servers == nil {
-		servers = map[string]any{}
-	}
-	servers[name] = server
-	doc["mcpServers"] = servers
-	return writeDocAtomic(path, doc)
+	return UpsertServerInKey(path, DefaultServersKey, name, server)
 }
 
 // RemoveServer removes the named entry from "mcpServers". No-op if the file or
 // entry is absent.
 func RemoveServer(path, name string) error {
+	return RemoveServerInKey(path, DefaultServersKey, name)
+}
+
+// HasServer returns true if the named entry exists in "mcpServers".
+func HasServer(path, name string) (bool, error) {
+	return HasServerInKey(path, DefaultServersKey, name)
+}
+
+// UpsertServerInKey is the generalised form of UpsertServer that lets the
+// caller pick the top-level JSON key. VS Code's MCP config uses "servers";
+// every other supported client uses "mcpServers" (see DefaultServersKey).
+func UpsertServerInKey(path, key, name string, server any) error {
+	doc, err := readDoc(path)
+	if err != nil {
+		return err
+	}
+	servers, _ := doc[key].(map[string]any)
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	servers[name] = server
+	doc[key] = servers
+	return writeDocAtomic(path, doc)
+}
+
+// RemoveServerInKey removes the named entry from the given top-level key.
+// No-op if the file, key, or entry is absent.
+func RemoveServerInKey(path, key, name string) error {
 	doc, err := readDoc(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -87,16 +111,16 @@ func RemoveServer(path, name string) error {
 		}
 		return err
 	}
-	servers, _ := doc["mcpServers"].(map[string]any)
+	servers, _ := doc[key].(map[string]any)
 	if servers != nil {
 		delete(servers, name)
-		doc["mcpServers"] = servers
+		doc[key] = servers
 	}
 	return writeDocAtomic(path, doc)
 }
 
-// HasServer returns true if the named entry exists in "mcpServers".
-func HasServer(path, name string) (bool, error) {
+// HasServerInKey returns true if the named entry exists under the given key.
+func HasServerInKey(path, key, name string) (bool, error) {
 	doc, err := readDoc(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -104,7 +128,7 @@ func HasServer(path, name string) (bool, error) {
 		}
 		return false, err
 	}
-	servers, _ := doc["mcpServers"].(map[string]any)
+	servers, _ := doc[key].(map[string]any)
 	_, ok := servers[name]
 	return ok, nil
 }

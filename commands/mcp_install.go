@@ -26,34 +26,64 @@ var (
 
 var mcpInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install Taufinity Studio as an MCP server in Claude Desktop",
-	Long: `Install Taufinity Studio as an MCP server entry in Claude Desktop's config:
-  macOS:   ~/Library/Application Support/Claude/claude_desktop_config.json
-  Windows: %APPDATA%\Claude\claude_desktop_config.json
+	Short: "Install Taufinity Studio as an MCP server in supported clients",
+	Long: `Install Taufinity Studio as an MCP server entry in one or more client
+config files. Pass --client to pick a target:
 
-For Claude Code (project-level .mcp.json or ~/.claude.json) use 'taufinity mcp login' instead.
+  claude-desktop  ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
+                  %APPDATA%\Claude\claude_desktop_config.json (Windows)
+  claude-code     ~/.claude.json (all OSes; read by Claude Code CLI and IDE extensions)
+  cursor          ~/.cursor/mcp.json (all OSes)
+  vscode          VS Code's native MCP config (1.95+):
+                  ~/Library/Application Support/Code/User/mcp.json (macOS)
+                  ~/.config/Code/User/mcp.json (Linux)
+                  %APPDATA%\Code\User\mcp.json (Windows)
+  antigravity     Google's Antigravity IDE (best-effort path; override via
+                  TAUFINITY_ANTIGRAVITY_CONFIG if needed)
+  all             Install into every detected client (those whose config
+                  directory already exists on disk)
+  print           Emit the JSON block to stdout without writing anywhere
 
-Use --client print to emit the JSON block to stdout without writing to disk.
+For Claude Code's project-level .mcp.json with a bearer token, use
+'taufinity mcp login' instead.
 
-By default this installs the stdio bridge shape for claude-desktop: Claude
-Desktop launches the local taufinity CLI as a subprocess (taufinity mcp stdio),
-which forwards JSON-RPC frames to Studio's /mcp endpoint and reads credentials
-from disk at startup. No bearer token is written to the Claude Desktop config.
+By default this installs the stdio bridge shape: the client launches the
+local taufinity CLI as a subprocess (taufinity mcp stdio), which forwards
+JSON-RPC frames to Studio's /mcp endpoint and reads credentials from disk
+at startup. No bearer token is written to the client config.
 
-Global flags --org and --api-url are honored: their values are embedded into
-the bridge subprocess args so Claude Desktop launches the CLI already scoped
-to the right organization and Studio endpoint.
+Global flags --org and --api-url are honored: their values are embedded
+into the bridge subprocess args so the client launches the CLI already
+scoped to the right organization and Studio endpoint.
 
-Pass --transport http to force the legacy HTTP shape (bearer embedded in the
-config) — useful for Claude Desktop builds that support remote MCP natively.
---client print always emits HTTP, regardless of --transport.`,
+Pass --transport http to force the legacy HTTP shape (bearer embedded in
+the config) — useful for clients that support remote MCP natively.
+--client print always emits HTTP, regardless of --transport.
+
+Examples:
+  taufinity mcp install                           # claude-desktop with stdio bridge
+  taufinity mcp install --client cursor           # cursor only
+  taufinity mcp install --client all              # every detected client
+  taufinity --org 3 mcp install --client all \
+        --label taufinity-voorpositiviteit         # all detected, pinned to org 3
+  taufinity mcp install --client print            # preview the JSON, write nothing`,
 	RunE: runMCPInstall,
 }
 
+var (
+	flagMCPUninstallClient string
+	flagMCPUninstallLabel  string
+)
+
 var mcpUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "Remove Taufinity Studio from Claude Desktop's config",
-	RunE:  runMCPUninstall,
+	Short: "Remove Taufinity Studio from a client's MCP config",
+	Long: `Remove the named MCP server entry from one client's config.
+Pass --client all to remove the entry from every detected client.
+
+The --label value must match the one used at install time
+(default: taufinity-studio).`,
+	RunE: runMCPUninstall,
 }
 
 var mcpPrintCmd = &cobra.Command{
@@ -67,13 +97,14 @@ func init() {
 	mcpCmd.AddCommand(mcpUninstallCmd)
 	mcpCmd.AddCommand(mcpPrintCmd)
 
-	mcpInstallCmd.Flags().StringVar(&flagMCPInstallClient, "client", "claude-desktop", "Client to install into: claude-desktop, print")
+	mcpInstallCmd.Flags().StringVar(&flagMCPInstallClient, "client", "claude-desktop", "Client to install into: claude-desktop, claude-code, cursor, vscode, antigravity, all, print")
 	mcpInstallCmd.Flags().StringVar(&flagMCPInstallLabel, "label", "taufinity-studio", "Server entry name in claude_desktop_config.json")
 	mcpInstallCmd.Flags().BoolVar(&flagMCPInstallForce, "force", false, "Overwrite existing entry without prompting")
 	mcpInstallCmd.Flags().StringVar(&flagMCPInstallTransport, "transport", "",
 		"MCP transport: stdio, http, or auto (default: stdio for claude-desktop, http for print)")
 
-	mcpUninstallCmd.Flags().StringVar(&flagMCPInstallLabel, "label", "taufinity-studio", "Server entry name to remove")
+	mcpUninstallCmd.Flags().StringVar(&flagMCPUninstallClient, "client", "claude-desktop", "Client to uninstall from: claude-desktop, claude-code, cursor, vscode, antigravity, all")
+	mcpUninstallCmd.Flags().StringVar(&flagMCPUninstallLabel, "label", "taufinity-studio", "Server entry name to remove")
 }
 
 // orgIDPattern matches the org identifiers we're willing to embed verbatim
@@ -98,18 +129,13 @@ func runMCPInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.ErrOrStderr(), "warning: API URL is localhost — installed config will only work for local Studio")
 	}
 
-	transport, err := resolveTransport(flagMCPInstallClient, flagMCPInstallTransport)
-	if err != nil {
-		return err
-	}
-
 	// --client print is a neutral copy-paste artifact and always emits HTTP.
 	// Reject an explicit --transport stdio rather than silently downgrading it
 	// (the bridge JSON needs a real binary path; print has no client context).
-	if flagMCPInstallClient == "print" && strings.ToLower(flagMCPInstallTransport) == "stdio" {
-		return fmt.Errorf("--client print emits HTTP only; --transport stdio is not supported for print (use --client claude-desktop for stdio bridge install)")
-	}
 	if flagMCPInstallClient == "print" {
+		if strings.ToLower(flagMCPInstallTransport) == "stdio" {
+			return fmt.Errorf("--client print emits HTTP only; --transport stdio is not supported for print (use a real client for stdio bridge install)")
+		}
 		entry, err := buildHTTPEntry(apiURL)
 		if err != nil {
 			return err
@@ -120,20 +146,31 @@ func runMCPInstall(cmd *cobra.Command, args []string) error {
 		return enc.Encode(out)
 	}
 
-	if flagMCPInstallClient != "claude-desktop" {
-		return fmt.Errorf("unknown --client %q (use claude-desktop or print)", flagMCPInstallClient)
+	if flagMCPInstallClient == "all" {
+		return runMCPInstallAll(cmd, apiURL, label)
 	}
 
-	path := claudeDesktopConfigPath()
-	if path == "" {
-		path, err = desktopconfig.DefaultClaudeDesktopPath()
-		if err != nil {
-			return err
-		}
+	client, ok := lookupClient(flagMCPInstallClient)
+	if !ok {
+		return fmt.Errorf("unknown --client %q (valid: %s)", flagMCPInstallClient, clientNamesString())
+	}
+	return installToClient(cmd, client, apiURL, label, flagMCPInstallForce)
+}
+
+// installToClient performs the install dance for one client: resolve path,
+// build the right entry shape, check for an existing entry, write atomically,
+// and print a friendly status line. Returns any error verbatim.
+func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string, force bool) error {
+	transport, err := resolveTransport(client.name, flagMCPInstallTransport)
+	if err != nil {
+		return err
 	}
 
-	// Build the server entry up front so we know the target transport before
-	// the existence check (used to produce a clearer upgrade hint).
+	path, err := client.resolvePath()
+	if err != nil {
+		return fmt.Errorf("%s: resolve path: %w", client.name, err)
+	}
+
 	var entry any
 	switch transport {
 	case "stdio":
@@ -142,21 +179,73 @@ func runMCPInstall(cmd *cobra.Command, args []string) error {
 		entry, err = buildHTTPEntry(apiURL)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: build entry: %w", client.name, err)
 	}
 
-	if !flagMCPInstallForce {
-		exists, _ := desktopconfig.HasServer(path, label)
+	if !force {
+		exists, _ := desktopconfig.HasServerInKey(path, client.serversKey, label)
 		if exists {
-			return fmt.Errorf("entry %q already exists in %s; pass --force to overwrite%s",
-				label, path, upgradeHint(path, label, transport))
+			return fmt.Errorf("%s: entry %q already exists in %s; pass --force to overwrite%s",
+				client.name, label, path, upgradeHintInKey(path, client.serversKey, label, transport))
 		}
 	}
 
-	if err := desktopconfig.UpsertServer(path, label, entry); err != nil {
-		return err
+	if err := desktopconfig.UpsertServerInKey(path, client.serversKey, label, entry); err != nil {
+		return fmt.Errorf("%s: write %s: %w", client.name, path, err)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s\nRestart Claude Desktop to load the new server.\n", label, path)
+	fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s (%s)\n", label, path, client.name)
+	return nil
+}
+
+// runMCPInstallAll iterates every registered client, skipping ones not
+// detected on disk (parent config dir absent), and aggregates results. Exits
+// non-zero only when EVERY detected target failed — partial successes are
+// reported but considered overall-success so a single missing client doesn't
+// break the workflow.
+func runMCPInstallAll(cmd *cobra.Command, apiURL, label string) error {
+	var installed, skipped []string
+	type installErr struct {
+		name string
+		err  error
+	}
+	var errs []installErr
+
+	for i := range mcpClientsList {
+		c := &mcpClientsList[i]
+		if !detectInstalled(c) {
+			skipped = append(skipped, c.name+" (not detected)")
+			continue
+		}
+		if err := installToClient(cmd, c, apiURL, label, flagMCPInstallForce); err != nil {
+			errs = append(errs, installErr{name: c.name, err: err})
+			continue
+		}
+		installed = append(installed, c.name)
+	}
+
+	// Summary on stderr so install lines stay clean on stdout.
+	fmt.Fprintln(cmd.ErrOrStderr())
+	fmt.Fprintln(cmd.ErrOrStderr(), "Summary:")
+	if len(installed) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Installed: %s\n", strings.Join(installed, ", "))
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Skipped:   %s\n", strings.Join(skipped, ", "))
+	}
+	for _, e := range errs {
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Failed:    %s — %v\n", e.name, e.err)
+	}
+	if len(installed) > 0 {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Restart each affected client to load the new server.")
+	}
+
+	// Non-zero only when there's nothing to show for the run.
+	if len(installed) == 0 && len(errs) > 0 {
+		return fmt.Errorf("all targets failed")
+	}
+	if len(installed) == 0 && len(skipped) > 0 {
+		return fmt.Errorf("no clients detected — install one of: %s", strings.Join(allClientNames(), ", "))
+	}
 	return nil
 }
 
@@ -232,23 +321,30 @@ func buildStdioArgs(apiURL, org string) []string {
 	return args
 }
 
-// upgradeHint returns a short message appended to the "already exists" error
-// when the existing entry uses a transport different from what we were about
-// to write — typically a legacy HTTP entry left behind by an older CLI run.
-// Empty string when the file is unreadable, the entry isn't found, or the
-// shapes match.
-func upgradeHint(path, label, targetTransport string) string {
+// upgradeHintInKey returns a short message appended to the "already exists"
+// error when the existing entry uses a transport different from what we were
+// about to write — typically a legacy HTTP entry left behind by an older CLI
+// run. Empty string when the file is unreadable, the entry isn't found, or
+// the shapes match. The key parameter is "mcpServers" for most clients and
+// "servers" for VS Code.
+func upgradeHintInKey(path, key, label, targetTransport string) string {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	var doc struct {
-		MCPServers map[string]json.RawMessage `json:"mcpServers"`
-	}
+	var doc map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return ""
 	}
-	rawEntry, ok := doc.MCPServers[label]
+	rawServers, ok := doc[key]
+	if !ok {
+		return ""
+	}
+	var servers map[string]json.RawMessage
+	if err := json.Unmarshal(rawServers, &servers); err != nil {
+		return ""
+	}
+	rawEntry, ok := servers[label]
 	if !ok {
 		return ""
 	}
@@ -316,22 +412,55 @@ func isTempPath(p string) bool {
 }
 
 func runMCPUninstall(cmd *cobra.Command, args []string) error {
-	label := flagMCPInstallLabel
+	label := flagMCPUninstallLabel
 	if label == "" {
 		label = "taufinity-studio"
 	}
-	path := claudeDesktopConfigPath()
-	if path == "" {
-		var err error
-		path, err = desktopconfig.DefaultClaudeDesktopPath()
-		if err != nil {
-			return err
+
+	if flagMCPUninstallClient == "all" {
+		var removed, skipped []string
+		for i := range mcpClientsList {
+			c := &mcpClientsList[i]
+			path, err := c.resolvePath()
+			if err != nil {
+				skipped = append(skipped, c.name+" (no path)")
+				continue
+			}
+			// Only touch files that actually exist — RemoveServer would
+			// otherwise create an empty config dir as a side effect.
+			if _, err := os.Stat(path); err != nil {
+				skipped = append(skipped, c.name+" (no config)")
+				continue
+			}
+			if err := desktopconfig.RemoveServerInKey(path, c.serversKey, label); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %v\n", c.name, err)
+				continue
+			}
+			removed = append(removed, c.name)
 		}
+		fmt.Fprintln(cmd.ErrOrStderr())
+		fmt.Fprintln(cmd.ErrOrStderr(), "Summary:")
+		if len(removed) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  Removed:   %s\n", strings.Join(removed, ", "))
+		}
+		if len(skipped) > 0 {
+			fmt.Fprintf(cmd.ErrOrStderr(), "  Skipped:   %s\n", strings.Join(skipped, ", "))
+		}
+		return nil
 	}
-	if err := desktopconfig.RemoveServer(path, label); err != nil {
+
+	client, ok := lookupClient(flagMCPUninstallClient)
+	if !ok {
+		return fmt.Errorf("unknown --client %q (valid: %s)", flagMCPUninstallClient, clientNamesString())
+	}
+	path, err := client.resolvePath()
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Removed %q from %s\n", label, path)
+	if err := desktopconfig.RemoveServerInKey(path, client.serversKey, label); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Removed %q from %s (%s)\n", label, path, client.name)
 	return nil
 }
 
@@ -345,10 +474,4 @@ func runMCPPrint(cmd *cobra.Command, args []string) error {
 	return runMCPInstall(cmd, args)
 }
 
-// claudeDesktopConfigPath returns the path override from the env var, or empty
-// for the per-OS default. The env var is mainly for tests; users should rely
-// on the default path.
-func claudeDesktopConfigPath() string {
-	return os.Getenv("TAUFINITY_DESKTOP_CONFIG")
-}
 
