@@ -138,20 +138,49 @@ func runInstall(cmd *cobra.Command) error {
 		return fmt.Errorf("locate current executable: %w", err)
 	}
 	currentExe, _ = filepath.EvalSymlinks(currentExe) // best-effort
+	currentDir := filepath.Dir(currentExe)
 
 	current := buildinfo.FromBuildtime(Version, GitCommit, BuildTime)
 	Print("Updating from %s (%s)\n", current.Version, shortSHA(current.Commit))
 
-	// 2. Resolve install target dir.
-	installDir, err := resolveGoInstallDir(goBin)
-	if err != nil {
-		return fmt.Errorf("resolve go install dir: %w", err)
+	// 1a. No-op short-circuit: if we already have the latest commit, skip
+	// the whole install dance. We bypass the cache here because the user
+	// asked explicitly for an update — they want fresh data, not what was
+	// true up to 24h ago. A network failure here is NOT fatal: we just
+	// proceed with the install (their intent overrides our optimisation).
+	if current.Commit != "unknown" && !current.Dirty {
+		checkCtx, cancel := context.WithTimeout(cmd.Context(), updatecheck.DefaultHTTPTimeout)
+		latest, fetchErr := fetchLatestSHADirect(checkCtx)
+		cancel()
+		if fetchErr == nil && sameSHA(current.Commit, latest) {
+			Print("Already up to date at %s (%s). Skipping install.\n", current.Version, shortSHA(current.Commit))
+			return nil
+		}
+	}
+
+	// 2. Resolve install target dir. We prefer the directory the user is
+	// already running taufinity from — if it's writable, we override GOBIN
+	// for the `go install` subprocess so the new binary lands in the same
+	// place as the running one. That keeps PATH stable across updates and
+	// avoids the "installed to ~/go/bin, but you're running from ~/bin"
+	// trap that's common when users initially installed via `make install`
+	// or a custom prefix.
+	var installDir string
+	var gobinOverride string
+	if isDirWritable(currentDir) {
+		installDir = currentDir
+		gobinOverride = currentDir
+	} else {
+		installDir, err = resolveGoInstallDir(goBin)
+		if err != nil {
+			return fmt.Errorf("resolve go install dir: %w", err)
+		}
 	}
 	newExe := filepath.Join(installDir, binaryName())
 
 	// 1a. Backup, only when the new binary will overwrite the running one.
 	var backupPath string
-	if pathsEqual(installDir, filepath.Dir(currentExe)) {
+	if pathsEqual(installDir, currentDir) {
 		backupPath = currentExe + ".prev"
 		if err := backupBinary(currentExe, backupPath); err != nil {
 			return fmt.Errorf("backup current binary to %s: %w", backupPath, err)
@@ -166,6 +195,11 @@ func runInstall(cmd *cobra.Command) error {
 	installCmd.Stdout = cmd.OutOrStdout()
 	installCmd.Stderr = cmd.ErrOrStderr()
 	installCmd.Env = os.Environ()
+	if gobinOverride != "" {
+		// Last-wins for repeated env keys means appending after os.Environ()
+		// reliably overrides any pre-existing GOBIN.
+		installCmd.Env = append(installCmd.Env, "GOBIN="+gobinOverride)
+	}
 	if err := installCmd.Run(); err != nil {
 		// go install failed before touching the new binary — leave the
 		// backup in place but no need to restore (the original is still in
@@ -294,6 +328,21 @@ func resolveGoInstallDir(goBin string) (string, error) {
 		return "", fmt.Errorf("both GOBIN and GOPATH are empty; cannot determine install dir")
 	}
 	return filepath.Join(gopath, "bin"), nil
+}
+
+// isDirWritable reports whether the current process can create files in dir.
+// We probe by creating and immediately removing a tempfile — `unix.Access`
+// would be faster but isn't portable, and the cost (one syscall pair) is
+// invisible compared to the `go install` we're about to run.
+func isDirWritable(dir string) bool {
+	f, err := os.CreateTemp(dir, ".taufinity-writetest-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 // binaryName accounts for Windows .exe suffixes if the CLI ever ships there.
