@@ -21,6 +21,17 @@ type RemoteServer struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
+// StdioServer matches the JSON shape Claude Desktop expects for a stdio
+// MCP server: a subprocess invocation. The CLI uses this to install itself
+// as a bridge (`taufinity mcp stdio`), which Claude Desktop launches and
+// which forwards JSON-RPC frames to Studio's /mcp endpoint. The bearer
+// token is NOT embedded — the bridge subprocess reads credentials.json at
+// startup.
+type StdioServer struct {
+	Command string   `json:"command"`
+	Args    []string `json:"args,omitempty"`
+}
+
 // ErrUnsupportedOS indicates Claude Desktop is not available on the current OS.
 var ErrUnsupportedOS = errors.New("Claude Desktop is not available on this OS; use --client print")
 
@@ -48,7 +59,11 @@ func DefaultClaudeDesktopPath() (string, error) {
 // updates the named MCP server entry under "mcpServers", and writes the result
 // atomically (temp file + rename). All other top-level keys and sibling server
 // entries are preserved.
-func UpsertServer(path, name string, server RemoteServer) error {
+//
+// server can be any JSON-marshalable value; in practice either RemoteServer
+// (HTTP) or StdioServer (stdio bridge). The caller picks the shape; this
+// function does not validate it.
+func UpsertServer(path, name string, server any) error {
 	doc, err := readDoc(path)
 	if err != nil {
 		return err

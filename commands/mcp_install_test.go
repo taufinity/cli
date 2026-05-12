@@ -52,6 +52,7 @@ func resetGlobals(t *testing.T) {
 	flagMCPInstallClient = "claude-desktop"
 	flagMCPInstallLabel = "taufinity-studio"
 	flagMCPInstallForce = false
+	flagMCPInstallTransport = ""
 }
 
 func TestMCPInstall_PrintsJSONBlockWithBearer(t *testing.T) {
@@ -97,11 +98,12 @@ func TestMCPInstall_PrintsJSONBlockWithBearer(t *testing.T) {
 	}
 }
 
-func TestMCPInstall_WritesConfigFile(t *testing.T) {
+func TestMCPInstall_WritesStdioEntryByDefaultForClaudeDesktop(t *testing.T) {
 	resetGlobals(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	seedCredentials(t, "writes-test-token")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/opt/taufinity/bin/taufinity")
 
 	cfgDir := t.TempDir()
 	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
@@ -109,6 +111,7 @@ func TestMCPInstall_WritesConfigFile(t *testing.T) {
 
 	rootCmd.SetArgs([]string{
 		"--api-url", "https://studio.taufinity.io",
+		"--org", "3",
 		"mcp", "install", "--label", "taufinity-test",
 	})
 	if err := rootCmd.Execute(); err != nil {
@@ -123,14 +126,286 @@ func TestMCPInstall_WritesConfigFile(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("written config not valid JSON: %v", err)
 	}
-	servers := got["mcpServers"].(map[string]any)
-	tau, ok := servers["taufinity-test"].(map[string]any)
-	if !ok {
-		t.Fatalf("taufinity-test entry missing")
+	tau := got["mcpServers"].(map[string]any)["taufinity-test"].(map[string]any)
+	if _, wrong := tau["headers"]; wrong {
+		t.Errorf("stdio entry must not include 'headers' field (bearer must not be embedded in Claude Desktop config); got %v", tau)
+	}
+	if _, wrong := tau["type"]; wrong {
+		t.Errorf("stdio entry must not include 'type' field; got %v", tau)
+	}
+	if tau["command"] != "/opt/taufinity/bin/taufinity" {
+		t.Errorf("command = %v, want /opt/taufinity/bin/taufinity", tau["command"])
+	}
+	args, _ := tau["args"].([]any)
+	want := []string{"--org", "3", "mcp", "stdio"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i, w := range want {
+		if args[i] != w {
+			t.Errorf("args[%d] = %v, want %q", i, args[i], w)
+		}
+	}
+}
+
+func TestMCPInstall_HTTPTransportOverrideEmbedsBearer(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "writes-test-token-http")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "install", "--label", "taufinity-test", "--transport", "http",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, _ := os.ReadFile(cfgPath)
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	tau := got["mcpServers"].(map[string]any)["taufinity-test"].(map[string]any)
+	if tau["type"] != "http" {
+		t.Errorf("--transport http should produce type=http, got %v", tau["type"])
 	}
 	headers := tau["headers"].(map[string]any)
-	if headers["Authorization"] != "Bearer writes-test-token" {
+	if headers["Authorization"] != "Bearer writes-test-token-http" {
 		t.Errorf("Authorization = %v", headers["Authorization"])
+	}
+}
+
+func TestMCPInstall_StdioOmitsOrgWhenUnset(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/bin/taufinity")
+	t.Setenv("TAUFINITY_ORG", "")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "install",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, _ := os.ReadFile(cfgPath)
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	tau := got["mcpServers"].(map[string]any)["taufinity-studio"].(map[string]any)
+	args, _ := tau["args"].([]any)
+	want := []string{"mcp", "stdio"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v (no --org when unset)", args, want)
+	}
+	for i, w := range want {
+		if args[i] != w {
+			t.Errorf("args[%d] = %v, want %q", i, args[i], w)
+		}
+	}
+}
+
+func TestMCPInstall_StdioEmbedsLocalhostAPIURL(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/bin/taufinity")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "http://localhost:8090",
+		"--org", "12",
+		"mcp", "install", "--label", "taufinity-local",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, _ := os.ReadFile(cfgPath)
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	tau := got["mcpServers"].(map[string]any)["taufinity-local"].(map[string]any)
+	args, _ := tau["args"].([]any)
+	want := []string{"--org", "12", "--api-url", "http://localhost:8090", "mcp", "stdio"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i, w := range want {
+		if args[i] != w {
+			t.Errorf("args[%d] = %v, want %q", i, args[i], w)
+		}
+	}
+}
+
+func TestMCPInstall_ForceReplacesLegacyHTTPEntryWithStdio(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok-upgrade")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/local/bin/taufinity")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	legacy := `{"mcpServers":{"taufinity-studio":{"type":"http","url":"https://studio.taufinity.io/mcp","headers":{"Authorization":"Bearer LEGACY"}},"keep-me":{"command":"x"}}}`
+	if err := os.WriteFile(cfgPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"--org", "3",
+		"mcp", "install", "--force",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, _ := os.ReadFile(cfgPath)
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	servers := got["mcpServers"].(map[string]any)
+	tau := servers["taufinity-studio"].(map[string]any)
+	if _, leftover := tau["headers"]; leftover {
+		t.Errorf("legacy 'headers' field was not removed during upgrade; got %v", tau)
+	}
+	if _, leftover := tau["type"]; leftover {
+		t.Errorf("legacy 'type' field was not removed during upgrade; got %v", tau)
+	}
+	if tau["command"] != "/usr/local/bin/taufinity" {
+		t.Errorf("stdio command missing or wrong: %v", tau["command"])
+	}
+	if _, ok := servers["keep-me"]; !ok {
+		t.Error("unrelated 'keep-me' entry was clobbered during upgrade")
+	}
+}
+
+func TestMCPInstall_RefusalHintsLegacyHTTPShape(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/bin/taufinity")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	legacy := `{"mcpServers":{"taufinity-studio":{"type":"http","url":"x","headers":{"Authorization":"Bearer L"}}}}`
+	if err := os.WriteFile(cfgPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "install",
+	})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected refusal without --force")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "legacy HTTP transport") {
+		t.Errorf("expected upgrade hint mentioning 'legacy HTTP transport', got: %v", err)
+	}
+	if !strings.Contains(msg, "--force") {
+		t.Errorf("expected --force suggestion in error: %v", err)
+	}
+}
+
+func TestMCPInstall_RejectsBogusOrgInStdio(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/bin/taufinity")
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", filepath.Join(t.TempDir(), "x.json"))
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"--org", "3; rm -rf ~",
+		"mcp", "install",
+	})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for bogus --org embedded into stdio args")
+	}
+	if !strings.Contains(err.Error(), "invalid org") {
+		t.Errorf("error should mention invalid org, got: %v", err)
+	}
+}
+
+func TestMCPInstall_TransportAutoMatchesDefault(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/bin/taufinity")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "install", "--transport", "auto",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	raw, _ := os.ReadFile(cfgPath)
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	tau := got["mcpServers"].(map[string]any)["taufinity-studio"].(map[string]any)
+	if _, ok := tau["command"]; !ok {
+		t.Errorf("--transport=auto on claude-desktop should produce stdio shape (with 'command'), got %v", tau)
+	}
+}
+
+func TestMCPInstall_InvalidTransport_IsRejected(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok")
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "install", "--transport", "ws",
+	})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for invalid --transport")
+	}
+	if !strings.Contains(err.Error(), "stdio") || !strings.Contains(err.Error(), "http") {
+		t.Errorf("error should explain valid values, got: %v", err)
+	}
+}
+
+func TestIsTempPath_Boundary(t *testing.T) {
+	cases := map[string]bool{
+		"/private/var/folders/abc/exe/taufinity": true,
+		"/tmp/taufinity":                         true,
+		"/usr/local/bin/taufinity":               false,
+		"/opt/homebrew/bin/taufinity":            false,
+		os.TempDir() + "/taufinity":              true,
+	}
+	for path, wantTemp := range cases {
+		if got := isTempPath(path); got != wantTemp {
+			t.Errorf("isTempPath(%q) = %v, want %v", path, got, wantTemp)
+		}
 	}
 }
 
@@ -208,6 +483,7 @@ func TestMCPInstall_RefusesOverwriteWithoutForce(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	seedCredentials(t, "tok")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/bin/taufinity")
 
 	cfgDir := t.TempDir()
 	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
