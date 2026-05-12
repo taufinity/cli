@@ -394,6 +394,50 @@ func TestMCPInstall_InvalidTransport_IsRejected(t *testing.T) {
 	}
 }
 
+func TestMCPInstall_PrintRejectsExplicitStdioTransport(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok")
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "install", "--client", "print", "--transport", "stdio",
+	})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error: --client print with --transport stdio is incompatible")
+	}
+	if !strings.Contains(err.Error(), "print") || !strings.Contains(err.Error(), "stdio") {
+		t.Errorf("error should reference the incompatible combo, got: %v", err)
+	}
+}
+
+// TestMCPPrint_DoesNotLeakClientFlagIntoSubsequentInstall verifies that
+// 'mcp print' restores the package-level flagMCPInstallClient when it
+// finishes, so a subsequent 'mcp install' invocation in the same process
+// (or test binary) doesn't silently emit HTTP because the print flow
+// flipped the flag.
+func TestMCPPrint_DoesNotLeakClientFlagIntoSubsequentInstall(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "tok-print-leak")
+
+	var stdout bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stdout)
+	t.Cleanup(func() { rootCmd.SetOut(nil); rootCmd.SetErr(nil) })
+
+	rootCmd.SetArgs([]string{"--api-url", "https://studio.taufinity.io", "mcp", "print"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("mcp print: %v", err)
+	}
+	if flagMCPInstallClient != "claude-desktop" {
+		t.Fatalf("flagMCPInstallClient leaked: got %q, want claude-desktop (the default)", flagMCPInstallClient)
+	}
+}
+
 func TestIsTempPath_Boundary(t *testing.T) {
 	cases := map[string]bool{
 		"/private/var/folders/abc/exe/taufinity": true,

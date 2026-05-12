@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -104,7 +103,12 @@ func runMCPInstall(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// --client=print is a neutral copy-paste artifact and always emits HTTP.
+	// --client print is a neutral copy-paste artifact and always emits HTTP.
+	// Reject an explicit --transport stdio rather than silently downgrading it
+	// (the bridge JSON needs a real binary path; print has no client context).
+	if flagMCPInstallClient == "print" && strings.ToLower(flagMCPInstallTransport) == "stdio" {
+		return fmt.Errorf("--client print emits HTTP only; --transport stdio is not supported for print (use --client claude-desktop for stdio bridge install)")
+	}
 	if flagMCPInstallClient == "print" {
 		entry, err := buildHTTPEntry(apiURL)
 		if err != nil {
@@ -263,13 +267,19 @@ func upgradeHint(path, label, targetTransport string) string {
 	return ""
 }
 
-// taufinityExecutable returns the absolute, symlink-resolved path to the
-// running CLI binary. Stdio-bridge entries embed this path so Claude Desktop
-// can launch `taufinity mcp stdio` directly. Symlinks are resolved so a
-// Homebrew upgrade that moves the keg doesn't silently break installed
-// configs. Temporary paths (e.g. those produced by `go run`) are rejected
-// because they vanish at session end. Override via TAUFINITY_BINARY_PATH for
-// tests; the override bypasses resolution and the temp-path check.
+// taufinityExecutable returns the path to the running CLI binary, as
+// reported by the OS — symlinks are intentionally NOT resolved. For
+// Homebrew installs the stable path is the symlink (e.g.
+// /opt/homebrew/bin/taufinity); resolving it would pin to a specific
+// keg (.../Cellar/taufinity/X.Y.Z/bin/...) that disappears on
+// 'brew upgrade'. The symlink itself is what we want embedded in
+// Claude Desktop's config so the bridge keeps working across upgrades.
+//
+// Temporary paths (e.g. those produced by 'go run', which lands in
+// /private/var/folders or os.TempDir) are rejected because they vanish
+// at session end, leaving Claude Desktop with a broken install.
+// Override via TAUFINITY_BINARY_PATH for tests; the override bypasses
+// the temp-path check.
 func taufinityExecutable() (string, error) {
 	if override := os.Getenv("TAUFINITY_BINARY_PATH"); override != "" {
 		return override, nil
@@ -278,16 +288,10 @@ func taufinityExecutable() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve taufinity binary path: %w", err)
 	}
-	resolved, err := filepath.EvalSymlinks(exe)
-	if err != nil {
-		// Fall back to the unresolved path rather than failing — the binary
-		// may live on a filesystem without symlink support.
-		resolved = exe
+	if isTempPath(exe) {
+		return "", fmt.Errorf("taufinity binary resolves to a temporary path (%s); install to a stable location first (e.g. 'go install github.com/taufinity/cli/cmd/taufinity@latest' or Homebrew) before running 'mcp install'", exe)
 	}
-	if isTempPath(resolved) {
-		return "", fmt.Errorf("taufinity binary resolves to a temporary path (%s); install to a stable location first (e.g. 'go install github.com/taufinity/cli/cmd/taufinity@latest' or Homebrew) before running 'mcp install'", resolved)
-	}
-	return resolved, nil
+	return exe, nil
 }
 
 // isTempPath reports whether the given absolute path lives under a
@@ -332,6 +336,11 @@ func runMCPUninstall(cmd *cobra.Command, args []string) error {
 }
 
 func runMCPPrint(cmd *cobra.Command, args []string) error {
+	// runMCPInstall reads the package-level flag; save/restore so a 'mcp print'
+	// invocation in the same process (or test binary) doesn't leak "print" into
+	// a subsequent 'mcp install' invocation.
+	prev := flagMCPInstallClient
+	defer func() { flagMCPInstallClient = prev }()
 	flagMCPInstallClient = "print"
 	return runMCPInstall(cmd, args)
 }
