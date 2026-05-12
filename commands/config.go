@@ -39,6 +39,10 @@ var configGetCmd = &cobra.Command{
 	Use:   "get PROPERTY",
 	Short: "Get a configuration property value",
 	Args:  cobra.ExactArgs(1),
+	Annotations: map[string]string{
+		// Commonly scripted; output is consumed by shell pipelines.
+		"suppress-update-warning": "true",
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		value, err := config.Get(args[0])
 		if err != nil {
@@ -52,6 +56,9 @@ var configGetCmd = &cobra.Command{
 var configListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all configuration properties",
+	Annotations: map[string]string{
+		"suppress-update-warning": "true",
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		props, err := config.List()
 		if err != nil {

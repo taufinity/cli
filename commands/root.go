@@ -116,9 +116,12 @@ func startUpdateCheck() *updateChecker {
 		return c
 	}
 
-	// Config opt-out (read here once, used both to skip the goroutine and to
-	// pass into MaybeWarn at exit for completeness).
-	if cfg != nil && cfg.UpdateCheck == "false" {
+	// Config opt-out. We deliberately load config directly here instead of
+	// reading the package-level `cfg` — PersistentPreRunE (which populates
+	// `cfg`) hasn't fired yet at this point, so relying on the global would
+	// silently ignore `taufinity config set update_check false` on every
+	// invocation. Loading the file once is cheap (single ReadFile).
+	if userCfg, err := config.Load(); err == nil && userCfg != nil && userCfg.UpdateCheck == "false" {
 		c.configDisabled = true
 		return c
 	}

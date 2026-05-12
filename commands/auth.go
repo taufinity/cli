@@ -40,6 +40,11 @@ var authStatusCmd = &cobra.Command{
 	Short: "Show authentication status",
 	Long:  `Display current authentication status and user info.`,
 	RunE:  runAuthStatus,
+	Annotations: map[string]string{
+		// Commonly scripted (CI health checks, login flows). Skip the
+		// staleness warning so it doesn't end up in stderr-parsing pipelines.
+		"suppress-update-warning": "true",
+	},
 }
 
 var authTokenCmd = &cobra.Command{
