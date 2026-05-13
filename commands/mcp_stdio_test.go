@@ -257,6 +257,9 @@ func TestStdioBridge_AuthFailedMapsTo32001(t *testing.T) {
 	if resp.Error.Code != errCodeAuthFailed {
 		t.Errorf("code = %d, want %d", resp.Error.Code, errCodeAuthFailed)
 	}
+	if !strings.Contains(resp.Error.Message, "taufinity auth login") {
+		t.Errorf("message = %q, want it to contain 'taufinity auth login' so MCP clients can surface a usable fix", resp.Error.Message)
+	}
 	if resp.Error.Data["error"] != "auth_failed" {
 		t.Errorf("data.error = %v, want auth_failed", resp.Error.Data["error"])
 	}
@@ -266,6 +269,210 @@ func TestStdioBridge_AuthFailedMapsTo32001(t *testing.T) {
 
 	_ = in.Close()
 	<-done
+}
+
+// TestDegradedBridge_RepliesAuthFailedToInitialize verifies that when the
+// startup credential probe fails, the bridge still answers the MCP client's
+// `initialize` request with a JSON-RPC error frame containing a human-readable
+// remediation message — instead of exiting before the handshake completes,
+// which would surface as a useless "server disconnected" popup in the client.
+func TestDegradedBridge_RepliesAuthFailedToInitialize(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	expiry := time.Date(2026, 5, 12, 17, 45, 23, 0, time.UTC)
+	authErr := &startupAuthError{
+		summary:   "Taufinity credentials expired",
+		detail:    "token expired at 2026-05-12T17:45:23Z",
+		expiresAt: expiry,
+	}
+
+	stdinR, stdinW := io.Pipe()
+	stdout := &threadSafeBuffer{}
+	stderr := &bytes.Buffer{}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runDegradedBridge(ctx, stdinR, stdout, stderr, authErr)
+	}()
+
+	// Client sends initialize (a real MCP handshake — the first thing every client sends).
+	initFrame := `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"test","version":"0.0.1"}}}` + "\n"
+	if _, err := stdinW.Write([]byte(initFrame)); err != nil {
+		t.Fatalf("write initialize: %v", err)
+	}
+
+	line := readNextFrame(t, stdout, 2*time.Second)
+
+	var resp struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   struct {
+			Code    int            `json:"code"`
+			Message string         `json:"message"`
+			Data    map[string]any `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("decode error frame: %v: %s", err, line)
+	}
+
+	if resp.JSONRPC != "2.0" {
+		t.Errorf("jsonrpc = %q, want 2.0", resp.JSONRPC)
+	}
+	if string(resp.ID) != "0" {
+		t.Errorf("id = %s, want 0 (must echo the request id so the client can correlate)", resp.ID)
+	}
+	if resp.Error.Code != errCodeAuthFailed {
+		t.Errorf("code = %d, want %d", resp.Error.Code, errCodeAuthFailed)
+	}
+	if !strings.Contains(resp.Error.Message, "taufinity auth login") {
+		t.Errorf("message = %q, want it to contain 'taufinity auth login'", resp.Error.Message)
+	}
+	if resp.Error.Data["error"] != "auth_failed" {
+		t.Errorf("data.error = %v, want auth_failed", resp.Error.Data["error"])
+	}
+	if got := resp.Error.Data["expired_at"]; got != "2026-05-12T17:45:23Z" {
+		t.Errorf("data.expired_at = %v, want 2026-05-12T17:45:23Z", got)
+	}
+	if hint, _ := resp.Error.Data["hint"].(string); !strings.Contains(hint, "taufinity auth login") {
+		t.Errorf("data.hint = %v, want it to contain 'taufinity auth login'", resp.Error.Data["hint"])
+	}
+	if _, ok := resp.Error.Data["trace_id"].(string); !ok {
+		t.Errorf("data.trace_id missing or not a string: %v", resp.Error.Data["trace_id"])
+	}
+
+	_ = stdinW.Close()
+	select {
+	case err := <-done:
+		if err != nil && err != io.EOF && err != context.Canceled {
+			t.Errorf("runDegradedBridge returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("runDegradedBridge did not return after stdin closed")
+	}
+}
+
+// TestDegradedBridge_DropsNotifications verifies that JSON-RPC notifications
+// (requests with no id, or with id explicitly null) get no reply — replying
+// to a notification is a protocol violation that some MCP clients will treat
+// as a fatal error.
+//
+// We use a sentinel-request strategy instead of a timing sleep: send
+// [notification, request], assert the only reply we see has the request's
+// id. Ordering preserves causality (frames are read line-by-line), so any
+// reply to the notification would appear before the sentinel reply.
+func TestDegradedBridge_DropsNotifications(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authErr := &startupAuthError{
+		summary: "no Taufinity credentials found",
+		detail:  "no credentials file on disk; run 'taufinity auth login' to sign in",
+	}
+
+	stdinR, stdinW := io.Pipe()
+	stdout := &threadSafeBuffer{}
+	stderr := &bytes.Buffer{}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runDegradedBridge(ctx, stdinR, stdout, stderr, authErr)
+	}()
+
+	// Three frames: missing-id notification, explicit-null-id notification,
+	// then a real request as sentinel. If either notification produced a
+	// reply, it would arrive before the sentinel reply.
+	frames := `{"jsonrpc":"2.0","method":"notifications/initialized"}` + "\n" +
+		`{"jsonrpc":"2.0","id":null,"method":"notifications/cancelled"}` + "\n" +
+		`{"jsonrpc":"2.0","id":"sentinel","method":"tools/list"}` + "\n"
+	if _, err := stdinW.Write([]byte(frames)); err != nil {
+		t.Fatalf("write frames: %v", err)
+	}
+
+	line := readNextFrame(t, stdout, 2*time.Second)
+	var resp struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("decode: %v: %s", err, line)
+	}
+	if string(resp.ID) != `"sentinel"` {
+		t.Errorf("first response id = %s, want \"sentinel\" — earlier notification leaked a reply", resp.ID)
+	}
+
+	_ = stdinW.Close()
+	<-done
+
+	// After bridge exits, stdout is stable. Verify exactly one frame total.
+	if got := strings.Count(strings.TrimRight(stdout.String(), "\n"), "\n"); got != 0 {
+		t.Errorf("expected exactly one response frame total after EOF, got %d extra newlines: %s", got, stdout.String())
+	}
+}
+
+// TestDegradedBridge_MalformedJSONLogged verifies that a malformed JSON line
+// on stdin is skipped without crashing the bridge, and that a diagnostic is
+// written to stderr so operators can debug a misbehaving client.
+func TestDegradedBridge_MalformedJSONLogged(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	authErr := &startupAuthError{summary: "no Taufinity credentials found", detail: "no credentials file on disk"}
+
+	stdinR, stdinW := io.Pipe()
+	stdout := &threadSafeBuffer{}
+	stderr := &threadSafeBuffer{}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runDegradedBridge(ctx, stdinR, stdout, stderr, authErr)
+	}()
+
+	// Garbage line, then a valid sentinel request. The bridge must skip the
+	// garbage, log it, and still reply to the sentinel.
+	frames := `not json at all` + "\n" +
+		`{"jsonrpc":"2.0","id":42,"method":"tools/list"}` + "\n"
+	if _, err := stdinW.Write([]byte(frames)); err != nil {
+		t.Fatalf("write frames: %v", err)
+	}
+
+	line := readNextFrame(t, stdout, 2*time.Second)
+	var resp struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("decode: %v: %s", err, line)
+	}
+	if string(resp.ID) != "42" {
+		t.Errorf("response id = %s, want 42", resp.ID)
+	}
+
+	_ = stdinW.Close()
+	<-done
+
+	if !strings.Contains(stderr.String(), "invalid JSON") {
+		t.Errorf("stderr did not log malformed JSON; got: %s", stderr.String())
+	}
+}
+
+// TestProbeStartupAuth_NoCredentials verifies the probe surfaces a helpful
+// summary/detail pair when no credentials file exists on disk.
+func TestProbeStartupAuth_NoCredentials(t *testing.T) {
+	// Point HOME at an empty temp dir so the credentials loader sees no file.
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	err := probeStartupAuth()
+	if err == nil {
+		t.Fatal("probeStartupAuth() = nil, want startupAuthError when no credentials exist")
+	}
+	if !strings.Contains(err.summary, "no Taufinity credentials") {
+		t.Errorf("summary = %q, want it to mention missing credentials", err.summary)
+	}
+	if !strings.Contains(err.detail, "taufinity auth login") {
+		t.Errorf("detail = %q, want it to point at 'taufinity auth login'", err.detail)
+	}
 }
 
 // TestStdioBridge_Non401MapsTo32000Network verifies that any non-auth

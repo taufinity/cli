@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -109,21 +110,31 @@ const (
 	errCodeMethodNF   = -32601
 )
 
+// authFailedMessage is the human-readable text MCP clients display when the
+// bridge can't authenticate to Studio — either at startup (degraded bridge)
+// or mid-session (upstream 401). One canonical phrasing keeps the user
+// experience consistent and stops programmatic clients from having to
+// branch on hint text.
+const authFailedMessage = "Taufinity authentication required — run 'taufinity auth login' in a terminal, then restart this MCP server in your client"
+
+// authFailedHint is the same instruction, surfaced via error.data.hint for
+// programmatic clients. Kept identical-in-meaning to authFailedMessage so a
+// client that only renders one of the two still tells the user what to do.
+const authFailedHint = "run 'taufinity auth login' in a terminal, then restart this MCP server in your client"
+
 func runMCPStdio(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if !auth.HasCredentials() {
-		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
-	}
-	// Probe once to fail fast at startup if we have no usable token.
-	// The bridge itself reloads on every request via TokenSource below.
-	creds, err := auth.LoadCredentials()
-	if err != nil {
-		return fmt.Errorf("load credentials: %w", err)
-	}
-	if _, err := creds.GetValidToken(); err != nil {
-		return fmt.Errorf("run 'taufinity auth login' to re-authenticate: %w", err)
+	// Probe credentials at startup. If they are missing or expired we do NOT
+	// exit — that leaves the MCP client showing a useless "server disconnected"
+	// popup with no actionable message. Instead, run a degraded bridge that
+	// stays alive and replies to every JSON-RPC request with an auth_failed
+	// error frame the client can surface to the user.
+	if startupErr := probeStartupAuth(); startupErr != nil {
+		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] %s — %s\n", startupErr.summary, startupErr.detail)
+		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] running in degraded mode; every request will return auth_failed until you re-authenticate\n")
+		return runDegradedBridge(ctx, os.Stdin, os.Stdout, os.Stderr, startupErr)
 	}
 
 	upstreamURL := strings.TrimRight(GetAPIURL(), "/") + "/mcp"
@@ -140,6 +151,171 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 		Stdout:        os.Stdout,
 		Stderr:        os.Stderr,
 	})
+}
+
+// startupAuthError captures why the credential probe failed at bridge
+// startup. It carries enough detail to render a useful JSON-RPC error frame
+// from the degraded bridge (summary → Message, detail/expiresAt → Data).
+type startupAuthError struct {
+	summary   string    // short user-facing reason ("Taufinity credentials expired")
+	detail    string    // longer technical detail (e.g. "token expired at 2026-05-12T17:45:23Z")
+	expiresAt time.Time // zero if unknown
+}
+
+func (e *startupAuthError) Error() string {
+	if e.detail != "" {
+		return e.summary + ": " + e.detail
+	}
+	return e.summary
+}
+
+// probeStartupAuth checks for usable credentials. Returns nil when the bridge
+// can start normally, or a *startupAuthError describing the problem.
+func probeStartupAuth() *startupAuthError {
+	if !auth.HasCredentials() {
+		return &startupAuthError{
+			summary: "no Taufinity credentials found",
+			detail:  "no credentials file on disk; run 'taufinity auth login' to sign in",
+		}
+	}
+	creds, err := auth.LoadCredentials()
+	if err != nil {
+		return &startupAuthError{
+			summary: "could not read Taufinity credentials",
+			detail:  err.Error(),
+		}
+	}
+	if _, err := creds.GetValidToken(); err != nil {
+		return &startupAuthError{
+			summary:   "Taufinity credentials expired",
+			detail:    err.Error(),
+			expiresAt: creds.ExpiresAt,
+		}
+	}
+	return nil
+}
+
+// runDegradedBridge reads JSON-RPC frames from stdin and replies to every
+// request with an auth_failed error. It is used when the startup credential
+// probe fails. Notifications are dropped silently (JSON-RPC notifications
+// have no id and expect no reply).
+//
+// The point is to keep the subprocess alive long enough for the MCP client
+// to send `initialize` and receive a real, surface-able error — instead of
+// the generic "server disconnected" the client shows when we exit before
+// the handshake completes.
+func runDegradedBridge(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, authErr *startupAuthError) error {
+	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, 0, 1024*1024), defaultMaxFrameBytes)
+
+	var writeMu sync.Mutex
+	writeFrame := func(v any) error {
+		data, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		data = append(data, '\n')
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		_, werr := stdout.Write(data)
+		return werr
+	}
+
+	// Message prefixes the canonical auth-failed text with the specific reason
+	// (e.g. "Taufinity credentials expired — ..."), so the client surfaces both
+	// the diagnosis and the fix in one line.
+	message := authErr.summary + " — " + authFailedHint
+	// detail carries the GetValidToken error string for context. That string
+	// is only ever "token expired at <RFC3339 timestamp>" (see
+	// internal/auth/credentials.go GetValidToken) — no token bytes, no path.
+	// Anyone editing GetValidToken: keep it that way.
+	baseData := map[string]any{
+		"error":  "auth_failed",
+		"detail": authErr.detail,
+		"hint":   authFailedHint,
+	}
+	if !authErr.expiresAt.IsZero() {
+		baseData["expired_at"] = authErr.expiresAt.UTC().Format(time.RFC3339)
+	}
+
+	// Run scan in a goroutine so ctx cancellation unblocks the main loop
+	// promptly. NOTE: on ctx cancel the scanner goroutine stays parked
+	// inside scanner.Scan() until stdin closes (real stdio: when the OS
+	// closes the fd at process exit; tests: when the caller closes stdinW).
+	// This is acceptable because the bridge runs as a top-level process.
+	lineCh := make(chan []byte)
+	errCh := make(chan error, 1)
+	go func() {
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			select {
+			case lineCh <- line:
+			case <-ctx.Done():
+				return
+			}
+		}
+		// bufio.Scanner.Err() returns nil on clean EOF — pass it through and
+		// let the main loop return nil. No io.EOF mapping needed.
+		errCh <- scanner.Err()
+		close(lineCh)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-errCh:
+			return err
+		case line, ok := <-lineCh:
+			if !ok {
+				return nil
+			}
+			trimmed := stripWhitespace(line)
+			if len(trimmed) == 0 {
+				continue
+			}
+			var frame jsonRPCFrame
+			if err := json.Unmarshal(trimmed, &frame); err != nil {
+				fmt.Fprintf(stderr, "[taufinity mcp stdio] invalid JSON from stdin: %v\n", err)
+				continue
+			}
+			// Notification: no id field, or id explicitly null (JSON-RPC 2.0
+			// treats both as notifications in MCP practice; spec allows null
+			// requests but no real MCP server uses them). TrimSpace tolerates
+			// whitespace inside the raw id value.
+			if len(frame.ID) == 0 || bytes.Equal(bytes.TrimSpace(frame.ID), []byte("null")) {
+				continue
+			}
+			var id mcp.RequestId
+			if err := json.Unmarshal(frame.ID, &id); err != nil {
+				fmt.Fprintf(stderr, "[taufinity mcp stdio] invalid request id: %v\n", err)
+				continue
+			}
+
+			data := make(map[string]any, len(baseData)+1)
+			for k, v := range baseData {
+				data[k] = v
+			}
+			data["trace_id"] = newTraceID()
+
+			resp := struct {
+				JSONRPC string                  `json:"jsonrpc"`
+				ID      mcp.RequestId           `json:"id"`
+				Error   mcp.JSONRPCErrorDetails `json:"error"`
+			}{
+				JSONRPC: "2.0",
+				ID:      id,
+				Error: mcp.JSONRPCErrorDetails{
+					Code:    errCodeAuthFailed,
+					Message: message,
+					Data:    data,
+				},
+			}
+			if err := writeFrame(resp); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // defaultTokenSource reloads credentials from disk on every call so the
@@ -641,9 +817,9 @@ func mapTransportError(err error) (int, string, map[string]any) {
 	traceID := newTraceID()
 
 	if errors.Is(err, transport.ErrUnauthorized) {
-		return errCodeAuthFailed, "auth_failed", map[string]any{
+		return errCodeAuthFailed, authFailedMessage, map[string]any{
 			"error":    "auth_failed",
-			"hint":     "run taufinity auth login",
+			"hint":     authFailedHint,
 			"trace_id": traceID,
 		}
 	}
