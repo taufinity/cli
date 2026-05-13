@@ -111,9 +111,16 @@ func runTemplatePreview(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no site configured. Set 'site' in taufinity.yaml or run 'taufinity config set site SITE_ID'")
 	}
 
-	// Create client (will auto-refresh token if needed)
+	// Create client (will auto-refresh token if needed). Forward the
+	// resolved --org override so template preview can target sites in
+	// orgs the session token didn't auth into directly. The X-Organization-ID
+	// header lets the server-side cross-org check pass when the user has
+	// membership in the target org.
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
+	if org := GetOrg(); org != "" {
+		client.SetOrg(org)
+	}
 
 	// Pre-flight auth check with auto-refresh
 	Print("🔐 Checking authentication...\n")
