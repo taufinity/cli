@@ -3,11 +3,14 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/taufinity/cli/internal/desktopconfig"
 )
 
 func TestClientRegistry_AllClientsResolvable(t *testing.T) {
@@ -18,6 +21,13 @@ func TestClientRegistry_AllClientsResolvable(t *testing.T) {
 	for _, c := range mcpClientsList {
 		t.Run(c.name, func(t *testing.T) {
 			path, err := c.resolvePath()
+			// Some clients aren't shipped on every OS — e.g. Claude Desktop is
+			// macOS/Windows only. Treat that as a skip, not a failure, so CI
+			// on Linux stays green without sacrificing the per-client check
+			// on the platforms where the client actually runs.
+			if errors.Is(err, desktopconfig.ErrUnsupportedOS) {
+				t.Skipf("%s: not available on %s", c.name, runtime.GOOS)
+			}
 			if err != nil {
 				t.Fatalf("%s: resolvePath: %v", c.name, err)
 			}
