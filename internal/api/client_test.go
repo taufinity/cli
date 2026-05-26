@@ -196,6 +196,68 @@ func TestRefreshToken_ServerRejectsReturnsError(t *testing.T) {
 	}
 }
 
+func TestRevokeRefreshToken_PostsBodyUnauthenticated(t *testing.T) {
+	var gotBody map[string]string
+	var gotPath, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	if err := client.RevokeRefreshToken("rt-123"); err != nil {
+		t.Fatalf("RevokeRefreshToken: %v", err)
+	}
+	if gotPath != "/api/cli/token/revoke" {
+		t.Fatalf("wrong path %q", gotPath)
+	}
+	if gotBody["refresh_token"] != "rt-123" {
+		t.Fatalf("expected refresh_token in body, got %v", gotBody)
+	}
+	if gotAuth != "" {
+		t.Fatalf("revoke should be unauthenticated, got auth %q", gotAuth)
+	}
+}
+
+func TestRevokeAllRefreshTokens_AuthenticatedPost(t *testing.T) {
+	var gotAuth, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// SetAuth → getToken() short-circuits, no creds file needed.
+	client := New(server.URL)
+	client.SetAuth("tkn")
+	if err := client.RevokeAllRefreshTokens(); err != nil {
+		t.Fatalf("RevokeAllRefreshTokens: %v", err)
+	}
+	if gotAuth != "Bearer tkn" {
+		t.Fatalf("expected Bearer auth, got %q", gotAuth)
+	}
+	if gotPath != "/api/cli/token/revoke-all" {
+		t.Fatalf("wrong path %q", gotPath)
+	}
+}
+
+func TestRevokeAllRefreshTokens_ServerErrorReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	client.SetAuth("tkn")
+	if err := client.RevokeAllRefreshTokens(); err == nil {
+		t.Fatal("expected error on non-200 revoke-all")
+	}
+}
+
 func TestClient_Retry(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

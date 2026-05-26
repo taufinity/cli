@@ -498,6 +498,49 @@ func (c *Client) refreshToken(creds *auth.Credentials) error {
 	return creds.UpdateTokens(refreshResp.AccessToken, refreshResp.RefreshToken, expiresAt, refreshResp.Email, refreshResp.OrganizationName)
 }
 
+// RevokeRefreshToken revokes a single CLI refresh token server-side (logout).
+// Unauthenticated: possession of the refresh token is the authorization. The
+// refresh token travels in the body, so this works even when the access token
+// has already expired. Best-effort — callers may ignore network errors.
+func (c *Client) RevokeRefreshToken(refreshToken string) error {
+	body, err := json.Marshal(map[string]string{"refresh_token": refreshToken})
+	if err != nil {
+		return fmt.Errorf("marshal revoke request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.baseURL+"/api/cli/token/revoke", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if _, err := c.httpClient.Do(req); err != nil {
+		return err
+	}
+	return nil
+}
+
+// RevokeAllRefreshTokens revokes ALL of the authenticated user's CLI sessions
+// ("log out everywhere"). Uses normal auth — getToken() auto-refreshes the
+// access token first if it has expired, so this works after a long gap too.
+func (c *Client) RevokeAllRefreshTokens() error {
+	token, err := c.getToken()
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.baseURL+"/api/cli/token/revoke-all", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("revoke-all failed: %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // printDryRun outputs a dry-run message for a request.
 func (c *Client) printDryRun(method, path, contentType string, body []byte) {
 	fmt.Fprintf(c.dryRunOut, "[dry-run] %s %s\n", method, path)

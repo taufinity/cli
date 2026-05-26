@@ -28,11 +28,16 @@ The CLI will poll for approval and store the token locally.`,
 	RunE: runAuthLogin,
 }
 
+var authRevokeAll bool
+
 var authRevokeCmd = &cobra.Command{
 	Use:   "revoke",
 	Short: "Revoke authentication",
-	Long:  `Remove stored credentials and log out of the CLI.`,
-	RunE:  runAuthRevoke,
+	Long: `Remove stored credentials and log out of the CLI.
+
+By default this revokes only the current session. Use --all to revoke every CLI
+session for your account ("log out everywhere").`,
+	RunE: runAuthRevoke,
 }
 
 var authStatusCmd = &cobra.Command{
@@ -63,6 +68,8 @@ func init() {
 	authCmd.AddCommand(authRevokeCmd)
 	authCmd.AddCommand(authStatusCmd)
 	authCmd.AddCommand(authTokenCmd)
+
+	authRevokeCmd.Flags().BoolVar(&authRevokeAll, "all", false, "Revoke all CLI sessions (log out everywhere)")
 }
 
 // DeviceCodeResponse matches the API response.
@@ -78,6 +85,7 @@ type DeviceCodeResponse struct {
 type DeviceCodeStatusResponse struct {
 	Status           string     `json:"status"`
 	AccessToken      string     `json:"access_token,omitempty"`
+	RefreshToken     string     `json:"refresh_token,omitempty"`
 	ExpiresAt        *time.Time `json:"expires_at,omitempty"`
 	Email            string     `json:"email,omitempty"`
 	OrganizationName string     `json:"organization_name,omitempty"`
@@ -164,13 +172,17 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 				// Save credentials
 				creds := &auth.Credentials{
 					AccessToken:      status.AccessToken,
+					RefreshToken:     status.RefreshToken,
 					Email:            status.Email,
 					OrganizationName: status.OrganizationName,
 				}
 				if status.ExpiresAt != nil {
+					creds.AccessTokenExpiresAt = *status.ExpiresAt
 					creds.ExpiresAt = *status.ExpiresAt
 				} else {
-					creds.ExpiresAt = time.Now().Add(30 * 24 * time.Hour)
+					// Server mints a short-lived (1h) CLI access token.
+					creds.AccessTokenExpiresAt = time.Now().Add(time.Hour)
+					creds.ExpiresAt = creds.AccessTokenExpiresAt
 				}
 
 				if err := creds.Save(); err != nil {
@@ -225,6 +237,23 @@ func runAuthRevoke(cmd *cobra.Command, args []string) error {
 	if !auth.HasCredentials() {
 		Print("Not logged in.\n")
 		return nil
+	}
+
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+
+	if authRevokeAll {
+		// Authenticated "log out everywhere": revokes every CLI session for the
+		// user. getToken auto-refreshes a near-expired access token first.
+		if err := client.RevokeAllRefreshTokens(); err != nil {
+			Print("Warning: could not revoke all sessions server-side: %v\n", err)
+		} else {
+			Print("Revoked all CLI sessions.\n")
+		}
+	} else if creds, err := auth.LoadCredentials(); err == nil && creds.HasRefreshToken() {
+		// Best-effort single-session revoke; works even with an expired access
+		// token since the refresh token travels in the body.
+		_ = client.RevokeRefreshToken(creds.RefreshToken)
 	}
 
 	if err := auth.DeleteCredentials(); err != nil {
