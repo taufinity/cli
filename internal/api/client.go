@@ -419,92 +419,66 @@ func (c *Client) ValidateAuth(ctx context.Context) error {
 	return nil
 }
 
-// getToken loads and validates the access token.
-// If the token needs server-side validation, it validates and refreshes if needed.
+// getToken loads the access token, renewing it from the refresh token when it
+// is expired or near expiry. The access token is short-lived (1h), so renewal
+// happens proactively via ShouldRenew rather than waiting for a 401.
 func (c *Client) getToken() (string, error) {
-	// Use explicit token if set (no validation needed)
+	// Use explicit token if set (no renewal needed).
 	if c.authToken != "" {
 		return c.authToken, nil
 	}
 
-	// Load from saved credentials
+	// Load from saved credentials.
 	creds, err := auth.LoadCredentials()
 	if err != nil {
 		return "", err
 	}
 
-	// Check local expiry first
-	if creds.IsExpired() {
-		// Try to refresh
+	// Renew proactively when the short-lived access token is expired or near expiry.
+	if creds.ShouldRenew() {
 		if err := c.refreshToken(creds); err != nil {
-			// Refresh failed, revoke and return error
+			// Renewal failed (no/expired/revoked refresh token) — clear creds and
+			// force a re-login.
 			auth.DeleteCredentials()
 			return "", fmt.Errorf("session expired, please run 'taufinity auth login'")
-		}
-		return creds.AccessToken, nil
-	}
-
-	// Check if we need server-side validation
-	if creds.NeedsValidation() {
-		if err := c.validateAndRefreshToken(creds); err != nil {
-			// Validation failed and refresh failed, revoke
-			auth.DeleteCredentials()
-			return "", fmt.Errorf("session invalid, please run 'taufinity auth login'")
 		}
 	}
 
 	return creds.AccessToken, nil
 }
 
-// validateAndRefreshToken validates the token with the server and refreshes if invalid.
-func (c *Client) validateAndRefreshToken(creds *auth.Credentials) error {
-	ctx := context.Background()
-
-	// Try to validate
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/cli/token/validate", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		// Network error - don't revoke, just skip validation
-		return nil
-	}
-
-	if resp.StatusCode == http.StatusOK {
-		// Token is valid, update last validated time
-		creds.UpdateValidatedAt()
-		return nil
-	}
-
-	// Token is invalid (401), try to refresh
-	return c.refreshToken(creds)
-}
-
-// refreshToken attempts to refresh the token using the refresh endpoint.
+// refreshToken exchanges the stored refresh token for a new access+refresh pair.
+// It POSTs {refresh_token} (the refresh token, NOT the access token) so it works
+// even after the short-lived access token has expired, and stores the rotated
+// pair returned by the server.
 func (c *Client) refreshToken(creds *auth.Credentials) error {
-	ctx := context.Background()
+	if !creds.HasRefreshToken() {
+		return fmt.Errorf("no refresh token; please run 'taufinity auth login'")
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/cli/token/refresh", nil)
+	ctx := context.Background()
+	body, err := json.Marshal(map[string]string{"refresh_token": creds.RefreshToken})
+	if err != nil {
+		return fmt.Errorf("marshal refresh request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/cli/token/refresh", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
 
+	// httpClient.Do returns *httpclient.Response (body already read into Body []byte).
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("refresh request failed: %w", err)
 	}
-
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("refresh failed: %d", resp.StatusCode)
 	}
 
-	// Parse refresh response
 	var refreshResp struct {
 		AccessToken      string     `json:"access_token"`
+		RefreshToken     string     `json:"refresh_token"`
 		ExpiresAt        *time.Time `json:"expires_at"`
 		Email            string     `json:"email"`
 		OrganizationName string     `json:"organization_name"`
@@ -512,17 +486,16 @@ func (c *Client) refreshToken(creds *auth.Credentials) error {
 	if err := json.Unmarshal(resp.Body, &refreshResp); err != nil {
 		return fmt.Errorf("parse refresh response: %w", err)
 	}
-
 	if refreshResp.AccessToken == "" {
 		return fmt.Errorf("no access token in refresh response")
 	}
 
-	// Update credentials
-	expiresAt := time.Now().Add(30 * 24 * time.Hour) // Default 30 days
+	// Default expiry mirrors the server's 1h CLI access token if absent.
+	expiresAt := time.Now().Add(time.Hour)
 	if refreshResp.ExpiresAt != nil {
 		expiresAt = *refreshResp.ExpiresAt
 	}
-	return creds.Update(refreshResp.AccessToken, expiresAt, refreshResp.Email, refreshResp.OrganizationName)
+	return creds.UpdateTokens(refreshResp.AccessToken, refreshResp.RefreshToken, expiresAt, refreshResp.Email, refreshResp.OrganizationName)
 }
 
 // printDryRun outputs a dry-run message for a request.

@@ -134,6 +134,68 @@ func TestClient_DryRun(t *testing.T) {
 	}
 }
 
+func TestRefreshToken_PostsRefreshTokenAndStoresRotation(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	var gotBody map[string]string
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		exp := time.Now().Add(time.Hour)
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":      "new-access",
+			"refresh_token":     "new-refresh",
+			"expires_at":        exp,
+			"email":             "u@example.com",
+			"organization_name": "Acme",
+		})
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	creds := &auth.Credentials{AccessToken: "old", RefreshToken: "old-refresh"}
+	if err := client.refreshToken(creds); err != nil {
+		t.Fatalf("refreshToken: %v", err)
+	}
+	if gotPath != "/api/cli/token/refresh" {
+		t.Fatalf("wrong path %q", gotPath)
+	}
+	if gotBody["refresh_token"] != "old-refresh" {
+		t.Fatalf("expected refresh_token in body, got %v", gotBody)
+	}
+	if creds.AccessToken != "new-access" || creds.RefreshToken != "new-refresh" {
+		t.Fatalf("tokens not rotated: %+v", creds)
+	}
+	if creds.OrganizationName != "Acme" || creds.Email != "u@example.com" {
+		t.Fatalf("identity not stored: %+v", creds)
+	}
+}
+
+func TestRefreshToken_NoRefreshTokenErrors(t *testing.T) {
+	client := New("http://unused.invalid")
+	creds := &auth.Credentials{AccessToken: "old"} // no refresh token
+	if err := client.refreshToken(creds); err == nil {
+		t.Fatal("expected error when no refresh token is stored")
+	}
+}
+
+func TestRefreshToken_ServerRejectsReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	creds := &auth.Credentials{RefreshToken: "stale"}
+	if err := client.refreshToken(creds); err == nil {
+		t.Fatal("expected error when server returns 401")
+	}
+}
+
 func TestClient_Retry(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
