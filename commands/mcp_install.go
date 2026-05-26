@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
 	"github.com/taufinity/cli/internal/desktopconfig"
 )
@@ -269,13 +271,13 @@ func resolveTransport(client, override string) (string, error) {
 }
 
 // buildHTTPEntry produces a RemoteServer carrying the bearer token. Used for
-// --client print and --transport http overrides.
+// --client print and --transport http overrides. The token is fetched through
+// the client's renewing path so a near-expiry access token is refreshed (and
+// rotated) before being written into the client config.
 func buildHTTPEntry(apiURL string) (desktopconfig.RemoteServer, error) {
-	creds, err := auth.LoadCredentials()
-	if err != nil {
-		return desktopconfig.RemoteServer{}, fmt.Errorf("load credentials: %w", err)
-	}
-	token, err := creds.GetValidToken()
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+	token, err := client.Token(context.Background())
 	if err != nil {
 		return desktopconfig.RemoteServer{}, fmt.Errorf("%w — run 'taufinity auth login' to refresh", err)
 	}

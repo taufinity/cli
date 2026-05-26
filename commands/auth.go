@@ -309,9 +309,6 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Update last validated time
-	creds.UpdateValidatedAt()
-
 	Print("Status: Authenticated\n")
 	Print("Email: %s\n", creds.Email)
 	if creds.OrganizationName != "" {
@@ -326,12 +323,14 @@ func runAuthToken(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated - run 'taufinity auth login' first")
 	}
 
-	creds, err := auth.LoadCredentials()
-	if err != nil {
-		return fmt.Errorf("load credentials: %w", err)
-	}
+	// Route through the client's renewing token path so a near-expiry access
+	// token is refreshed (and rotated) before it's handed out. With a 1h access
+	// token, reading the stored token directly would frequently emit a stale or
+	// expired value into scripts.
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
 
-	token, err := creds.GetValidToken()
+	token, err := client.Token(context.Background())
 	if err != nil {
 		return err
 	}

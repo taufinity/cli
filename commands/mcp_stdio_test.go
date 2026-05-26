@@ -16,6 +16,9 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
+
+	"github.com/taufinity/cli/internal/api"
+	"github.com/taufinity/cli/internal/auth"
 )
 
 // mockUpstream simulates the Studio /mcp endpoint over Streamable HTTP.
@@ -463,7 +466,7 @@ func TestProbeStartupAuth_NoCredentials(t *testing.T) {
 	t.Setenv("HOME", tmp)
 	t.Setenv("XDG_CONFIG_HOME", tmp)
 
-	err := probeStartupAuth()
+	err := probeStartupAuth(context.Background(), api.New("http://unused.invalid"))
 	if err == nil {
 		t.Fatal("probeStartupAuth() = nil, want startupAuthError when no credentials exist")
 	}
@@ -472,6 +475,93 @@ func TestProbeStartupAuth_NoCredentials(t *testing.T) {
 	}
 	if !strings.Contains(err.detail, "taufinity auth login") {
 		t.Errorf("detail = %q, want it to point at 'taufinity auth login'", err.detail)
+	}
+}
+
+// TestClientTokenSource_RenewsNearExpiryToken pins the C2 fix for the
+// long-running stdio bridge: the token source must RENEW a near-expiry access
+// token via the refresh token (not just hand back the stale one), so the
+// bridge survives past the 1h access-token lifetime without a restart.
+func TestClientTokenSource_RenewsNearExpiryToken(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	var refreshCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/cli/token/refresh" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		refreshCalls.Add(1)
+		exp := time.Now().Add(time.Hour)
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "renewed-by-bridge",
+			"refresh_token": "rotated",
+			"expires_at":    exp,
+		})
+	}))
+	defer server.Close()
+
+	creds := &auth.Credentials{
+		AccessToken:          "near-expiry",
+		RefreshToken:         "valid-refresh",
+		AccessTokenExpiresAt: time.Now().Add(time.Minute),
+		ExpiresAt:            time.Now().Add(time.Minute),
+	}
+	if err := creds.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	src := clientTokenSource(api.New(server.URL))
+	tok, expiresAt, err := src(context.Background())
+	if err != nil {
+		t.Fatalf("token source: %v", err)
+	}
+	if tok != "renewed-by-bridge" {
+		t.Fatalf("token = %q, want renewed-by-bridge (should have refreshed)", tok)
+	}
+	if refreshCalls.Load() != 1 {
+		t.Fatalf("expected 1 refresh call, got %d", refreshCalls.Load())
+	}
+	// The reported expiry must be the freshly-rotated ~1h one so the bridge
+	// caches it instead of re-refreshing on every request.
+	if time.Until(expiresAt) < 30*time.Minute {
+		t.Fatalf("expiresAt should reflect the renewed ~1h token, got %v", expiresAt)
+	}
+}
+
+// TestProbeStartupAuth_RenewableTokenNotDegraded verifies an expired access
+// token backed by a valid refresh token does NOT trip degraded mode — the
+// probe renews through the client instead. Before C2 the bridge degraded on
+// any expired access token, even when renewal was possible.
+func TestProbeStartupAuth_RenewableTokenNotDegraded(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("XDG_CONFIG_HOME", tmp)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		exp := time.Now().Add(time.Hour)
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "renewed",
+			"refresh_token": "rotated",
+			"expires_at":    exp,
+		})
+	}))
+	defer server.Close()
+
+	// Access token already expired, but a refresh token is present.
+	creds := &auth.Credentials{
+		AccessToken:          "expired",
+		RefreshToken:         "valid-refresh",
+		AccessTokenExpiresAt: time.Now().Add(-time.Minute),
+		ExpiresAt:            time.Now().Add(-time.Minute),
+	}
+	if err := creds.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := probeStartupAuth(context.Background(), api.New(server.URL)); err != nil {
+		t.Fatalf("probe should succeed via renewal, got degraded: %v", err)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/spf13/cobra"
 
+	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
 )
 
@@ -126,12 +127,17 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Probe credentials at startup. If they are missing or expired we do NOT
-	// exit — that leaves the MCP client showing a useless "server disconnected"
-	// popup with no actionable message. Instead, run a degraded bridge that
-	// stays alive and replies to every JSON-RPC request with an auth_failed
-	// error frame the client can surface to the user.
-	if startupErr := probeStartupAuth(); startupErr != nil {
+	// One client for the whole bridge lifetime; its renewing Token() is the
+	// single source of fresh access tokens (proactive refresh + rotation).
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+
+	// Probe credentials at startup. If they are missing or unrenewable we do
+	// NOT exit — that leaves the MCP client showing a useless "server
+	// disconnected" popup with no actionable message. Instead, run a degraded
+	// bridge that stays alive and replies to every JSON-RPC request with an
+	// auth_failed error frame the client can surface to the user.
+	if startupErr := probeStartupAuth(ctx, client); startupErr != nil {
 		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] %s — %s\n", startupErr.summary, startupErr.detail)
 		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] running in degraded mode; every request will return auth_failed until you re-authenticate\n")
 		return runDegradedBridge(ctx, os.Stdin, os.Stdout, os.Stderr, startupErr)
@@ -142,7 +148,7 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 
 	return RunStdioBridge(ctx, StdioBridgeConfig{
 		UpstreamURL:   upstreamURL,
-		TokenSource:   defaultTokenSource,
+		TokenSource:   clientTokenSource(client),
 		OrgID:         flagOrg,
 		UserAgent:     userAgent,
 		Timeout:       flagMCPStdioTimeout,
@@ -169,9 +175,12 @@ func (e *startupAuthError) Error() string {
 	return e.summary
 }
 
-// probeStartupAuth checks for usable credentials. Returns nil when the bridge
-// can start normally, or a *startupAuthError describing the problem.
-func probeStartupAuth() *startupAuthError {
+// probeStartupAuth checks that a usable access token can be produced. Returns
+// nil when the bridge can start normally, or a *startupAuthError describing the
+// problem. It routes through client.Token, so an expired access token backed by
+// a valid refresh token renews here rather than tripping degraded mode — only a
+// missing credentials file or a definitively-rejected refresh token degrades.
+func probeStartupAuth(ctx context.Context, client *api.Client) *startupAuthError {
 	if !auth.HasCredentials() {
 		return &startupAuthError{
 			summary: "no Taufinity credentials found",
@@ -185,11 +194,11 @@ func probeStartupAuth() *startupAuthError {
 			detail:  err.Error(),
 		}
 	}
-	if _, err := creds.GetValidToken(); err != nil {
+	if _, err := client.Token(ctx); err != nil {
 		return &startupAuthError{
 			summary:   "Taufinity credentials expired",
 			detail:    err.Error(),
-			expiresAt: creds.ExpiresAt,
+			expiresAt: creds.AccessTokenExpiresAt,
 		}
 	}
 	return nil
@@ -225,10 +234,11 @@ func runDegradedBridge(ctx context.Context, stdin io.Reader, stdout, stderr io.W
 	// (e.g. "Taufinity credentials expired — ..."), so the client surfaces both
 	// the diagnosis and the fix in one line.
 	message := authErr.summary + " — " + authFailedHint
-	// detail carries the GetValidToken error string for context. That string
-	// is only ever "token expired at <RFC3339 timestamp>" (see
-	// internal/auth/credentials.go GetValidToken) — no token bytes, no path.
-	// Anyone editing GetValidToken: keep it that way.
+	// detail carries the token-probe error string for context. It originates
+	// from the client's renewing Token()/getToken (or the credentials loader)
+	// and is always a human message like "session expired, please run
+	// 'taufinity auth login'" or "no credentials file on disk" — no token
+	// bytes, no path. Anyone editing those error strings: keep it that way.
 	baseData := map[string]any{
 		"error":  "auth_failed",
 		"detail": authErr.detail,
@@ -318,21 +328,35 @@ func runDegradedBridge(ctx context.Context, stdin io.Reader, stdout, stderr io.W
 	}
 }
 
-// defaultTokenSource reloads credentials from disk on every call so the
-// bridge picks up tokens rotated by an out-of-process re-login (the user
-// running `taufinity auth login` again, or a future in-process refresh).
-// Long-lived Claude Desktop subprocesses must NOT cache the bearer that
-// was valid at startup; that is what HIGH-1 was about.
-func defaultTokenSource(_ context.Context) (token string, expiresAt time.Time, err error) {
-	creds, err := auth.LoadCredentials()
-	if err != nil {
-		return "", time.Time{}, err
+// clientTokenSource returns a TokenSource backed by the client's renewing
+// Token(). It is called per outbound request (subject to the bridge's
+// in-memory leeway cache), so:
+//
+//   - tokens rotated out-of-process (user re-running `taufinity auth login`)
+//     are picked up, and
+//   - the short-lived (1h) access token is proactively refreshed from the
+//     refresh token before it expires — without restarting the bridge.
+//
+// This is the C2 fix: long-lived Claude Desktop subprocesses no longer die
+// after the first hour because they previously only ever read a static token
+// off disk (GetValidToken, which never refreshes). The returned expiresAt is
+// re-read from credentials after Token() so the bridge cache schedules its
+// next refresh against the freshly-rotated expiry.
+func clientTokenSource(client *api.Client) TokenSource {
+	return func(ctx context.Context) (token string, expiresAt time.Time, err error) {
+		tok, err := client.Token(ctx)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		// Token() persists any rotation; reload to learn the new expiry. If the
+		// reload fails for some reason, fall back to a near-term expiry so the
+		// bridge re-checks soon rather than caching indefinitely.
+		expiresAt = time.Now().Add(tokenRefreshLeeway)
+		if creds, lerr := auth.LoadCredentials(); lerr == nil {
+			expiresAt = creds.AccessTokenExpiresAt
+		}
+		return tok, expiresAt, nil
 	}
-	tok, err := creds.GetValidToken()
-	if err != nil {
-		return "", creds.ExpiresAt, err
-	}
-	return tok, creds.ExpiresAt, nil
 }
 
 // TokenSource produces a bearer token for the upstream /mcp endpoint.

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
 )
 
@@ -248,9 +250,19 @@ func runMCPLogin(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load credentials: %w", err)
 	}
 
-	token, err := creds.GetValidToken()
+	// Renew (and rotate) via the single token path before embedding the bearer
+	// into .mcp.json — otherwise a near-expiry token gets written into config
+	// and the MCP server starts the session already stale.
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+	token, err := client.Token(context.Background())
 	if err != nil {
 		return fmt.Errorf("run 'taufinity auth login' to re-authenticate: %w", err)
+	}
+	// Token() may have rotated the tokens on disk; reload so printTokenInfo and
+	// the expiry display reflect the freshly-stored values.
+	if refreshed, rerr := auth.LoadCredentials(); rerr == nil {
+		creds = refreshed
 	}
 
 	// Resolve target path
