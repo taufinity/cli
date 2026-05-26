@@ -113,6 +113,77 @@ func TestCredentials_IsExpired(t *testing.T) {
 	}
 }
 
+func TestShouldRenew_NearExpiry(t *testing.T) {
+	c := &Credentials{AccessTokenExpiresAt: time.Now().Add(2 * time.Minute)}
+	if !c.ShouldRenew() {
+		t.Fatal("token expiring in 2m should renew (5m buffer)")
+	}
+	c.AccessTokenExpiresAt = time.Now().Add(30 * time.Minute)
+	if c.ShouldRenew() {
+		t.Fatal("token with 30m left should not renew")
+	}
+}
+
+func TestHasRefreshToken(t *testing.T) {
+	c := &Credentials{}
+	if c.HasRefreshToken() {
+		t.Fatal("empty creds have no refresh token")
+	}
+	c.RefreshToken = "x"
+	if !c.HasRefreshToken() {
+		t.Fatal("should report refresh token present")
+	}
+}
+
+func TestLoadCredentials_UpgradeShimCopiesLegacyExpiry(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// Simulate an old creds file: only ExpiresAt set, no AccessTokenExpiresAt.
+	legacyExpiry := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	creds := &Credentials{AccessToken: "legacy", ExpiresAt: legacyExpiry}
+	if err := creds.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	loaded, err := LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials failed: %v", err)
+	}
+	if !loaded.AccessTokenExpiresAt.Equal(legacyExpiry) {
+		t.Fatalf("upgrade shim should copy ExpiresAt into AccessTokenExpiresAt: got %v want %v",
+			loaded.AccessTokenExpiresAt, legacyExpiry)
+	}
+}
+
+func TestUpdateTokens_StoresRotatedPair(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	c := &Credentials{AccessToken: "old", RefreshToken: "old-refresh"}
+	exp := time.Now().Add(time.Hour).Truncate(time.Second)
+	if err := c.UpdateTokens("new-access", "new-refresh", exp, "u@example.com", "Acme"); err != nil {
+		t.Fatalf("UpdateTokens: %v", err)
+	}
+	if c.AccessToken != "new-access" || c.RefreshToken != "new-refresh" {
+		t.Fatalf("tokens not updated: %+v", c)
+	}
+	if !c.AccessTokenExpiresAt.Equal(exp) || !c.ExpiresAt.Equal(exp) {
+		t.Fatalf("expiry fields not coherent: access=%v legacy=%v", c.AccessTokenExpiresAt, c.ExpiresAt)
+	}
+	// An empty refresh token must NOT clobber the stored one.
+	if err := c.UpdateTokens("newer-access", "", exp, "", ""); err != nil {
+		t.Fatalf("UpdateTokens (no refresh): %v", err)
+	}
+	if c.RefreshToken != "new-refresh" {
+		t.Fatalf("empty refresh token should not clobber existing: %q", c.RefreshToken)
+	}
+}
+
 func TestCredentials_HasCredentials(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")
