@@ -2,8 +2,12 @@ package auth
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/taufinity/cli/internal/config"
 )
 
 func TestCredentials_SaveAndLoad(t *testing.T) {
@@ -181,6 +185,83 @@ func TestUpdateTokens_StoresRotatedPair(t *testing.T) {
 	}
 	if c.RefreshToken != "new-refresh" {
 		t.Fatalf("empty refresh token should not clobber existing: %q", c.RefreshToken)
+	}
+}
+
+func TestCredentials_SaveIsAtomic(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	creds := &Credentials{
+		AccessToken:  "atomic-access",
+		RefreshToken: "atomic-refresh",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		Email:        "user@example.com",
+	}
+	if err := creds.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// The target file must exist, be 0600, and parse back to a complete record.
+	loaded, err := LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials failed: %v", err)
+	}
+	if loaded.AccessToken != "atomic-access" || loaded.RefreshToken != "atomic-refresh" {
+		t.Fatalf("incomplete creds after atomic save: %+v", loaded)
+	}
+
+	path := credentialsPath()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat credentials: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Fatalf("credentials perm = %o, want 0600", perm)
+	}
+
+	// No temp file should be left behind on a successful save.
+	entries, err := os.ReadDir(config.Dir())
+	if err != nil {
+		t.Fatalf("read config dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("temp file left behind after Save: %s", e.Name())
+		}
+	}
+}
+
+func TestCredentials_SaveOverwriteRemainsParseable(t *testing.T) {
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+
+	// First write, then an overwrite that rotates the refresh token. The
+	// atomic rename means a reader never sees a half-written file.
+	first := &Credentials{AccessToken: "a1", RefreshToken: "r1", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := first.Save(); err != nil {
+		t.Fatalf("first Save: %v", err)
+	}
+	second := &Credentials{AccessToken: "a2", RefreshToken: "r2", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := second.Save(); err != nil {
+		t.Fatalf("second Save: %v", err)
+	}
+
+	loaded, err := LoadCredentials()
+	if err != nil {
+		t.Fatalf("LoadCredentials failed: %v", err)
+	}
+	if loaded.AccessToken != "a2" || loaded.RefreshToken != "r2" {
+		t.Fatalf("overwrite not applied atomically: %+v", loaded)
+	}
+
+	// Confirm the on-disk file is the canonical path, not a stray temp.
+	if _, err := os.Stat(filepath.Join(config.Dir(), "credentials.json")); err != nil {
+		t.Fatalf("expected credentials.json at canonical path: %v", err)
 	}
 }
 
