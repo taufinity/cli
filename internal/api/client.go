@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,14 @@ import (
 	"github.com/taufinity/cli/internal/auth"
 	"github.com/taufinity/cli/internal/httpclient"
 )
+
+// ErrRefreshTokenRejected is returned by refreshToken when the server
+// definitively rejects the refresh token (HTTP 401) — it is invalid, expired,
+// or revoked. This is the ONLY condition under which getToken deletes the
+// stored credentials and forces a re-login. Transient failures (network
+// errors, 5xx) return a different (wrapped) error so credentials survive and
+// the next invocation can retry.
+var ErrRefreshTokenRejected = errors.New("refresh token rejected; please run 'taufinity auth login'")
 
 // Client is the Taufinity API client with retry/backoff and auth support.
 type Client struct {
@@ -154,7 +163,7 @@ func (c *Client) Get(ctx context.Context, path string) (*Response, error) {
 
 // GetWithAuth performs an authenticated GET request.
 func (c *Client) GetWithAuth(ctx context.Context, path string) (*Response, error) {
-	token, err := c.getToken()
+	token, err := c.getToken(ctx)
 	if err != nil {
 		c.logTokenError(err)
 		return nil, err
@@ -183,7 +192,7 @@ func (c *Client) GetWithAuth(ctx context.Context, path string) (*Response, error
 
 // DeleteWithAuth performs an authenticated DELETE request.
 func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, error) {
-	token, err := c.getToken()
+	token, err := c.getToken(ctx)
 	if err != nil {
 		c.logTokenError(err)
 		return nil, err
@@ -241,7 +250,7 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response
 
 // PostJSONWithAuth performs an authenticated POST request with JSON body.
 func (c *Client) PostJSONWithAuth(ctx context.Context, path string, body any) (*Response, error) {
-	token, err := c.getToken()
+	token, err := c.getToken(ctx)
 	if err != nil {
 		c.logTokenError(err)
 		return nil, err
@@ -281,7 +290,7 @@ func (c *Client) PostJSONWithAuth(ctx context.Context, path string, body any) (*
 
 // UploadFile performs a multipart file upload.
 func (c *Client) UploadFile(ctx context.Context, path, filePath string) (*Response, error) {
-	token, err := c.getToken()
+	token, err := c.getToken(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +353,7 @@ func (c *Client) UploadFile(ctx context.Context, path, filePath string) (*Respon
 
 // PostMultipart performs an authenticated POST request with multipart form data.
 func (c *Client) PostMultipart(ctx context.Context, path string, body io.Reader, contentType string) (*Response, error) {
-	token, err := c.getToken()
+	token, err := c.getToken(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -375,54 +384,38 @@ func (c *Client) PostMultipart(ctx context.Context, path string, body io.Reader,
 	}, nil
 }
 
-// ValidateAuth checks if authentication is valid, refreshing if needed.
-// Call this before starting work to fail fast on auth issues.
+// ValidateAuth checks that a usable access token can be produced, renewing it
+// from the refresh token if it is expired or near expiry. Call this before
+// starting work to fail fast on auth issues.
+//
+// It is a thin wrapper over the single renewing token path (getToken/Token):
+// renewal — and the delete-on-definitive-401 behavior — lives in exactly one
+// place. A still-valid (not near-expiry) token passes without a server round
+// trip; a genuinely revoked token surfaces as a 401 on the first real request.
 func (c *Client) ValidateAuth(ctx context.Context) error {
-	creds, err := auth.LoadCredentials()
-	if err != nil {
+	if _, err := c.Token(ctx); err != nil {
 		return err
-	}
-
-	// Check local expiry first
-	if creds.IsExpired() {
-		// Try to refresh
-		if err := c.refreshToken(creds); err != nil {
-			auth.DeleteCredentials()
-			return fmt.Errorf("session expired")
-		}
-		return nil
-	}
-
-	// Validate with server
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/api/cli/token/validate", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+creds.AccessToken)
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		// Network error - can't validate but don't fail
-		return nil
-	}
-
-	if resp.StatusCode == http.StatusOK {
-		creds.UpdateValidatedAt()
-		return nil
-	}
-
-	// Token invalid, try refresh
-	if err := c.refreshToken(creds); err != nil {
-		auth.DeleteCredentials()
-		return fmt.Errorf("session invalid")
 	}
 	return nil
 }
 
+// Token returns a usable access token, renewing it from the refresh token when
+// it is expired or near expiry. This is the single public entry point for any
+// "give me a usable access token" need (auth token, MCP config writers, the
+// stdio bridge): it routes through the same renewing path as the authenticated
+// request helpers, so every caller gets fresh, rotated tokens.
+//
+// The ctx bounds the renewal HTTP call (including retry backoff), so a caller
+// can cancel a slow refresh.
+func (c *Client) Token(ctx context.Context) (string, error) {
+	return c.getToken(ctx)
+}
+
 // getToken loads the access token, renewing it from the refresh token when it
 // is expired or near expiry. The access token is short-lived (1h), so renewal
-// happens proactively via ShouldRenew rather than waiting for a 401.
-func (c *Client) getToken() (string, error) {
+// happens proactively via ShouldRenew rather than waiting for a 401. The ctx
+// bounds the renewal request.
+func (c *Client) getToken(ctx context.Context) (string, error) {
 	// Use explicit token if set (no renewal needed).
 	if c.authToken != "" {
 		return c.authToken, nil
@@ -436,11 +429,17 @@ func (c *Client) getToken() (string, error) {
 
 	// Renew proactively when the short-lived access token is expired or near expiry.
 	if creds.ShouldRenew() {
-		if err := c.refreshToken(creds); err != nil {
-			// Renewal failed (no/expired/revoked refresh token) — clear creds and
-			// force a re-login.
-			auth.DeleteCredentials()
-			return "", fmt.Errorf("session expired, please run 'taufinity auth login'")
+		if err := c.refreshToken(ctx, creds); err != nil {
+			// Only a DEFINITIVE rejection (401: refresh token invalid/expired/
+			// revoked) clears credentials and forces a re-login. Transient
+			// failures (network error, 5xx) leave credentials in place so the
+			// next invocation can retry — a flaky server must not log the user
+			// out.
+			if errors.Is(err, ErrRefreshTokenRejected) {
+				auth.DeleteCredentials()
+				return "", fmt.Errorf("session expired, please run 'taufinity auth login'")
+			}
+			return "", fmt.Errorf("token renewal failed (credentials preserved): %w", err)
 		}
 	}
 
@@ -451,12 +450,11 @@ func (c *Client) getToken() (string, error) {
 // It POSTs {refresh_token} (the refresh token, NOT the access token) so it works
 // even after the short-lived access token has expired, and stores the rotated
 // pair returned by the server.
-func (c *Client) refreshToken(creds *auth.Credentials) error {
+func (c *Client) refreshToken(ctx context.Context, creds *auth.Credentials) error {
 	if !creds.HasRefreshToken() {
 		return fmt.Errorf("no refresh token; please run 'taufinity auth login'")
 	}
 
-	ctx := context.Background()
 	body, err := json.Marshal(map[string]string{"refresh_token": creds.RefreshToken})
 	if err != nil {
 		return fmt.Errorf("marshal refresh request: %w", err)
@@ -467,12 +465,27 @@ func (c *Client) refreshToken(creds *auth.Credentials) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// httpClient.Do returns *httpclient.Response (body already read into Body []byte).
+	// httpClient.Do returns *httpclient.Response (body already read into Body
+	// []byte). On a non-retryable rejection (e.g. 401) it returns the response
+	// with a nil error; on exhausted retries (5xx) it may return both a
+	// response AND an error; on a transport/network failure it returns a nil
+	// response and an error. Inspect the status FIRST so a 401 is classified as
+	// a definitive rejection regardless of how the transport surfaced it.
 	resp, err := c.httpClient.Do(req)
+	if resp != nil && resp.StatusCode == http.StatusUnauthorized {
+		// Definitive: the refresh token is invalid/expired/revoked. The caller
+		// (getToken) treats this — and only this — as grounds to delete creds.
+		return ErrRefreshTokenRejected
+	}
 	if err != nil {
+		// Network error or exhausted retries on a transient status (5xx) — the
+		// refresh token may still be perfectly valid. Surface a generic error
+		// so credentials are preserved.
 		return fmt.Errorf("refresh request failed: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		// Any other non-200 (e.g. 400, 403). Treat as transient/unexpected and
+		// preserve credentials rather than nuking the session on a server quirk.
 		return fmt.Errorf("refresh failed: %d", resp.StatusCode)
 	}
 
@@ -522,7 +535,7 @@ func (c *Client) RevokeRefreshToken(refreshToken string) error {
 // ("log out everywhere"). Uses normal auth — getToken() auto-refreshes the
 // access token first if it has expired, so this works after a long gap too.
 func (c *Client) RevokeAllRefreshTokens() error {
-	token, err := c.getToken()
+	token, err := c.getToken(context.Background())
 	if err != nil {
 		return err
 	}
