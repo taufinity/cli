@@ -23,6 +23,7 @@ import (
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/telemetry"
 )
 
 var (
@@ -140,6 +141,11 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	if startupErr := probeStartupAuth(ctx, client); startupErr != nil {
 		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] %s — %s\n", startupErr.summary, startupErr.detail)
 		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] running in degraded mode; every request will return auth_failed until you re-authenticate\n")
+		telemetry.Report(telemetry.Event{
+			EventType:    "mcp.auth_error",
+			ErrorCode:    "startup_auth_failed",
+			ErrorMessage: startupErr.summary,
+		})
 		return runDegradedBridge(ctx, os.Stdin, os.Stdout, os.Stderr, startupErr)
 	}
 

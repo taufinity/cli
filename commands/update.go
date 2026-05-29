@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/taufinity/cli/internal/buildinfo"
+	"github.com/taufinity/cli/internal/telemetry"
 	"github.com/taufinity/cli/internal/updatecheck"
 )
 
@@ -204,11 +205,21 @@ func runInstall(cmd *cobra.Command) error {
 		// go install failed before touching the new binary — leave the
 		// backup in place but no need to restore (the original is still in
 		// place at currentExe).
+		telemetry.Report(telemetry.Event{
+			EventType:    "update.failure",
+			ErrorCode:    "go_install_failed",
+			ErrorMessage: err.Error(),
+		})
 		return fmt.Errorf("go install failed: %w", err)
 	}
 
 	// 2a. Smoke test.
 	if err := smokeTest(newExe); err != nil {
+		telemetry.Report(telemetry.Event{
+			EventType:    "update.failure",
+			ErrorCode:    "smoke_test_failed",
+			ErrorMessage: err.Error(),
+		})
 		fmt.Fprintf(cmd.ErrOrStderr(), "Smoke test failed for %s: %v\n", newExe, err)
 		if backupPath != "" {
 			if rerr := restoreBackup(backupPath, currentExe); rerr != nil {

@@ -13,6 +13,7 @@ import (
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
 	"github.com/taufinity/cli/internal/desktopconfig"
+	"github.com/taufinity/cli/internal/telemetry"
 )
 
 // Sibling subcommands to the existing mcpLoginCmd / mcpSwitchOrgCmd / mcpStatusCmd
@@ -170,6 +171,11 @@ func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string
 
 	path, err := client.resolvePath()
 	if err != nil {
+		telemetry.Report(telemetry.Event{
+			EventType:    "mcp.install_failure",
+			ErrorCode:    "resolve_path_failed",
+			ErrorMessage: err.Error(),
+		})
 		return fmt.Errorf("%s: resolve path: %w", client.name, err)
 	}
 
@@ -181,6 +187,11 @@ func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string
 		entry, err = buildHTTPEntry(apiURL)
 	}
 	if err != nil {
+		telemetry.Report(telemetry.Event{
+			EventType:    "mcp.install_failure",
+			ErrorCode:    "build_entry_failed",
+			ErrorMessage: err.Error(),
+		})
 		return fmt.Errorf("%s: build entry: %w", client.name, err)
 	}
 
@@ -193,6 +204,11 @@ func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string
 	}
 
 	if err := desktopconfig.UpsertServerInKey(path, client.serversKey, label, entry); err != nil {
+		telemetry.Report(telemetry.Event{
+			EventType:    "mcp.install_failure",
+			ErrorCode:    "write_config_failed",
+			ErrorMessage: err.Error(),
+		})
 		return fmt.Errorf("%s: write %s: %w", client.name, path, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s (%s)\n", label, path, client.name)
