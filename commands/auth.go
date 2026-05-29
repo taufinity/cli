@@ -10,6 +10,7 @@ import (
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/telemetry"
 )
 
 var authCmd = &cobra.Command{
@@ -157,6 +158,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		select {
 		case <-ctx.Done():
 			Print("\n")
+			reportAuthFailure("auth_timeout", "authorization timed out")
 			return fmt.Errorf("authorization timed out")
 		case <-ticker.C:
 			status, err := pollDeviceStatus(client, deviceResp.DeviceCode)
@@ -198,10 +200,12 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 
 			case "denied":
 				Print("\n")
+				reportAuthFailure("auth_denied", "authorization denied")
 				return fmt.Errorf("authorization denied")
 
 			case "expired":
 				Print("\n")
+				reportAuthFailure("device_code_expired", "device code expired")
 				return fmt.Errorf("device code expired")
 
 			case "pending":
@@ -337,4 +341,18 @@ func runAuthToken(cmd *cobra.Command, args []string) error {
 
 	fmt.Println(token)
 	return nil
+}
+
+// reportAuthFailure reports an auth failure event to telemetry, attaching the
+// stored email when the CLI is already authenticated (e.g. token refresh failure).
+func reportAuthFailure(code, message string) {
+	e := telemetry.Event{
+		EventType:    "auth.failure",
+		ErrorCode:    code,
+		ErrorMessage: message,
+	}
+	if creds, err := auth.LoadCredentials(); err == nil {
+		e.Email = creds.Email
+	}
+	telemetry.Report(e)
 }
