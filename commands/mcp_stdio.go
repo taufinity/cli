@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strings"
@@ -130,10 +131,13 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 
 	// Tee all stderr output to a persistent log file so errors are inspectable
 	// after the session (Claude Desktop swallows the bridge's stderr).
+	// Also redirect the global slog handler so httpclient, auth, and all other
+	// packages that call slog.Debug/Info/Warn/Error write to the file too.
 	stderr := io.Writer(os.Stderr)
 	if lf, err := openMCPLogFile(); err == nil {
 		defer lf.Close()
 		stderr = io.MultiWriter(os.Stderr, lf)
+		slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 
 	// One client for the whole bridge lifetime; its renewing Token() is the

@@ -67,11 +67,12 @@ func New(baseURL string) *Client {
 	return c
 }
 
-// SetDebug enables or disables debug request logging via a structured slog logger.
-// When enabled, all HTTP requests and non-2xx responses are logged to stderr at Debug level.
+// SetDebug enables or disables debug request logging. When enabled, requests
+// and non-2xx responses are logged via the global slog handler (which in MCP
+// stdio mode is already teed to ~/.config/taufinity/mcp.log).
 func (c *Client) SetDebug(enabled bool) {
 	if enabled {
-		c.log = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		c.log = slog.Default()
 	} else {
 		c.log = nil
 	}
