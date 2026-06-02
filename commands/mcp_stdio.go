@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -186,11 +187,11 @@ const mcpLogMaxBytes = 5 * 1024 * 1024
 // writing so it never grows unbounded. Use `tail -f ~/.config/taufinity/mcp.log`
 // to follow live. Errors are silently ignored; logging is best-effort.
 func openMCPLogFile() (*os.File, error) {
-	dir, err := os.UserConfigDir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	path := dir + "/taufinity/mcp.log"
+	path := filepath.Join(home, ".config", "taufinity", "mcp.log")
 
 	// Rotate if the file is over the size limit.
 	if fi, err := os.Stat(path); err == nil && fi.Size() > mcpLogMaxBytes {
