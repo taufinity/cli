@@ -51,6 +51,22 @@ TAUFINITY_NO_UPDATE_CHECK=1 taufinity ...       # one-off
 taufinity config set update_check false         # permanent
 ```
 
+#### Opt-in automatic updates
+
+To have taufinity update itself automatically whenever a newer version is available, opt in once:
+
+```bash
+taufinity config set auto_update true
+```
+
+After each invocation where a newer version is detected, taufinity runs `taufinity update` in the foreground before exiting. The same backup + smoke-test + auto-rollback logic applies: the running binary is backed up, the new binary is smoke-tested, and if the test fails the previous binary is restored automatically. Users are never left with a broken binary.
+
+To opt back out:
+
+```bash
+taufinity config set auto_update false
+```
+
 #### Security note
 
 `taufinity update` installs from the `main` branch via `go install ...@latest`. Anyone with commit access to `main` ships to all CLI users on their next update. Acceptable for the small internal team today; once we cut tagged releases, the default will move to a tagged version.

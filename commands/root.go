@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -86,9 +87,10 @@ func Execute() error {
 // exit. We resolve the running command's annotations and the user-config flag
 // up front so the background goroutine can run independently of cobra state.
 type updateChecker struct {
-	runner          *updatecheck.Runner
-	suppressByCmd   bool
-	configDisabled  bool
+	runner         *updatecheck.Runner
+	suppressByCmd  bool
+	configDisabled bool
+	autoUpdate     bool // taufinity config set auto_update true
 }
 
 // startUpdateCheck kicks off the staleness check in a background goroutine if
@@ -116,14 +118,14 @@ func startUpdateCheck() *updateChecker {
 		return c
 	}
 
-	// Config opt-out. We deliberately load config directly here instead of
-	// reading the package-level `cfg` — PersistentPreRunE (which populates
-	// `cfg`) hasn't fired yet at this point, so relying on the global would
-	// silently ignore `taufinity config set update_check false` on every
-	// invocation. Loading the file once is cheap (single ReadFile).
-	if userCfg, err := config.Load(); err == nil && userCfg != nil && userCfg.UpdateCheck == "false" {
-		c.configDisabled = true
-		return c
+	// Config opt-out / auto-update. Load config directly (PersistentPreRunE
+	// hasn't fired yet so the package-level `cfg` is nil at this point).
+	if userCfg, err := config.Load(); err == nil && userCfg != nil {
+		if userCfg.UpdateCheck == "false" {
+			c.configDisabled = true
+			return c
+		}
+		c.autoUpdate = userCfg.AutoUpdate == "true"
 	}
 
 	// Cache fresh? Skip the network entirely.
@@ -142,8 +144,8 @@ func startUpdateCheck() *updateChecker {
 	return c
 }
 
-// maybeWarnAtExit waits briefly for the background check (if one was started)
-// and prints the warning to stderr if the running binary is behind.
+// maybeWarnAtExit waits briefly for the background check (if one was started),
+// then either auto-updates (if opted in) or prints the staleness warning.
 func maybeWarnAtExit(c *updateChecker) {
 	if c == nil || c.suppressByCmd {
 		return
@@ -156,6 +158,25 @@ func maybeWarnAtExit(c *updateChecker) {
 	}
 	cache := updatecheck.LoadCache()
 	info := buildinfo.FromBuildtime(Version, GitCommit, BuildTime)
+
+	if c.autoUpdate && !IsQuiet() && updatecheck.IsBehind(info, cache) {
+		// Run `taufinity update` as a subprocess so the full backup + smoke-test
+		// + auto-rollback path is used. A bad build is reverted automatically.
+		fmt.Fprintf(os.Stderr, "Auto-updating taufinity (auto_update=true)...\n")
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "auto-update: could not locate current binary: %v\n", err)
+			return
+		}
+		cmd := exec.Command(exe, "update")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-update failed: %v\n", err)
+		}
+		return
+	}
+
 	updatecheck.MaybeWarn(os.Stderr, info, cache, updatecheck.Options{
 		Quiet:           IsQuiet(),
 		ConfigDisabled:  c.configDisabled,

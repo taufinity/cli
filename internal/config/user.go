@@ -18,6 +18,13 @@ type UserConfig struct {
 	// "false" = disabled. Kept as a string to stay consistent with the other
 	// string-valued config keys handled by Set/Get/List.
 	UpdateCheck string `yaml:"update_check,omitempty"`
+
+	// AutoUpdate, when "true", automatically runs `taufinity update` at exit
+	// whenever a newer version is detected. The update uses the same backup +
+	// smoke-test + auto-rollback logic as the manual `taufinity update` command,
+	// so a bad build is reverted automatically and users are never locked out.
+	// Opt in: taufinity config set auto_update true
+	AutoUpdate string `yaml:"auto_update,omitempty"`
 }
 
 // Dir returns the path to the taufinity config directory.
@@ -88,8 +95,13 @@ func Set(key, value string) error {
 			return fmt.Errorf("update_check must be true, false, or empty (got %q)", value)
 		}
 		cfg.UpdateCheck = value
+	case "auto_update":
+		if value != "" && value != "true" && value != "false" {
+			return fmt.Errorf("auto_update must be true, false, or empty (got %q)", value)
+		}
+		cfg.AutoUpdate = value
 	default:
-		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check)", key)
+		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check, auto_update)", key)
 	}
 
 	return cfg.Save()
@@ -109,8 +121,10 @@ func Get(key string) (string, error) {
 		return cfg.APIURL, nil
 	case "update_check":
 		return cfg.UpdateCheck, nil
+	case "auto_update":
+		return cfg.AutoUpdate, nil
 	default:
-		return "", fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check)", key)
+		return "", fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check, auto_update)", key)
 	}
 }
 
@@ -125,6 +139,7 @@ func List() (map[string]string, error) {
 		"site":         cfg.Site,
 		"api_url":      cfg.APIURL,
 		"update_check": cfg.UpdateCheck,
+		"auto_update":  cfg.AutoUpdate,
 	}, nil
 }
 
@@ -151,8 +166,10 @@ func Unset(key string) error {
 		cfg.APIURL = ""
 	case "update_check":
 		cfg.UpdateCheck = ""
+	case "auto_update":
+		cfg.AutoUpdate = ""
 	default:
-		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check)", key)
+		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check, auto_update)", key)
 	}
 
 	return cfg.Save()

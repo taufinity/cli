@@ -200,6 +200,26 @@ func shouldWarn(info buildinfo.Info, cache Cache, opts Options) bool {
 	return current[:n] != latest[:n]
 }
 
+// IsBehind reports whether the running binary's commit differs from the cached
+// latest SHA. Returns false when either value is missing or too short to
+// compare safely (dirty tree, built without VCS info, never checked).
+// It is the pure staleness predicate — callers decide what to do with it.
+func IsBehind(info buildinfo.Info, cache Cache) bool {
+	if info.Dirty || info.Commit == "unknown" || cache.LatestSHA == "" {
+		return false
+	}
+	current := strings.ToLower(info.Commit)
+	latest := strings.ToLower(cache.LatestSHA)
+	n := len(current)
+	if len(latest) < n {
+		n = len(latest)
+	}
+	if n < 7 {
+		return false
+	}
+	return current[:n] != latest[:n]
+}
+
 // MaybeWarn writes a one-line warning to out if the current binary is behind
 // the cached latest SHA. Returns true if it wrote.
 func MaybeWarn(out io.Writer, info buildinfo.Info, cache Cache, opts Options) bool {
