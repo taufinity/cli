@@ -178,20 +178,20 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// mcpLogMaxBytes is the size at which mcp.log is rotated (5 MiB).
+// mcpLogMaxBytes is the size at which studio.log is rotated (5 MiB).
 const mcpLogMaxBytes = 5 * 1024 * 1024
 
-// openMCPLogFile opens (or creates) the MCP session log at
-// ~/.config/taufinity/mcp.log. A new session header is appended each time
+// openMCPLogFile opens (or creates) the session log at
+// ~/.config/taufinity/studio.log. A new session header is appended each time
 // the bridge starts. If the file exceeds mcpLogMaxBytes it is truncated before
-// writing so it never grows unbounded. Use `tail -f ~/.config/taufinity/mcp.log`
+// writing so it never grows unbounded. Use `tail -f ~/.config/taufinity/studio.log`
 // to follow live. Errors are silently ignored; logging is best-effort.
 func openMCPLogFile() (*os.File, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(home, ".config", "taufinity", "mcp.log")
+	path := filepath.Join(home, ".config", "taufinity", "studio.log")
 
 	// Rotate if the file is over the size limit.
 	if fi, err := os.Stat(path); err == nil && fi.Size() > mcpLogMaxBytes {
