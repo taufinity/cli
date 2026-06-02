@@ -10,11 +10,19 @@ Command-line tool for the [Taufinity](https://studio.taufinity.io) content platf
 go install github.com/taufinity/cli/cmd/taufinity@latest
 ```
 
-The binary is installed as `taufinity` in `$GOPATH/bin` (usually `~/go/bin`). Make sure that directory is in your `$PATH`:
+The binary is installed as `taufinity` in `$GOPATH/bin` (usually `~/go/bin`). Make sure that directory is in your `$PATH`.
 
+**zsh** (macOS default):
 ```bash
 echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 ```
+
+**bash**:
+```bash
+echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+```
+
+Not sure which shell you're using? Run `echo $SHELL`.
 
 ### Verify installation
 
