@@ -128,6 +128,14 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Tee all stderr output to a persistent log file so errors are inspectable
+	// after the session (Claude Desktop swallows the bridge's stderr).
+	stderr := io.Writer(os.Stderr)
+	if lf, err := openMCPLogFile(); err == nil {
+		defer lf.Close()
+		stderr = io.MultiWriter(os.Stderr, lf)
+	}
+
 	// One client for the whole bridge lifetime; its renewing Token() is the
 	// single source of fresh access tokens (proactive refresh + rotation).
 	client := api.New(GetAPIURL())
@@ -139,14 +147,14 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	// bridge that stays alive and replies to every JSON-RPC request with an
 	// auth_failed error frame the client can surface to the user.
 	if startupErr := probeStartupAuth(ctx, client); startupErr != nil {
-		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] %s — %s\n", startupErr.summary, startupErr.detail)
-		fmt.Fprintf(os.Stderr, "[taufinity mcp stdio] running in degraded mode; every request will return auth_failed until you re-authenticate\n")
+		fmt.Fprintf(stderr, "[taufinity mcp stdio] %s — %s\n", startupErr.summary, startupErr.detail)
+		fmt.Fprintf(stderr, "[taufinity mcp stdio] running in degraded mode; every request will return auth_failed until you re-authenticate\n")
 		telemetry.Report(telemetry.Event{
 			EventType:    "mcp.auth_error",
 			ErrorCode:    "startup_auth_failed",
 			ErrorMessage: startupErr.summary,
 		})
-		return runDegradedBridge(ctx, os.Stdin, os.Stdout, os.Stderr, startupErr)
+		return runDegradedBridge(ctx, os.Stdin, os.Stdout, stderr, startupErr)
 	}
 
 	upstreamURL := strings.TrimRight(GetAPIURL(), "/") + "/mcp"
@@ -161,8 +169,37 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 		MaxFrameBytes: flagMCPStdioMaxFrameBytes,
 		Stdin:         os.Stdin,
 		Stdout:        os.Stdout,
-		Stderr:        os.Stderr,
+		Stderr:        stderr,
 	})
+}
+
+// mcpLogMaxBytes is the size at which mcp.log is rotated (5 MiB).
+const mcpLogMaxBytes = 5 * 1024 * 1024
+
+// openMCPLogFile opens (or creates) the MCP session log at
+// ~/.config/taufinity/mcp.log. A new session header is appended each time
+// the bridge starts. If the file exceeds mcpLogMaxBytes it is truncated before
+// writing so it never grows unbounded. Use `tail -f ~/.config/taufinity/mcp.log`
+// to follow live. Errors are silently ignored; logging is best-effort.
+func openMCPLogFile() (*os.File, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	path := dir + "/taufinity/mcp.log"
+
+	// Rotate if the file is over the size limit.
+	if fi, err := os.Stat(path); err == nil && fi.Size() > mcpLogMaxBytes {
+		// Truncate to zero; ignore errors (e.g. permissions).
+		_ = os.Truncate(path, 0)
+	}
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(f, "\n--- taufinity mcp stdio session started %s ---\n", time.Now().UTC().Format(time.RFC3339))
+	return f, nil
 }
 
 // startupAuthError captures why the credential probe failed at bridge
