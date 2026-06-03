@@ -1,4 +1,6 @@
-.PHONY: install build test vet
+.PHONY: install build test vet release
+
+MODULE := github.com/taufinity/cli
 
 VERSION    ?= dev
 COMMIT     ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -35,3 +37,21 @@ test:
 
 vet:
 	go vet ./...
+
+# make release          — auto-increment patch (v0.5.0 → v0.6.0)
+# make release V=v1.2.0 — explicit version
+release:
+	@LATEST=$$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1); \
+	if [ -z "$$V" ]; then \
+		MAJOR=$$(echo $$LATEST | cut -d. -f1 | tr -d v); \
+		MINOR=$$(echo $$LATEST | cut -d. -f2); \
+		PATCH=$$(echo $$LATEST | cut -d. -f3); \
+		V="v$$MAJOR.$$MINOR.$$((PATCH+1))"; \
+	fi; \
+	echo "Releasing $$V (was $$LATEST)"; \
+	git tag $$V && git push origin $$V; \
+	echo "Warming Go module proxy…"; \
+	curl -sf "https://proxy.golang.org/$(MODULE)/@v/$$V.info" -o /dev/null \
+		&& echo "Proxy cached $$V" \
+		|| echo "Proxy fetch failed (will catch up within a few minutes)"; \
+	echo "Done. Users can now run: taufinity update"
