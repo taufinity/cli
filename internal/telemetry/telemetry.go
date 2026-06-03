@@ -4,7 +4,9 @@
 package telemetry
 
 import (
+	"errors"
 	"log/slog"
+	"time"
 )
 
 // Event is a single telemetry event.
@@ -56,6 +58,27 @@ func Report(e Event) {
 	reportToSentry(e)
 	go sendBeacon(e)
 }
+
+// ReportSync sends a telemetry event to the Studio beacon synchronously and
+// returns an error if the beacon call failed. Use for diagnostic commands where
+// the caller needs confirmation. The Sentry sink is still fire-and-forget.
+// Returns ErrNotConfigured if telemetry is not enabled.
+func ReportSync(e Event, timeout time.Duration) error {
+	if !Enabled() {
+		return ErrNotConfigured
+	}
+	e.ErrorMessage = scrub(e.ErrorMessage)
+	reportToSentry(e)
+	return sendBeaconSync(e, timeout)
+}
+
+// Enabled reports whether telemetry is active (TelemetryKey set + device ID loaded).
+func Enabled() bool {
+	return TelemetryKey != "" && globalDeviceID != ""
+}
+
+// ErrNotConfigured is returned by ReportSync when telemetry is not enabled.
+var ErrNotConfigured = errors.New("telemetry not configured (TelemetryKey not set — official builds only)")
 
 // Flush waits for pending Sentry events to drain (call deferred from main).
 func Flush() {

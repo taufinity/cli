@@ -233,7 +233,8 @@ func initMCPConfig(target, token string) *mcpConfig {
 				Type: "http",
 				URL:  GetAPIURL() + "/mcp",
 				Headers: map[string]string{
-					"X-API-Key": token,
+					"X-API-Key":    token,
+					"X-CLI-Version": Version,
 				},
 			},
 		},
@@ -309,7 +310,8 @@ func runMCPLogin(cmd *cobra.Command, args []string) error {
 			Type: "http",
 			URL:  GetAPIURL() + "/mcp",
 			Headers: map[string]string{
-				"X-API-Key": token,
+				"X-API-Key":    token,
+				"X-CLI-Version": Version,
 			},
 		}
 	} else {
@@ -317,6 +319,7 @@ func runMCPLogin(cmd *cobra.Command, args []string) error {
 			server.Headers = make(map[string]string)
 		}
 		server.Headers["X-API-Key"] = token
+		server.Headers["X-CLI-Version"] = Version
 	}
 
 	cfg.Servers[flagMCPTarget] = server
