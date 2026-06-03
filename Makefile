@@ -51,7 +51,9 @@ release:
 	echo "Releasing $$V (was $$LATEST)"; \
 	git tag $$V && git push origin $$V; \
 	echo "Warming Go module proxy…"; \
-	curl -sf "https://proxy.golang.org/$(MODULE)/@v/$$V.info" -o /dev/null \
+	curl -sf "https://proxy.golang.org/$(MODULE)/@v/$$V.info" -o /dev/null; \
+	curl -sf "https://proxy.golang.org/$(MODULE)/@v/$$V.mod" -o /dev/null; \
+	curl -sf "https://proxy.golang.org/$(MODULE)/@latest" -o /dev/null \
 		&& echo "Proxy cached $$V" \
 		|| echo "Proxy fetch failed (will catch up within a few minutes)"; \
 	echo "Done. Users can now run: taufinity update"
