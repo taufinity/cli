@@ -1,8 +1,9 @@
 package commands
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -21,15 +23,24 @@ import (
 	"github.com/taufinity/cli/internal/updatecheck"
 )
 
-const updateModulePath = "github.com/taufinity/cli/cmd/taufinity@latest"
+const (
+	releasesAPIURL  = "https://api.github.com/repos/taufinity/cli/releases/latest"
+	downloadTimeout = 5 * time.Minute
 
-// goInstallTimeout is generous because module download + compile can take
-// 60s+ on first invocation when GOMODCACHE is cold.
-const goInstallTimeout = 5 * time.Minute
+	// smokeTestTimeout caps how long we let a binary run `version`.
+	// Should return in milliseconds; 3s is generous.
+	smokeTestTimeout = 3 * time.Second
+)
 
-// smokeTestTimeout caps how long we let the newly-installed binary run.
-// `taufinity version` should return in milliseconds; 3s is forgiving.
-const smokeTestTimeout = 3 * time.Second
+type githubRelease struct {
+	TagName string        `json:"tag_name"`
+	Assets  []githubAsset `json:"assets"`
+}
+
+type githubAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
 
 var (
 	flagUpdateCheckOnly bool
@@ -39,18 +50,15 @@ var (
 var updateCmd = &cobra.Command{
 	Use:   "update",
 	Short: "Update taufinity to the latest version",
-	Long: `Update reinstalls taufinity from source via go install.
+	Long: `Update downloads and installs the latest taufinity release from GitHub.
 
 Behaviour:
- 1. Verifies that Go is installed (required to compile).
- 2. Backs up the currently-running binary to <path>.prev (when the install
-    target directory matches the running binary's directory).
- 3. Runs go install github.com/taufinity/cli/cmd/taufinity@latest.
- 4. Smoke-tests the new binary by running it with the 'version' subcommand.
-    If the smoke test fails, the backup is automatically restored.
- 5. Warns if the new binary was installed to a directory other than where the
-    currently-running binary lives (your PATH probably needs adjusting, or
-    the previous install was via 'make install' to a custom prefix).
+ 1. Queries GitHub Releases for the latest version.
+ 2. Downloads the binary for your platform (OS + architecture).
+ 3. Verifies the SHA256 checksum against the release checksums file.
+ 4. Backs up the running binary to <path>.prev.
+ 5. Replaces the running binary in-place.
+ 6. Smoke-tests the new binary; on failure restores the backup automatically.
 
 Flags:
   --check     Report current vs latest without installing. Exits 0 if up to
@@ -59,9 +67,6 @@ Flags:
               version misbehaves.`,
 	RunE: runUpdate,
 	Annotations: map[string]string{
-		// The update flow already prints whatever it needs to; the staleness
-		// hint would be redundant (and confusing if the staleness check is
-		// what nudged the user to run update in the first place).
 		"suppress-update-warning": "true",
 	},
 }
@@ -72,11 +77,10 @@ func init() {
 	updateCmd.Flags().BoolVar(&flagUpdateRollback, "rollback", false, "Restore the previous binary from <path>.prev")
 }
 
-func runUpdate(cmd *cobra.Command, args []string) error {
+func runUpdate(cmd *cobra.Command, _ []string) error {
 	if flagUpdateCheckOnly && flagUpdateRollback {
 		return errors.New("--check and --rollback cannot be combined")
 	}
-
 	if flagUpdateRollback {
 		return runRollback()
 	}
@@ -86,8 +90,6 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	return runInstall(cmd)
 }
 
-// runCheck does no installation. It queries GitHub and compares to the running
-// binary's commit. Exit codes are script-friendly: 0=current, 1=behind, 2=err.
 func runCheck(cmd *cobra.Command) error {
 	current := buildinfo.FromBuildtime(Version, GitCommit, BuildTime)
 	if current.Dirty {
@@ -98,158 +100,158 @@ func runCheck(cmd *cobra.Command) error {
 	ctx, cancel := context.WithTimeout(cmd.Context(), updatecheck.DefaultHTTPTimeout)
 	defer cancel()
 
-	// We bypass the cache here on purpose — `--check` is an explicit user ask
-	// for a fresh answer, not a "use what's cached" call.
-	latest, err := fetchLatestSHADirect(ctx)
+	rel, err := fetchLatestRelease(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to query GitHub: %v\n", err)
 		os.Exit(2)
 		return nil
 	}
 
-	currentShort := shortSHA(current.Commit)
-	latestShort := shortSHA(latest)
+	currentVer := current.Version
+	latestVer := rel.TagName
 
-	if current.Commit == "unknown" {
-		fmt.Fprintf(os.Stderr, "Cannot determine current commit (binary built without VCS info). Latest: %s\n", latestShort)
-		os.Exit(2)
+	if currentVer == latestVer {
+		Print("taufinity %s is up to date.\n", currentVer)
 		return nil
 	}
 
-	if sameSHA(current.Commit, latest) {
-		Print("taufinity %s is up to date.\n", current.Version)
+	// Dev or pseudo-version builds can't be compared to a release tag.
+	if currentVer == "dev" || strings.Contains(currentVer, "(") {
+		Print("taufinity is running from source (%s). Latest release: %s\n", currentVer, latestVer)
 		return nil
 	}
 
-	Print("taufinity is behind: %s → %s. Run: taufinity update\n", currentShort, latestShort)
+	Print("taufinity is behind: %s → %s. Run: taufinity update\n", currentVer, latestVer)
 	os.Exit(1)
 	return nil
 }
 
-// runInstall is the main update path.
 func runInstall(cmd *cobra.Command) error {
-	// 1. Pre-flight: is go installed?
-	goBin, err := exec.LookPath("go")
+	ctx, cancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+	rel, err := fetchLatestRelease(ctx)
+	cancel()
 	if err != nil {
-		return fmt.Errorf("go is not installed or not on PATH. Install Go from https://go.dev/dl/ and try again")
+		return fmt.Errorf("fetch latest release: %w", err)
 	}
 
+	current := buildinfo.FromBuildtime(Version, GitCommit, BuildTime)
+	Print("Updating from %s\n", current.Version)
+
+	if current.Version == rel.TagName {
+		Print("Already up to date at %s.\n", current.Version)
+		return nil
+	}
+
+	return runDownload(cmd, rel)
+}
+
+func runDownload(cmd *cobra.Command, rel *githubRelease) error {
+	want := platformAssetName()
+
+	var binaryAsset, checksumAsset *githubAsset
+	for i := range rel.Assets {
+		switch rel.Assets[i].Name {
+		case want:
+			binaryAsset = &rel.Assets[i]
+		case "checksums.txt":
+			checksumAsset = &rel.Assets[i]
+		}
+	}
+	if binaryAsset == nil {
+		return fmt.Errorf("no release asset for this platform (%s) in tag %s", want, rel.TagName)
+	}
+
+	// Fetch expected checksum before downloading the binary.
+	expectedHash := ""
+	if checksumAsset != nil {
+		csCtx, csCancel := context.WithTimeout(cmd.Context(), 30*time.Second)
+		data, err := downloadBytes(csCtx, checksumAsset.BrowserDownloadURL)
+		csCancel()
+		if err == nil {
+			expectedHash = parseChecksum(data, want)
+		}
+	}
+
+	// Create temp file in the same directory as the running binary so the
+	// final rename is on the same filesystem and therefore atomic.
 	currentExe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate current executable: %w", err)
 	}
-	currentExe, _ = filepath.EvalSymlinks(currentExe) // best-effort
-	currentDir := filepath.Dir(currentExe)
+	currentExe, _ = filepath.EvalSymlinks(currentExe)
+	installDir := filepath.Dir(currentExe)
 
-	current := buildinfo.FromBuildtime(Version, GitCommit, BuildTime)
-	Print("Updating from %s (%s)\n", current.Version, shortSHA(current.Commit))
+	tmpFile, err := os.CreateTemp(installDir, ".taufinity-update-*")
+	if err != nil {
+		return fmt.Errorf("create temp file in %s: %w", installDir, err)
+	}
+	tmpPath := tmpFile.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
 
-	// 1a. No-op short-circuit: if we already have the latest commit, skip
-	// the whole install dance. We bypass the cache here because the user
-	// asked explicitly for an update — they want fresh data, not what was
-	// true up to 24h ago. A network failure here is NOT fatal: we just
-	// proceed with the install (their intent overrides our optimisation).
-	if current.Commit != "unknown" && !current.Dirty {
-		checkCtx, cancel := context.WithTimeout(cmd.Context(), updatecheck.DefaultHTTPTimeout)
-		latest, fetchErr := fetchLatestSHADirect(checkCtx)
-		cancel()
-		if fetchErr == nil && sameSHA(current.Commit, latest) {
-			Print("Already up to date at %s (%s). Skipping install.\n", current.Version, shortSHA(current.Commit))
-			return nil
+	fmt.Fprintf(cmd.OutOrStdout(), "Downloading %s (%s)…\n", want, rel.TagName)
+	dlCtx, dlCancel := context.WithTimeout(cmd.Context(), downloadTimeout)
+	gotHash, err := downloadToFile(dlCtx, binaryAsset.BrowserDownloadURL, tmpFile)
+	_ = tmpFile.Close()
+	dlCancel()
+	if err != nil {
+		return fmt.Errorf("download: %w", err)
+	}
+
+	if expectedHash != "" {
+		if !strings.EqualFold(gotHash, expectedHash) {
+			return fmt.Errorf("checksum mismatch: got %s, want %s", gotHash, expectedHash)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Checksum verified\n")
+	}
+
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return fmt.Errorf("chmod: %w", err)
+	}
+
+	// Smoke-test the downloaded binary before touching the live one.
+	if err := smokeTest(tmpPath); err != nil {
+		return fmt.Errorf("downloaded binary failed smoke test: %w", err)
+	}
+
+	// Backup then replace.
+	backupPath := currentExe + ".prev"
+	if err := backupBinary(currentExe, backupPath); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Backed up current binary to %s\n", backupPath)
+
+	if err := os.Rename(tmpPath, currentExe); err != nil {
+		// Same-dir temp should always be on the same device, but handle the edge case.
+		if copyErr := copyFile(tmpPath, currentExe); copyErr != nil {
+			_ = restoreBackup(backupPath, currentExe)
+			return fmt.Errorf("install binary (rename: %v, copy: %w)", err, copyErr)
 		}
 	}
 
-	// 2. Resolve install target dir. We prefer the directory the user is
-	// already running taufinity from — if it's writable, we override GOBIN
-	// for the `go install` subprocess so the new binary lands in the same
-	// place as the running one. That keeps PATH stable across updates and
-	// avoids the "installed to ~/go/bin, but you're running from ~/bin"
-	// trap that's common when users initially installed via `make install`
-	// or a custom prefix.
-	var installDir string
-	var gobinOverride string
-	if isDirWritable(currentDir) {
-		installDir = currentDir
-		gobinOverride = currentDir
-	} else {
-		installDir, err = resolveGoInstallDir(goBin)
-		if err != nil {
-			return fmt.Errorf("resolve go install dir: %w", err)
-		}
-	}
-	newExe := filepath.Join(installDir, binaryName())
-
-	// 1a. Backup, only when the new binary will overwrite the running one.
-	var backupPath string
-	if pathsEqual(installDir, currentDir) {
-		backupPath = currentExe + ".prev"
-		if err := backupBinary(currentExe, backupPath); err != nil {
-			return fmt.Errorf("backup current binary to %s: %w", backupPath, err)
-		}
-		Print("Backed up current binary to %s\n", backupPath)
+	if err := os.Chmod(currentExe, 0o755); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: chmod %s: %v\n", currentExe, err)
 	}
 
-	// 2. go install.
-	installCtx, cancel := context.WithTimeout(cmd.Context(), goInstallTimeout)
-	defer cancel()
-	installCmd := exec.CommandContext(installCtx, goBin, "install", updateModulePath)
-	installCmd.Stdout = cmd.OutOrStdout()
-	installCmd.Stderr = cmd.ErrOrStderr()
-	installCmd.Env = os.Environ()
-	if gobinOverride != "" {
-		// Last-wins for repeated env keys means appending after os.Environ()
-		// reliably overrides any pre-existing GOBIN.
-		installCmd.Env = append(installCmd.Env, "GOBIN="+gobinOverride)
-	}
-	if err := installCmd.Run(); err != nil {
-		// go install failed before touching the new binary — leave the
-		// backup in place but no need to restore (the original is still in
-		// place at currentExe).
+	// Final smoke test on the live binary.
+	if err := smokeTest(currentExe); err != nil {
 		telemetry.Report(telemetry.Event{
 			EventType:    "update.failure",
-			ErrorCode:    "go_install_failed",
+			ErrorCode:    "smoke_test_post_install",
 			ErrorMessage: err.Error(),
 		})
-		return fmt.Errorf("go install failed: %w", err)
-	}
-
-	// 2a. Smoke test.
-	if err := smokeTest(newExe); err != nil {
-		telemetry.Report(telemetry.Event{
-			EventType:    "update.failure",
-			ErrorCode:    "smoke_test_failed",
-			ErrorMessage: err.Error(),
-		})
-		fmt.Fprintf(cmd.ErrOrStderr(), "Smoke test failed for %s: %v\n", newExe, err)
-		if backupPath != "" {
-			if rerr := restoreBackup(backupPath, currentExe); rerr != nil {
-				return fmt.Errorf("smoke test failed AND rollback failed: %w (original error: %v)", rerr, err)
-			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Rolled back to previous binary.\n")
-		} else {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Note: the running binary at %s is unaffected — only the new install at %s is broken.\n", currentExe, newExe)
+		fmt.Fprintf(cmd.ErrOrStderr(), "Post-install smoke test failed: %v\n", err)
+		if rerr := restoreBackup(backupPath, currentExe); rerr != nil {
+			return fmt.Errorf("smoke test failed AND rollback failed: %w (original: %v)", rerr, err)
 		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "Rolled back to previous binary.\n")
 		os.Exit(1)
 		return nil
 	}
 
-	// 3. Path mismatch warning.
-	if !pathsEqual(filepath.Dir(currentExe), installDir) {
-		fmt.Fprintf(cmd.ErrOrStderr(), `
-Installed new taufinity to: %s
-But you're running from:    %s
-The next 'taufinity' invocation will still use the old binary.
-Fix: put %s ahead of %s in your PATH, OR run 'make install' from a clone of
-github.com/taufinity/cli to install to %s directly.
-`, newExe, currentExe, installDir, filepath.Dir(currentExe), filepath.Dir(currentExe))
-		return nil
-	}
-
-	Print("Updated. Run 'taufinity version' to confirm.\n")
+	Print("Updated to %s. Run 'taufinity version' to confirm.\n", rel.TagName)
 	return nil
 }
 
-// runRollback swaps <currentExe>.prev back into place.
 func runRollback() error {
 	currentExe, err := os.Executable()
 	if err != nil {
@@ -260,7 +262,7 @@ func runRollback() error {
 
 	if _, err := os.Stat(backupPath); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("nothing to roll back: no backup at %s. (Backups are created automatically on 'taufinity update' when the install dir matches the running binary's dir.)", backupPath)
+			return fmt.Errorf("nothing to roll back: no backup at %s. (Backups are created automatically on 'taufinity update'.)", backupPath)
 		}
 		return err
 	}
@@ -273,9 +275,115 @@ func runRollback() error {
 	return nil
 }
 
-// backupBinary writes src to dst, preferring a hardlink (instant on same FS)
-// and falling back to a byte copy. The destination is removed first so that a
-// stale `.prev` from a previous run is replaced.
+// fetchLatestRelease queries the GitHub Releases API for the newest release.
+func fetchLatestRelease(ctx context.Context) (*githubRelease, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesAPIURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "taufinity-cli-update")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("github returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var rel githubRelease
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return nil, err
+	}
+	if rel.TagName == "" {
+		return nil, errors.New("github returned empty tag_name")
+	}
+	return &rel, nil
+}
+
+// platformAssetName returns the expected filename for the current OS + arch.
+func platformAssetName() string {
+	name := fmt.Sprintf("taufinity_%s_%s", runtime.GOOS, runtime.GOARCH)
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+// downloadBytes fetches url and returns the body (capped at 1 MiB).
+func downloadBytes(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "taufinity-cli-update")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// downloadToFile streams url into dst and returns the lowercase hex SHA256 of
+// the downloaded content.
+func downloadToFile(ctx context.Context, url string, dst *os.File) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "taufinity-cli-update")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("http %d", resp.StatusCode)
+	}
+
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(dst, h), resp.Body); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// parseChecksum finds the SHA256 for filename in a sha256sum-style file.
+// Line format: "<hash>  <filename>" (two spaces) or "<hash> <filename>".
+func parseChecksum(data []byte, filename string) string {
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[1] == filename {
+			return strings.ToLower(fields[0])
+		}
+	}
+	return ""
+}
+
+// smokeTest runs binPath with `version` and checks for exit 0.
+func smokeTest(binPath string) error {
+	if _, err := os.Stat(binPath); err != nil {
+		return fmt.Errorf("binary not found at %s: %w", binPath, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), smokeTestTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binPath, "version")
+	cmd.Env = append(os.Environ(), updatecheck.EnvDisable+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: output: %s", err, string(out))
+	}
+	return nil
+}
+
 func backupBinary(src, dst string) error {
 	_ = os.Remove(dst)
 	if err := os.Link(src, dst); err == nil {
@@ -308,170 +416,6 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-// restoreBackup atomically swaps src over dst.
 func restoreBackup(src, dst string) error {
-	// os.Rename is atomic on POSIX when src and dst are on the same filesystem.
-	// In our case they're siblings, so they always are.
 	return os.Rename(src, dst)
-}
-
-// resolveGoInstallDir asks `go env` where the binary will land. GOBIN takes
-// precedence; otherwise GOPATH+/bin.
-//
-// `go env KEY1 KEY2` prints one value per line in argument order — including a
-// blank line for empty values. We split first and trim per-line so a blank
-// GOBIN doesn't collapse the response down to a single token.
-func resolveGoInstallDir(goBin string) (string, error) {
-	out, err := exec.Command(goBin, "env", "GOBIN", "GOPATH").Output()
-	if err != nil {
-		return "", err
-	}
-	lines := bytes.Split(out, []byte("\n"))
-	if len(lines) < 2 {
-		return "", fmt.Errorf("unexpected go env output: %q", out)
-	}
-	gobin := string(bytes.TrimSpace(lines[0]))
-	gopath := string(bytes.TrimSpace(lines[1]))
-	if gobin != "" {
-		return gobin, nil
-	}
-	if gopath == "" {
-		return "", fmt.Errorf("both GOBIN and GOPATH are empty; cannot determine install dir")
-	}
-	return filepath.Join(gopath, "bin"), nil
-}
-
-// isDirWritable reports whether the current process can create files in dir.
-// We probe by creating and immediately removing a tempfile — `unix.Access`
-// would be faster but isn't portable, and the cost (one syscall pair) is
-// invisible compared to the `go install` we're about to run.
-func isDirWritable(dir string) bool {
-	f, err := os.CreateTemp(dir, ".taufinity-writetest-*")
-	if err != nil {
-		return false
-	}
-	name := f.Name()
-	_ = f.Close()
-	_ = os.Remove(name)
-	return true
-}
-
-// binaryName accounts for Windows .exe suffixes if the CLI ever ships there.
-func binaryName() string {
-	if runtime.GOOS == "windows" {
-		return "taufinity.exe"
-	}
-	return "taufinity"
-}
-
-// pathsEqual normalises two directory paths and compares them. We resolve
-// symlinks where possible; if a path doesn't exist (or resolution fails) we
-// fall back to lexical Clean.
-func pathsEqual(a, b string) bool {
-	a = cleanDir(a)
-	b = cleanDir(b)
-	return a == b
-}
-
-func cleanDir(p string) string {
-	if resolved, err := filepath.EvalSymlinks(p); err == nil {
-		p = resolved
-	}
-	return filepath.Clean(p)
-}
-
-// smokeTest runs the new binary with `version` and checks for exit 0 within
-// smokeTestTimeout. We deliberately use `version` (not `--help`) because it
-// touches the actual package init paths (config load, buildinfo resolution).
-func smokeTest(binPath string) error {
-	if _, err := os.Stat(binPath); err != nil {
-		return fmt.Errorf("new binary not found at %s: %w", binPath, err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), smokeTestTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, binPath, "version")
-	// Suppress the staleness check inside the smoke-test child — we don't
-	// want it doing network I/O during our test.
-	cmd.Env = append(os.Environ(), updatecheck.EnvDisable+"=1")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%w: output: %s", err, string(out))
-	}
-	return nil
-}
-
-// fetchLatestSHADirect duplicates the work of updatecheck.fetchSHA — kept
-// here so commands/update doesn't need to expose internal updatecheck APIs.
-// For --check we explicitly bypass the cache.
-func fetchLatestSHADirect(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, updatecheck.DefaultAPIURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "taufinity-cli-update")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("github returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var payload struct {
-		SHA string `json:"sha"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	if payload.SHA == "" {
-		return "", errors.New("github returned empty sha")
-	}
-	return payload.SHA, nil
-}
-
-// shortSHA returns the first 7 chars of a SHA, or the full string if shorter.
-func shortSHA(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
-}
-
-func sameSHA(a, b string) bool {
-	if a == "" || b == "" {
-		return false
-	}
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	if n < 7 {
-		return false
-	}
-	return equalFoldASCII(a[:n], b[:n])
-}
-
-// equalFoldASCII is a fast lowercase-equal for SHAs (no Unicode folding needed).
-func equalFoldASCII(a, b string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := 0; i < len(a); i++ {
-		ca, cb := a[i], b[i]
-		if ca >= 'A' && ca <= 'Z' {
-			ca += 'a' - 'A'
-		}
-		if cb >= 'A' && cb <= 'Z' {
-			cb += 'a' - 'A'
-		}
-		if ca != cb {
-			return false
-		}
-	}
-	return true
 }

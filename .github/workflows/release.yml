@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build release binaries
+        env:
+          TELEMETRY_KEY: ${{ secrets.TELEMETRY_KEY }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          COMMIT="${{ github.sha }}"
+          BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # -s -w strips debug info and DWARF → smaller binaries
+          LDFLAGS="-s -w \
+            -X 'github.com/taufinity/cli/commands.Version=${VERSION}' \
+            -X 'github.com/taufinity/cli/commands.GitCommit=${COMMIT}' \
+            -X 'github.com/taufinity/cli/commands.BuildTime=${BUILD_TIME}' \
+            -X 'github.com/taufinity/cli/internal/telemetry.TelemetryKey=${TELEMETRY_KEY}'"
+
+          mkdir -p dist
+
+          targets=(
+            "darwin/amd64"
+            "darwin/arm64"
+            "linux/amd64"
+            "linux/arm64"
+            "windows/amd64"
+          )
+
+          for target in "${targets[@]}"; do
+            GOOS="${target%/*}"
+            GOARCH="${target#*/}"
+            name="taufinity_${GOOS}_${GOARCH}"
+            [ "$GOOS" = "windows" ] && name="${name}.exe"
+            echo "Building ${name}…"
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+              go build -ldflags "$LDFLAGS" -o "dist/${name}" ./cmd/taufinity
+          done
+
+          cd dist
+          sha256sum * > checksums.txt
+          echo "--- checksums ---"
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --generate-notes \
+            dist/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
