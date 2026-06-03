@@ -1,8 +1,12 @@
 package commands
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/pkg/browser"
@@ -63,14 +67,151 @@ Output is just the token with no extra formatting, suitable for:
 	RunE: runAuthToken,
 }
 
+var authElevateCmd = &cobra.Command{
+	Use:   "elevate",
+	Short: "Elevate CLI session via TOTP (grants impersonation for 16h by default)",
+	RunE:  runAuthElevate,
+}
+
+var authElevateStatusCmd = &cobra.Command{
+	Use:   "elevate-status",
+	Short: "Show current CLI elevation status",
+	RunE:  runAuthElevateStatus,
+}
+
+var authRevokeElevationCmd = &cobra.Command{
+	Use:   "revoke-elevation",
+	Short: "Revoke CLI elevation (server-side + local)",
+	RunE:  runAuthRevokeElevation,
+}
+
+var elevationTTL string
+
 func init() {
 	rootCmd.AddCommand(authCmd)
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authRevokeCmd)
 	authCmd.AddCommand(authStatusCmd)
 	authCmd.AddCommand(authTokenCmd)
+	authCmd.AddCommand(authElevateCmd)
+	authCmd.AddCommand(authElevateStatusCmd)
+	authCmd.AddCommand(authRevokeElevationCmd)
 
 	authRevokeCmd.Flags().BoolVar(&authRevokeAll, "all", false, "Revoke all CLI sessions (log out everywhere)")
+	authElevateCmd.Flags().StringVar(&elevationTTL, "ttl", "16h", "Elevation TTL (e.g. 4h, 16h, 24h)")
+}
+
+func runAuthElevate(cmd *cobra.Command, args []string) error {
+	// Parse TTL
+	ttlDur, err := time.ParseDuration(elevationTTL)
+	if err != nil {
+		return fmt.Errorf("invalid TTL %q: %w", elevationTTL, err)
+	}
+	ttlMin := int(ttlDur.Minutes())
+	if ttlMin < 60 {
+		ttlMin = 60
+	}
+	if ttlMin > 1440 {
+		ttlMin = 1440
+	}
+
+	fmt.Fprint(os.Stdout, "Verification code: ")
+	reader := bufio.NewReader(os.Stdin)
+	code, _ := reader.ReadString('\n')
+	code = strings.TrimSpace(code)
+
+	if !auth.HasCredentials() {
+		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
+	}
+
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+
+	resp, err := client.PostJSONWithAuth(context.Background(), "/api/auth/cli-elevate", map[string]interface{}{
+		"totp_code":   code,
+		"ttl_minutes": ttlMin,
+	})
+	if err != nil {
+		return fmt.Errorf("cli-elevate: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return fmt.Errorf("elevation failed %d: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	var result struct {
+		Token     string    `json:"token"`
+		SessionID uint      `json:"session_id"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
+
+	if err := auth.SaveElevationToken(result.Token, result.SessionID, result.ExpiresAt); err != nil {
+		return fmt.Errorf("save elevation token: %w", err)
+	}
+
+	fmt.Printf("Elevated for %s (until %s). Run 'taufinity auth elevate-status' to check.\n",
+		elevationTTL, result.ExpiresAt.Local().Format("15:04"))
+	return nil
+}
+
+func runAuthElevateStatus(cmd *cobra.Command, args []string) error {
+	token, sessionID, expiresAt, err := auth.LoadElevationToken()
+	if err != nil {
+		return fmt.Errorf("load elevation token: %w", err)
+	}
+	if token == "" {
+		fmt.Println("No active elevation. Run 'taufinity auth elevate' to elevate.")
+		return nil
+	}
+	remaining := time.Until(expiresAt)
+	if remaining <= 0 {
+		fmt.Printf("Elevation expired at %s. Run 'taufinity auth elevate' to renew.\n",
+			expiresAt.Local().Format("15:04"))
+		return nil
+	}
+	fmt.Printf("Elevated — session %d, expires at %s (%s remaining).\n",
+		sessionID, expiresAt.Local().Format("15:04"), remaining.Round(time.Minute))
+	if remaining < 15*time.Minute {
+		fmt.Fprintln(os.Stderr, "Warning: elevation expires soon. Run 'taufinity auth elevate' to renew.")
+	}
+	return nil
+}
+
+func runAuthRevokeElevation(cmd *cobra.Command, args []string) error {
+	token, sessionID, _, err := auth.LoadElevationToken()
+	if err != nil {
+		return fmt.Errorf("load elevation token: %w", err)
+	}
+	if token == "" {
+		fmt.Println("No elevation token found.")
+		return nil
+	}
+
+	// Revoke server-side first using the elevation token as bearer.
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+	client.SetAuth(token)
+
+	resp, err := client.DeleteWithAuth(context.Background(),
+		fmt.Sprintf("/api/auth/cli-elevate/%d", sessionID))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: server-side revoke failed: %v — local token NOT removed.\n", err)
+		return fmt.Errorf("server-side revoke failed, local token kept")
+	}
+	if resp.StatusCode != 204 && resp.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "Warning: server returned %d: %s — local token NOT removed.\n",
+			resp.StatusCode, string(resp.Body))
+		return fmt.Errorf("server revoke returned %d", resp.StatusCode)
+	}
+
+	// Remove local token only after server confirms.
+	if err := auth.RemoveElevationToken(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to remove local elevation token: %v\n", err)
+	}
+	fmt.Println("Elevation revoked.")
+	return nil
 }
 
 // DeviceCodeResponse matches the API response.
