@@ -133,7 +133,6 @@ func runAsUser(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "[impersonate] warning: auto-revoke failed: %v\n", rErr)
 				return
 			}
-			rResp.Body = rResp.Body // consumed already by httpclient
 			if rResp.StatusCode == 204 || rResp.StatusCode == 200 {
 				fmt.Fprintf(os.Stderr, "[impersonate] token revoked\n")
 			}
