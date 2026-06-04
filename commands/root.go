@@ -65,7 +65,7 @@ func init() {
 	// Global flags available to all commands
 	rootCmd.PersistentFlags().StringVar(&flagSite, "site", "", "Override site ID")
 	rootCmd.PersistentFlags().StringVar(&flagAPIURL, "api-url", "", "Override API URL")
-	rootCmd.PersistentFlags().StringVar(&flagOrg, "org", "", "Override organization ID (for playbook commands)")
+	rootCmd.PersistentFlags().StringVar(&flagOrg, "org", "", "Override organization ID")
 	rootCmd.PersistentFlags().StringVar(&flagFormat, "format", "table", "Output format: table, json, yaml")
 	rootCmd.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "Minimal output, no prompts")
 	rootCmd.PersistentFlags().BoolVar(&flagDryRun, "dry-run", false, "Print API calls without executing")

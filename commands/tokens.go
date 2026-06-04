@@ -56,6 +56,9 @@ func runTokensCreate(cmd *cobra.Command, args []string) error {
 
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
+	if org := GetOrg(); org != "" {
+		client.SetOrg(org)
+	}
 
 	body := map[string]interface{}{
 		"name":       tokenName,
@@ -90,6 +93,9 @@ func runTokensList(cmd *cobra.Command, args []string) error {
 
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
+	if org := GetOrg(); org != "" {
+		client.SetOrg(org)
+	}
 
 	resp, err := client.GetWithAuth(context.Background(), "/api/api-keys/personal")
 	if err != nil {
@@ -140,6 +146,9 @@ func runTokensRevoke(cmd *cobra.Command, args []string) error {
 
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
+	if org := GetOrg(); org != "" {
+		client.SetOrg(org)
+	}
 
 	resp, err := client.DeleteWithAuth(context.Background(), fmt.Sprintf("/api/api-keys/personal/%s", args[0]))
 	if err != nil {

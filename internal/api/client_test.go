@@ -515,3 +515,83 @@ func TestClient_Retry(t *testing.T) {
 		t.Errorf("Expected at least 3 attempts, got %d", attempts)
 	}
 }
+
+func TestClient_OrgHeader(t *testing.T) {
+	type capture struct {
+		method string
+		path   string
+		org    string
+	}
+	var got capture
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = capture{
+			method: r.Method,
+			path:   r.URL.Path,
+			org:    r.Header.Get("X-Organization-ID"),
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	// Stub auth credentials so *WithAuth methods don't bail on missing token.
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+	creds := &auth.Credentials{
+		AccessToken: "test-token",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}
+	if err := creds.Save(); err != nil {
+		t.Fatalf("Save credentials failed: %v", err)
+	}
+
+	t.Run("SetOrg sets header on GetWithAuth", func(t *testing.T) {
+		got = capture{}
+		client := New(server.URL)
+		client.SetOrg("12")
+		if _, err := client.GetWithAuth(context.Background(), "/api/x"); err != nil {
+			t.Fatalf("GetWithAuth failed: %v", err)
+		}
+		if got.org != "12" {
+			t.Errorf("X-Organization-ID = %q, want %q", got.org, "12")
+		}
+	})
+
+	t.Run("SetOrg sets header on PostJSONWithAuth", func(t *testing.T) {
+		got = capture{}
+		client := New(server.URL)
+		client.SetOrg("12")
+		if _, err := client.PostJSONWithAuth(context.Background(), "/api/x", map[string]string{"k": "v"}); err != nil {
+			t.Fatalf("PostJSONWithAuth failed: %v", err)
+		}
+		if got.org != "12" {
+			t.Errorf("X-Organization-ID = %q, want %q", got.org, "12")
+		}
+	})
+
+	t.Run("SetOrg sets header on DeleteWithAuth", func(t *testing.T) {
+		got = capture{}
+		client := New(server.URL)
+		client.SetOrg("12")
+		if _, err := client.DeleteWithAuth(context.Background(), "/api/x/1"); err != nil {
+			t.Fatalf("DeleteWithAuth failed: %v", err)
+		}
+		if got.org != "12" {
+			t.Errorf("X-Organization-ID = %q, want %q", got.org, "12")
+		}
+	})
+
+	t.Run("no SetOrg call leaves header unset", func(t *testing.T) {
+		got = capture{}
+		client := New(server.URL)
+		if _, err := client.GetWithAuth(context.Background(), "/api/x"); err != nil {
+			t.Fatalf("GetWithAuth failed: %v", err)
+		}
+		if got.org != "" {
+			t.Errorf("X-Organization-ID = %q, want empty", got.org)
+		}
+	})
+}
