@@ -16,3 +16,4 @@ credentials.json
 .vscode/
 *.swp
 .claude/
+.worktrees/
