@@ -214,10 +214,16 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 // raw bytes rather than a full YAML round-trip.
 func pinProviderID(path string, cfgID, liveID int) error {
 	if liveID == 0 {
-		return nil // nothing to pin (dry-run or unexpected)
+		return nil // nothing to pin
 	}
 	if cfgID == liveID {
 		return nil // already pinned and correct
+	}
+	// cfgID != 0 and cfgID != liveID means the YAML had an ID pinned but the
+	// server returned a different one (stale pin, or name/slug matched a different
+	// record). Log a warning before overwriting so operators can catch env mixups.
+	if cfgID != 0 {
+		fmt.Printf("  WARN: provider id in YAML (%d) differs from server (%d) — updating pin in %s\n", cfgID, liveID, path)
 	}
 
 	raw, err := os.ReadFile(path)
@@ -264,8 +270,10 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, error) {
 			if err != nil {
 				return 0, fmt.Errorf("provider: %w", err)
 			}
-			if err := pinProviderID(pf, cfg.ID, int(id)); err != nil {
-				return 0, fmt.Errorf("pin provider id: %w", err)
+			if !c.dryRun {
+				if err := pinProviderID(pf, cfg.ID, int(id)); err != nil {
+					return 0, fmt.Errorf("pin provider id: %w", err)
+				}
 			}
 			primaryID = uint(id)
 		}
@@ -293,8 +301,10 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, error) {
 			if err != nil {
 				return 0, fmt.Errorf("provider %s: %w", e.Name(), err)
 			}
-			if err := pinProviderID(pf, cfg.ID, int(id)); err != nil {
-				return 0, fmt.Errorf("pin provider id %s: %w", e.Name(), err)
+			if !c.dryRun {
+				if err := pinProviderID(pf, cfg.ID, int(id)); err != nil {
+					return 0, fmt.Errorf("pin provider id %s: %w", e.Name(), err)
+				}
 			}
 		}
 	}

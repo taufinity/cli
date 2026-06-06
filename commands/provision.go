@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -249,14 +248,3 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// provisionAbsDir resolves a potentially relative dir path to absolute.
-func provisionAbsDir(dir string) string {
-	if filepath.IsAbs(dir) {
-		return dir
-	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return dir
-	}
-	return abs
-}

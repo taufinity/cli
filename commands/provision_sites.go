@@ -389,8 +389,9 @@ func provisionAISettings(c *provisionClient, siteID uint, siteDir string) error 
 	}
 
 	apiPath := fmt.Sprintf("/sites/%d/settings/ai", siteID)
-	if _, _, err := c.put(apiPath, payload); err != nil {
-		return fmt.Errorf("update AI settings for site %d: %w", siteID, err)
+	respBody, status, err := c.put(apiPath, payload)
+	if err != nil || status >= 300 {
+		return provisionAPIErr(fmt.Sprintf("update AI settings for site %d", siteID), status, respBody, err)
 	}
 
 	fmt.Printf("provision: site %d AI settings updated\n", siteID)

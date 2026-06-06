@@ -371,7 +371,7 @@ func fetchProvisionPlaybookConfig(c *provisionClient, orgID uint, item provision
 
 	sbody, status, err := c.getForOrg(fmt.Sprintf("/playbooks/%d/steps", item.ID), orgID)
 	if err != nil || status != 200 {
-		return playbookConfig{}, provisionAPIErr(fmt.Sprintf("get playbook steps %d", item.ID), status, body, err)
+		return playbookConfig{}, provisionAPIErr(fmt.Sprintf("get playbook steps %d", item.ID), status, sbody, err)
 	}
 	var remoteSteps []provisionPlaybookStepRemote
 	if err := unmarshalListEnvelope(sbody, &remoteSteps); err != nil {
