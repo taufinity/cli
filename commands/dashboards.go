@@ -72,7 +72,11 @@ Examples:
       --api-key "$BOOTSTRAP_KEY"
 
   # Dry run to preview
-  taufinity dashboards sync --dir docs/dashboards/acme --org-slug acme --dry-run`,
+  taufinity dashboards sync --dir docs/dashboards/acme --org-slug acme --dry-run
+
+NOTE: If you have a full studio/ directory (providers, portal, playbooks, widgets,
+dashboards), prefer 'taufinity provision apply' instead — it syncs all resources
+in one command without needing --provider separately.`,
 	RunE: runDashboardsSync,
 }
 
