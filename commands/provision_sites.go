@@ -357,15 +357,16 @@ func resolveRepoID(c *provisionClient, orgID uint, repoURL string) (uint, error)
 // ---------------------------------------------------------------------------
 
 type aiSettingsConfig struct {
-	Model           string  `yaml:"model"            json:"model,omitempty"`
-	Temperature     float64 `yaml:"temperature"      json:"temperature,omitempty"`
-	MaxTokens       int     `yaml:"max_tokens"       json:"max_tokens,omitempty"`
-	SystemPrompt    string  `yaml:"system_prompt"    json:"system_prompt,omitempty"`
-	PromptPrefix    string  `yaml:"prompt_prefix"    json:"prompt_prefix,omitempty"`
-	PromptSuffix    string  `yaml:"prompt_suffix"    json:"prompt_suffix,omitempty"`
-	SafetyModel     string  `yaml:"safety_model"     json:"safety_model,omitempty"`
-	RefinementModel string  `yaml:"refinement_model" json:"refinement_model,omitempty"`
-	MinHumanScore   int     `yaml:"min_human_score"  json:"min_human_score,omitempty"`
+	Model                 string  `yaml:"model"                   json:"model,omitempty"`
+	Temperature           float64 `yaml:"temperature"             json:"temperature,omitempty"`
+	MaxTokens             int     `yaml:"max_tokens"              json:"max_tokens,omitempty"`
+	SystemPrompt          string  `yaml:"system_prompt"           json:"system_prompt,omitempty"`
+	PromptPrefix          string  `yaml:"prompt_prefix"           json:"prompt_prefix,omitempty"`
+	PromptSuffix          string  `yaml:"prompt_suffix"           json:"prompt_suffix,omitempty"`
+	SafetyModel           string  `yaml:"safety_model"            json:"safety_model,omitempty"`
+	RefinementModel       string  `yaml:"refinement_model"        json:"refinement_model,omitempty"`
+	MinHumanScore         int     `yaml:"min_human_score"         json:"min_human_score,omitempty"`
+	ContentGuidelinesPath string  `yaml:"content_guidelines_path" json:"content_guidelines_path,omitempty"`
 }
 
 func provisionAISettings(c *provisionClient, siteID uint, siteDir string) error {
