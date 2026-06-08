@@ -232,6 +232,13 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// 17. Prompt templates — customer-tunable AI prompt bodies. Lives in
+	// <dir>/prompts/*.txt; each file becomes one prompt_templates row keyed
+	// by (org, filename-minus-.txt). Backs the no-deploy prompt-edit path.
+	if err := applyPrompts(c, dir, orgID); err != nil {
+		return err
+	}
+
 	// Exit codes for --strict mode
 	if provisionStrict {
 		if driftCount > 0 {
