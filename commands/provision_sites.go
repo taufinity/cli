@@ -404,7 +404,7 @@ func provisionAISettings(c *provisionClient, siteID uint, siteDir string) error 
 // ---------------------------------------------------------------------------
 
 // applySiteDir provisions all resources for a single site directory:
-// pipeline, secure-render, and AI settings.
+// pipeline, secure-render, AI settings, general/content/metadata settings.
 func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	dirName := filepath.Base(siteDir)
 	sitesDir := filepath.Dir(siteDir)
@@ -412,8 +412,12 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	hasPipeline := fileExists(filepath.Join(siteDir, "pipeline.yaml"))
 	hasSecureRender := fileExists(filepath.Join(siteDir, "secure-render.yaml"))
 	hasAISettings := fileExists(filepath.Join(siteDir, "ai-settings.yaml"))
+	hasGeneralSettings := fileExists(filepath.Join(siteDir, "general-settings.yaml"))
+	hasContentSettings := fileExists(filepath.Join(siteDir, "content-settings.yaml"))
+	hasMetadataSettings := fileExists(filepath.Join(siteDir, "metadata-settings.yaml"))
 
-	if !hasPipeline && !hasSecureRender && !hasAISettings {
+	if !hasPipeline && !hasSecureRender && !hasAISettings &&
+		!hasGeneralSettings && !hasContentSettings && !hasMetadataSettings {
 		return nil
 	}
 
@@ -446,6 +450,27 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	if hasAISettings {
 		if err := provisionAISettings(c, siteID, siteDir); err != nil {
 			return fmt.Errorf("ai-settings: %w", err)
+		}
+	}
+
+	// Order: general → content → metadata. Independent endpoints so order
+	// is cosmetic, but matches the order that fields appear in topic_generation.txt
+	// which makes a per-section failure mid-batch easier to triage.
+	if hasGeneralSettings {
+		if err := provisionGeneralSettings(c, siteID, siteDir); err != nil {
+			return fmt.Errorf("general-settings: %w", err)
+		}
+	}
+
+	if hasContentSettings {
+		if err := provisionContentSettings(c, siteID, siteDir); err != nil {
+			return fmt.Errorf("content-settings: %w", err)
+		}
+	}
+
+	if hasMetadataSettings {
+		if err := provisionMetadataSettings(c, siteID, siteDir); err != nil {
+			return fmt.Errorf("metadata-settings: %w", err)
 		}
 	}
 
