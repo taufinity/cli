@@ -394,24 +394,46 @@ func reconcileTestCases(c *provisionClient, orgID uint, suiteUUID string, want [
 }
 
 // buildPlaybookCaseInput marshals the case's inputs map into a PlaybookInput JSON string.
+// The output is a JSON object whose keys map directly to the playbook runner's formData —
+// e.g. {"intake": {"klant_naam": "...", ...}} so RunPlaybookForTest can type-assert the
+// value to map[string]any and MergeFormDataIntoInputs serialises it to a JSON string for
+// CustomMetadata, exactly matching the real trigger's form_data shape.
+//
+// Contract: YAML intake values may be multi-line JSON strings or nested YAML maps.
+// Either way they are parsed and stored as nested JSON objects, not as quoted strings —
+// because executePlaybookCase type-asserts formData["intake"].(map[string]any).
+// Use the step's intake_key name (typically "intake") not "intake_json".
 func buildPlaybookCaseInput(tc testCaseEntry) (string, error) {
 	if len(tc.Inputs) == 0 {
 		return "{}", nil
 	}
-	stringInputs := make(map[string]string, len(tc.Inputs))
+	// Build a map[string]any so values can be proper nested JSON objects.
+	output := make(map[string]any, len(tc.Inputs))
 	for k, v := range tc.Inputs {
+		var raw string
 		switch sv := convertYAMLValue(v).(type) {
 		case string:
-			stringInputs[k] = sv
+			raw = sv
 		default:
 			b, err := json.Marshal(sv)
 			if err != nil {
 				return "", fmt.Errorf("input key %q: cannot marshal value: %w", k, err)
 			}
-			stringInputs[k] = string(b)
+			raw = string(b)
+		}
+		// Attempt to parse the raw value as JSON so it becomes a nested object
+		// (not a quoted string). The playbook runner's executePlaybookCase does a
+		// type assertion formData["intake"].(map[string]any) — if the value is a
+		// string the assertion fails, materializeAttachments corrupts the formData,
+		// and all steps skip. Storing as a parsed object prevents this.
+		var parsed any
+		if err := json.Unmarshal([]byte(raw), &parsed); err == nil {
+			output[k] = parsed
+		} else {
+			output[k] = raw // leave as string when it's not valid JSON
 		}
 	}
-	b, err := json.Marshal(map[string]any{"inputs": stringInputs})
+	b, err := json.Marshal(output)
 	if err != nil {
 		return "", err
 	}
