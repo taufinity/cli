@@ -45,15 +45,23 @@ type generalSettingsConfig struct {
 // contentSettingsConfig mirrors the allowlist in UpdateContentSettings.
 // Topic discovery reads Category and Format off this section
 // (internal/content/topics.go buildTopicGenerationPrompt). Tone, length,
-// languages are here for completeness and forward-compat; passing them
+// keywords are here for completeness and forward-compat; passing them
 // is harmless when the site doesn't need them.
+//
+// NOTE: `languages` is intentionally NOT in this struct. The API model
+// is []LanguageConfig ({code,name,default,authors}) but a flat string
+// list serialises to a string array and clobbers the typed value in
+// the database (job loader fails with "cannot unmarshal string into
+// LanguageConfig"). A typed wrapper that round-trips LanguageConfig
+// faithfully belongs in a follow-up; until then provision leaves
+// `languages` alone — the field stays whatever it was in prod, which
+// is the safe default.
 type contentSettingsConfig struct {
-	Category  string   `yaml:"category"   json:"category,omitempty"`
-	Format    string   `yaml:"format"     json:"format,omitempty"`
-	Tone      string   `yaml:"tone"       json:"tone,omitempty"`
-	Length    string   `yaml:"length"     json:"length,omitempty"`
-	Languages []string `yaml:"languages"  json:"languages,omitempty"`
-	Keywords  []string `yaml:"keywords"   json:"keywords,omitempty"`
+	Category string   `yaml:"category"   json:"category,omitempty"`
+	Format   string   `yaml:"format"     json:"format,omitempty"`
+	Tone     string   `yaml:"tone"       json:"tone,omitempty"`
+	Length   string   `yaml:"length"     json:"length,omitempty"`
+	Keywords []string `yaml:"keywords"   json:"keywords,omitempty"`
 }
 
 // metadataSettingsConfig is intentionally a free-form map. The API handler
