@@ -178,61 +178,65 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 	if err := applyPortal(c, dir, orgID); err != nil {
 		return err
 	}
-	// 4. KPI
+	// 4. Feature flag overrides — applied before KPI so subsequent steps can rely on final flag state
+	if err := applyFeatureFlags(c, dir, orgID); err != nil {
+		return err
+	}
+	// 5. KPI
 	if err := applyKPI(c, dir, orgID); err != nil {
 		return err
 	}
-	// 5. Client groups
+	// 6. Client groups
 	if err := applyClientGroups(c, dir, orgID, provisionPruneIdentifiers); err != nil {
 		return err
 	}
-	// 6. Nav
+	// 7. Nav
 	if err := applyNav(c, dir, orgID); err != nil {
 		return err
 	}
-	// 7. Dashboards
+	// 8. Dashboards
 	driftCount, err := applyDashboards(c, dir, orgID, providerID, provisionDraft, provisionPreviewDataset)
 	if err != nil {
 		return err
 	}
-	// 8. Sites (pipeline, secure-render, AI settings)
+	// 9. Sites (pipeline, secure-render, AI settings)
 	if err := applySites(c, dir, orgID); err != nil {
 		return err
 	}
-	// 9. Credentials
+	// 10. Credentials
 	if err := applyCredentials(c, dir, orgID); err != nil {
 		return err
 	}
-	// 10. Image taxonomy
+	// 11. Image taxonomy
 	if err := applyImageTaxonomy(c, dir, orgID); err != nil {
 		return err
 	}
-	// 11. Playbooks
+	// 12. Playbooks
 	if err := applyPlaybooks(c, dir, orgID); err != nil {
 		return err
 	}
-	// 12. Test suites
+	// 13. Test suites
 	if err := applyTestSuites(c, dir, orgID); err != nil {
 		return err
 	}
-	// 13. Router rules
+	// 14. Router rules
 	if err := applyRouterRules(c, dir, orgID); err != nil {
 		return err
 	}
-	// 14. Widgets
+	// 15. Widgets
 	if err := applyWidgets(c, dir, orgID); err != nil {
 		return err
 	}
-	// 15. Knowledge base
+	// 16. Knowledge base
 	if err := applyKnowledge(c, dir, orgID); err != nil {
 		return err
 	}
-	// 16. Images manifest
+	// 17. Images manifest
 	if err := applyImagesManifest(c, dir, orgID); err != nil {
 		return err
 	}
 
-	// 17. Prompt templates — customer-tunable AI prompt bodies. Lives in
+	// 18. Prompt templates — customer-tunable AI prompt bodies. Lives in
 	// <dir>/prompts/*.txt; each file becomes one prompt_templates row keyed
 	// by (org, filename-minus-.txt). Backs the no-deploy prompt-edit path.
 	if err := applyPrompts(c, dir, orgID); err != nil {
