@@ -200,6 +200,9 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	if err != nil || status >= 300 {
 		return 0, fmt.Errorf("create provider: status=%d err=%v body=%s", status, err, provisionSummarize(respBody))
 	}
+	if c.dryRun {
+		return 0, nil // dry-run returns {} — no real ID, nothing to pin
+	}
 	var created providerItem
 	if err := json.Unmarshal(respBody, &created); err != nil || created.ID == 0 {
 		return 0, fmt.Errorf("parse create response: %w body=%s", err, provisionSummarize(respBody))
