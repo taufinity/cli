@@ -64,6 +64,7 @@ type testCaseAssertion struct {
 	Field       string `yaml:"field"        json:"field,omitempty"`
 	StringValue string `yaml:"string_value" json:"string_value,omitempty"`
 	Max         int    `yaml:"max"          json:"max,omitempty"`
+	StepKey     string `yaml:"step_key"     json:"step_key,omitempty"`
 }
 
 // testSuiteListItem is the minimal shape we need from GET /api/test-suites/.
