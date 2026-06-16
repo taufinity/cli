@@ -156,16 +156,17 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 		return 0, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	// Match existing provider: by slug when set (env-independent), else by ID
-	// when pinned, else by case-insensitive name.
+	// Match existing provider: slug (when both sides have one) → id → name.
+	// When cfg has a slug but the existing provider doesn't yet (bootstrap case),
+	// fall through to id/name so the first run writes the slug into the PUT
+	// payload. Subsequent runs then match by slug.
 	for _, existing := range items {
 		var matched bool
-		switch {
-		case cfg.Slug != "":
-			matched = existing.Slug != "" && existing.Slug == cfg.Slug
-		case cfg.ID > 0:
+		if cfg.Slug != "" && existing.Slug != "" {
+			matched = existing.Slug == cfg.Slug
+		} else if cfg.ID > 0 {
 			matched = existing.ID == cfg.ID
-		default:
+		} else {
 			matched = strings.EqualFold(existing.Name, cfg.Name)
 		}
 		if !matched {
