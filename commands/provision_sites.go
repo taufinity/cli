@@ -32,6 +32,9 @@ type siteYAML struct {
 	// CategoryPages is SSG-only; captured here so the strict YAML decoder does
 	// not reject site.yaml files that include it.
 	CategoryPages any `yaml:"category_pages,omitempty"`
+	// CategoryIndexPage is SSG-only; accepted here so site.yaml files that
+	// include it are not rejected by the strict decoder.
+	CategoryIndexPage any `yaml:"category_index_page,omitempty"`
 }
 
 // siteRecord is the trimmed payload returned by GET /api/sites/by-site-id/{site_id}.
