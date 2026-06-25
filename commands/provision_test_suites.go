@@ -58,13 +58,14 @@ type testCaseEntry struct {
 
 // testCaseAssertion mirrors the JSON Assertion struct for YAML decoding.
 type testCaseAssertion struct {
-	Type        string `yaml:"type"         json:"type"`
-	Value       int    `yaml:"value"        json:"value,omitempty"`
-	Name        string `yaml:"name"         json:"name,omitempty"`
-	Field       string `yaml:"field"        json:"field,omitempty"`
-	StringValue string `yaml:"string_value" json:"string_value,omitempty"`
-	Max         int    `yaml:"max"          json:"max,omitempty"`
-	StepKey     string `yaml:"step_key"     json:"step_key,omitempty"`
+	Type        string         `yaml:"type"         json:"type"`
+	Value       int            `yaml:"value"        json:"value,omitempty"`
+	Name        string         `yaml:"name"         json:"name,omitempty"`
+	Field       string         `yaml:"field"        json:"field,omitempty"`
+	StringValue string         `yaml:"string_value" json:"string_value,omitempty"`
+	Max         int            `yaml:"max"          json:"max,omitempty"`
+	StepKey     string         `yaml:"step_key"     json:"step_key,omitempty"`
+	Match       map[string]any `yaml:"match"        json:"match,omitempty"`
 }
 
 // testSuiteListItem is the minimal shape we need from GET /api/test-suites/.
