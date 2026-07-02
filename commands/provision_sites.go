@@ -406,8 +406,27 @@ func provisionAISettings(c *provisionClient, siteID uint, siteDir string) error 
 // Top-level orchestration
 // ---------------------------------------------------------------------------
 
+// pushCategoryPages sends category_pages from site.yaml to the Studio API.
+// It is a no-op when pages is nil (field absent from site.yaml).
+func pushCategoryPages(c *provisionClient, siteID uint, pages any) error {
+	if pages == nil {
+		return nil
+	}
+	payload, err := json.Marshal(pages)
+	if err != nil {
+		return fmt.Errorf("marshal category_pages: %w", err)
+	}
+	fmt.Printf("provision: updating category_pages for site %d\n", siteID)
+	_, status, err := c.put(fmt.Sprintf("/sites/%d/settings/category-pages", siteID), payload)
+	if err != nil || status >= 300 {
+		return fmt.Errorf("update category_pages for site %d: status=%d err=%v", siteID, status, err)
+	}
+	return nil
+}
+
 // applySiteDir provisions all resources for a single site directory:
-// pipeline, secure-render, AI settings, general/content/metadata settings.
+// pipeline, secure-render, AI settings, general/content/metadata settings,
+// and category_pages from site.yaml.
 func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	dirName := filepath.Base(siteDir)
 	sitesDir := filepath.Dir(siteDir)
@@ -419,8 +438,15 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	hasContentSettings := fileExists(filepath.Join(siteDir, "content-settings.yaml"))
 	hasMetadataSettings := fileExists(filepath.Join(siteDir, "metadata-settings.yaml"))
 
+	sy, err := loadSiteYAML(filepath.Join(siteDir, "site.yaml"))
+	if err != nil {
+		return fmt.Errorf("read site.yaml: %w", err)
+	}
+	hasCategoryPages := sy.CategoryPages != nil
+
 	if !hasPipeline && !hasSecureRender && !hasAISettings &&
-		!hasGeneralSettings && !hasContentSettings && !hasMetadataSettings {
+		!hasGeneralSettings && !hasContentSettings && !hasMetadataSettings &&
+		!hasCategoryPages {
 		return nil
 	}
 
@@ -474,6 +500,12 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	if hasMetadataSettings {
 		if err := provisionMetadataSettings(c, siteID, siteDir); err != nil {
 			return fmt.Errorf("metadata-settings: %w", err)
+		}
+	}
+
+	if hasCategoryPages {
+		if err := pushCategoryPages(c, siteID, sy.CategoryPages); err != nil {
+			return fmt.Errorf("category-pages: %w", err)
 		}
 	}
 
