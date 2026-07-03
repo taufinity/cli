@@ -5,9 +5,10 @@ VERSION=${2:?Usage: build-pkg.sh <binary-path> <version>}
 
 mkdir -p dist
 
-# Inject binary into payload (not committed; cleaned up after build)
+# Inject binary into payload; trap ensures cleanup even if pkgbuild fails
 cp "$BINARY" installer/payload/usr/local/bin/taufinity
 chmod +x installer/payload/usr/local/bin/taufinity
+trap 'rm -f installer/payload/usr/local/bin/taufinity' EXIT
 
 pkgbuild \
   --root installer/payload \
@@ -16,8 +17,5 @@ pkgbuild \
   --version "$VERSION" \
   --install-location / \
   dist/taufinity_darwin_installer.pkg
-
-# Remove injected binary so it doesn't accidentally get committed
-rm -f installer/payload/usr/local/bin/taufinity
 
 echo "Built: dist/taufinity_darwin_installer.pkg"

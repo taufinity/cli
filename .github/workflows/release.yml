@@ -108,9 +108,11 @@ jobs:
           VERSION="${{ github.ref_name }}"
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/taufinity/homebrew-tap.git"
           cd homebrew-tap
+          git pull --rebase origin main
           sed -i '' "s/version \".*\"/version \"${VERSION#v}\"/" Casks/taufinity.rb
           sed -i '' "s/sha256 \".*\"/sha256 \"${PKG_SHA}\"/" Casks/taufinity.rb
           git config user.email "ci@taufinity.io"
           git config user.name "Taufinity CI"
-          git commit -am "bump taufinity to ${VERSION}"
-          git push
+          git add Casks/taufinity.rb
+          git commit -m "bump taufinity to ${VERSION}"
+          git push origin main
