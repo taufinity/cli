@@ -4,13 +4,36 @@ Command-line tool for the [Taufinity](https://studio.taufinity.io) content platf
 
 ## Installation
 
-### macOS / Linux (Go 1.21+)
+### macOS — Homebrew (recommended)
+
+```bash
+brew install --cask taufinity/tap/taufinity
+```
+
+Installs the binary at `/usr/local/bin/taufinity` and sets up a background agent that
+notifies you at 09:00 daily if a new version is available.
+
+### macOS — Direct download
+
+Download `taufinity_darwin_installer.pkg` from the
+[latest GitHub Release](https://github.com/taufinity/cli/releases/latest), then:
+
+```bash
+sudo installer -pkg taufinity_darwin_installer.pkg -target /
+```
+
+> **Note (Phase 1):** The package is not yet notarized. macOS Gatekeeper will block
+> double-click installs — use the `sudo installer` command above.
+
+### macOS / Linux — Go (developers)
+
+Requires Go 1.21+:
 
 ```bash
 go install github.com/taufinity/cli/cmd/taufinity@latest
 ```
 
-The binary is installed as `taufinity` in `$GOPATH/bin` (usually `~/go/bin`). Make sure that directory is in your `$PATH`.
+The binary is installed in `$GOPATH/bin` (usually `~/go/bin`). Make sure that directory is in your `$PATH`.
 
 **zsh** (macOS default):
 ```bash
@@ -21,8 +44,6 @@ echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
 ```bash
 echo 'export PATH="$HOME/go/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
-
-Not sure which shell you're using? Run `echo $SHELL`.
 
 ### Verify installation
 
