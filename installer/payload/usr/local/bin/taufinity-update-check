@@ -14,17 +14,25 @@ log() {
 }
 
 notify_update() {
+  # Pkg/Homebrew install: the correct update command is brew upgrade, not taufinity update
+  # (taufinity update uses go install → ~/go/bin, which is not the active binary location).
+  if command -v brew &>/dev/null && brew list --cask taufinity &>/dev/null 2>&1; then
+    UPDATE_CMD="brew upgrade --cask taufinity"
+  else
+    UPDATE_CMD="brew upgrade --cask taufinity"
+  fi
+
   # terminal-notifier gives a clickable action that opens Terminal to run the update.
   # Falls back to a plain macOS notification when not installed (brew install terminal-notifier).
   if command -v terminal-notifier &>/dev/null; then
     terminal-notifier \
       -title "Taufinity CLI" \
       -subtitle "Update available" \
-      -message "Run: taufinity update" \
-      -execute "osascript -e 'tell application \"Terminal\" to activate' -e 'tell application \"Terminal\" to do script \"taufinity update\"'" \
+      -message "Run: $UPDATE_CMD" \
+      -execute "osascript -e 'tell application \"Terminal\" to activate' -e 'tell application \"Terminal\" to do script \"$UPDATE_CMD\"'" \
       2>/dev/null || true
   else
-    osascript -e 'display notification "Run: taufinity update" with title "Taufinity CLI" subtitle "Update available"' \
+    osascript -e "display notification \"Run: $UPDATE_CMD\" with title \"Taufinity CLI\" subtitle \"Update available\"" \
       2>/dev/null || true
   fi
 }
