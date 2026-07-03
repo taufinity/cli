@@ -21,10 +21,14 @@ import (
 // DefaultAPIURL is the default Taufinity API endpoint.
 const DefaultAPIURL = "https://studio.taufinity.io"
 
+// StagingAPIURL is the staging Studio endpoint.
+const StagingAPIURL = "https://staging.studio.taufinity.io"
+
 var (
 	// Global flags
 	flagSite   string
 	flagAPIURL string
+	flagEnv    string
 	flagOrg    string
 	flagFormat string
 	flagQuiet  bool
@@ -65,6 +69,7 @@ func init() {
 	// Global flags available to all commands
 	rootCmd.PersistentFlags().StringVar(&flagSite, "site", "", "Override site ID")
 	rootCmd.PersistentFlags().StringVar(&flagAPIURL, "api-url", "", "Override API URL")
+	rootCmd.PersistentFlags().StringVar(&flagEnv, "env", "", "Target environment: staging (default: production)")
 	rootCmd.PersistentFlags().StringVar(&flagOrg, "org", "", "Override organization ID")
 	rootCmd.PersistentFlags().StringVar(&flagFormat, "format", "table", "Output format: table, json, yaml")
 	rootCmd.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "Minimal output, no prompts")
@@ -211,7 +216,16 @@ func debugWriter() io.Writer {
 func resolveAPIURL() {
 	if flagAPIURL != "" {
 		warnIfLocalhost()
-		return // Flag takes precedence
+		return // Explicit --api-url takes highest precedence
+	}
+	// --env staging (or TAUFINITY_ENV=staging) maps to the staging Cloud Run URL.
+	envName := flagEnv
+	if envName == "" {
+		envName = os.Getenv("TAUFINITY_ENV")
+	}
+	if strings.ToLower(envName) == "staging" {
+		flagAPIURL = StagingAPIURL
+		return
 	}
 	if env := os.Getenv("TAUFINITY_API_URL"); env != "" {
 		flagAPIURL = env
