@@ -1,40 +1,86 @@
 #!/bin/bash
 # Daily update check agent for the Taufinity CLI.
 # Called by launchd (io.taufinity.cli) at 09:00.
+#
 # Exit codes from `taufinity update --check`:
 #   0 = up to date
 #   1 = update available
 #   * = error (network, API, binary issue, etc.)
+#
+# Telemetry: set TELEMETRY_URL to the Studio agent-error endpoint to enable
+# error reporting. Payload: event, exit_code, message, machine_id, org.
 
 BINARY="/usr/local/bin/taufinity"
-TELEMETRY_URL=""  # set to Studio endpoint when available, e.g. https://studio.taufinity.io/api/v1/cli/agent-error
+TELEMETRY_URL="${TELEMETRY_URL:-}"  # set via env: export TELEMETRY_URL=https://studio.taufinity.io/api/v1/cli/agent-error
+CONFIG_DIR="$HOME/.config/taufinity"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
 }
 
-notify() {
-  osascript -e "display notification \"$2\" with title \"Taufinity CLI\" subtitle \"$1\"" 2>/dev/null || true
+device_id() {
+  # Prefer the stable CLI device ID; fall back to hardware UUID.
+  local f="$CONFIG_DIR/device.json"
+  if [ -f "$f" ] && command -v jq &>/dev/null; then
+    local id
+    id=$(jq -r '.id // ""' "$f" 2>/dev/null)
+    [ -n "$id" ] && echo "$id" && return
+  fi
+  ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null \
+    | awk -F'"' '/UUID/{print $4}' | head -1
+}
+
+org_name() {
+  local f="$CONFIG_DIR/credentials.json"
+  if [ -f "$f" ] && command -v jq &>/dev/null; then
+    jq -r '.organization_name // ""' "$f" 2>/dev/null || true
+  fi
 }
 
 report_error() {
   local code="$1" message="$2"
   log "ERROR (exit $code): $message"
-  if [ -n "$TELEMETRY_URL" ]; then
-    curl -sf -X POST "$TELEMETRY_URL" \
-      -H "Content-Type: application/json" \
-      -d "{\"event\":\"agent_error\",\"exit_code\":$code,\"message\":\"$(echo "$message" | sed 's/"/\\"/g')\"}" \
-      --max-time 5 >/dev/null 2>&1 || true
+  [ -z "$TELEMETRY_URL" ] && return 0
+  # Use jq for safe JSON serialisation; skip telemetry if jq is unavailable.
+  command -v jq &>/dev/null || return 0
+  local payload
+  payload=$(jq -n \
+    --arg event "agent_error" \
+    --argjson code "$code" \
+    --arg message "$message" \
+    --arg machine_id "$(device_id)" \
+    --arg org "$(org_name)" \
+    '{event: $event, exit_code: $code, message: $message, machine_id: $machine_id, org: $org}') || return 0
+  curl -sf -X POST "$TELEMETRY_URL" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    --max-time 5 >/dev/null 2>&1 || true
+}
+
+notify_update() {
+  # terminal-notifier gives a clickable action that opens Terminal to run the update.
+  # Falls back to a plain macOS notification when not installed (brew install terminal-notifier).
+  if command -v terminal-notifier &>/dev/null; then
+    terminal-notifier \
+      -title "Taufinity CLI" \
+      -subtitle "Update available" \
+      -message "Run: taufinity update" \
+      -execute "osascript -e 'tell application \"Terminal\" to activate' -e 'tell application \"Terminal\" to do script \"taufinity update\"'" \
+      2>/dev/null || true
+  else
+    osascript -e 'display notification "Run: taufinity update" with title "Taufinity CLI" subtitle "Update available"' \
+      2>/dev/null || true
   fi
 }
 
-# Guard: binary missing (e.g. manual removal without uninstalling the cask)
+# Guard: binary missing (e.g. manual removal without uninstalling the cask).
+# Exit 0 so launchd does not throttle or restart the agent on every interval.
 if [ ! -x "$BINARY" ]; then
   report_error 127 "binary not found at $BINARY"
-  exit 0  # exit 0 so launchd does not throttle or restart the agent
+  exit 0
 fi
 
-# Run the update check; capture exit code without triggering set -e
+# Run the update check; capture exit code without triggering set -e.
 CHECK_EXIT=0
 OUTPUT=$("$BINARY" update --check 2>&1) || CHECK_EXIT=$?
 
@@ -44,7 +90,7 @@ case "$CHECK_EXIT" in
     ;;
   1)
     log "Update available — firing notification"
-    notify "Update available" "Run: taufinity update"
+    notify_update
     ;;
   *)
     report_error "$CHECK_EXIT" "${OUTPUT:-update check failed}"

@@ -106,6 +106,14 @@ cat /tmp/io.taufinity.cli.log
 # [2026-07-03 09:00:01] Update available — firing notification
 ```
 
+**Click-to-update notifications** (optional): install [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) for actionable notifications with a button that opens Terminal and runs `taufinity update` automatically:
+
+```bash
+brew install terminal-notifier
+```
+
+The agent detects it automatically — no config needed. Falls back to a plain macOS notification when not installed.
+
 **Uninstall the agent** (Homebrew handles this automatically on `brew uninstall`):
 
 ```bash

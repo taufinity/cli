@@ -6,7 +6,12 @@ if [ -z "$CURRENT_USER" ] || [ "$CURRENT_USER" = "root" ]; then
   exit 0
 fi
 
-USER_UID=$(id -u "$CURRENT_USER")
+USER_UID=$(id -u "$CURRENT_USER" 2>/dev/null)
+if [ -z "$USER_UID" ]; then
+  echo "Warning: could not resolve UID for $CURRENT_USER; agent will load on next login" >&2
+  exit 0
+fi
+
 DOMAIN="gui/$USER_UID"
 
 # Unload any existing instance first to avoid duplicate registration
