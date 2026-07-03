@@ -3,6 +3,12 @@
 /taufinity-*
 *.exe
 
+# Build output
+/dist/
+
+# Installer: injected binary (build-pkg.sh cleans this up, but guard anyway)
+/installer/payload/usr/local/bin/taufinity
+
 # Credentials — never commit
 credentials.json
 .env

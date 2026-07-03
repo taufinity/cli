@@ -1,0 +1,6 @@
+#!/bin/bash
+# Runs daily via launchd. Notifies the user if a newer taufinity CLI is available.
+/usr/local/bin/taufinity update --check 2>/dev/null
+if [ $? -eq 1 ]; then
+  osascript -e 'display notification "Run: taufinity update" with title "Taufinity CLI" subtitle "Update available"'
+fi

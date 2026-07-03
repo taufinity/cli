@@ -1,0 +1,9 @@
+#!/bin/bash
+# Loads the launchd agent immediately for the logged-in user.
+# Runs as root (macOS installer requirement); finds the console user explicitly.
+CURRENT_USER=$(stat -f "%Su" /dev/console)
+if [ -n "$CURRENT_USER" ] && [ "$CURRENT_USER" != "root" ]; then
+  USER_UID=$(id -u "$CURRENT_USER")
+  launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/io.taufinity.cli.plist
+fi
+exit 0
