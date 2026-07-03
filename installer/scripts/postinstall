@@ -12,6 +12,18 @@ if [ -z "$USER_UID" ]; then
   exit 0
 fi
 
+# Remove stale copies from 'go install' / 'make install' that shadow /usr/local/bin/taufinity.
+USER_HOME="/Users/$CURRENT_USER"
+for stale in \
+  "$USER_HOME/go/bin/taufinity" \
+  "$USER_HOME/bin/taufinity" \
+  "$USER_HOME/.local/bin/taufinity"
+do
+  if [ -e "$stale" ]; then
+    rm -f "$stale" && echo "Removed stale taufinity binary: $stale"
+  fi
+done
+
 DOMAIN="gui/$USER_UID"
 
 # Unload any existing instance first to avoid duplicate registration
