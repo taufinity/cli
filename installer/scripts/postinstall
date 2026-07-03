@@ -1,0 +1,7 @@
+#!/bin/bash
+CURRENT_USER=$(stat -f "%Su" /dev/console)
+if [ -n "$CURRENT_USER" ] && [ "$CURRENT_USER" != "root" ]; then
+  USER_UID=$(id -u "$CURRENT_USER")
+  launchctl bootout "gui/$USER_UID/io.taufinity.cli" 2>/dev/null || true
+  launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/io.taufinity.cli.plist
+fi

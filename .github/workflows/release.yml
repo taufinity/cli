@@ -66,3 +66,49 @@ jobs:
             dist/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  macos-pkg:
+    runs-on: macos-latest
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download darwin binaries from release
+        run: |
+          mkdir -p dist
+          gh release download "${{ github.ref_name }}" \
+            --pattern "taufinity_darwin_*" \
+            --dir dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build universal macOS binary
+        run: |
+          lipo -create -output dist/taufinity_darwin_universal \
+            dist/taufinity_darwin_amd64 \
+            dist/taufinity_darwin_arm64
+
+      - name: Build macOS pkg
+        run: bash installer/build-pkg.sh dist/taufinity_darwin_universal "${{ github.ref_name }}"
+
+      - name: Upload pkg to release
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/taufinity_darwin_installer.pkg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          PKG_SHA=$(shasum -a 256 dist/taufinity_darwin_installer.pkg | awk '{print $1}')
+          VERSION="${{ github.ref_name }}"
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/taufinity/homebrew-tap.git
+          cd homebrew-tap
+          sed -i '' "s/version \".*\"/version \"${VERSION#v}\"/" Casks/taufinity.rb
+          sed -i '' "s/sha256 .*/sha256 \"${PKG_SHA}\"/" Casks/taufinity.rb
+          git config user.email "ci@taufinity.io"
+          git config user.name "Taufinity CI"
+          git commit -am "bump taufinity to ${VERSION}"
+          git push
