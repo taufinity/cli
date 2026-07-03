@@ -4,6 +4,16 @@ Command-line tool for the [Taufinity](https://studio.taufinity.io) content platf
 
 ## Installation
 
+### macOS (Homebrew — recommended)
+
+```bash
+brew install --cask taufinity/tap/taufinity
+```
+
+Installs the `taufinity` binary and a daily background update-check that sends a macOS notification when a new version is available.
+
+Alternatively, download `taufinity_darwin_installer.pkg` from [GitHub Releases](https://github.com/taufinity/cli/releases) and double-click to install.
+
 ### macOS / Linux (Go 1.21+)
 
 ```bash
