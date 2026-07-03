@@ -81,6 +81,45 @@ taufinity config set auto_update false
 
 `taufinity update` installs from the `main` branch via `go install ...@latest`. Anyone with commit access to `main` ships to all CLI users on their next update. Acceptable for the small internal team today; once we cut tagged releases, the default will move to a tagged version.
 
+### macOS background update agent
+
+The `.pkg` installer (Homebrew or direct download) also installs a launchd agent that runs daily at 09:00 and fires a macOS notification when a newer version is available.
+
+**Check the agent is running:**
+
+```bash
+launchctl list | grep io.taufinity
+# -  0  io.taufinity.cli   ← loaded, last run succeeded
+```
+
+**Trigger the check manually:**
+
+```bash
+/usr/local/bin/taufinity-update-check
+```
+
+**View the agent log:**
+
+```bash
+cat /tmp/io.taufinity.cli.log
+# [2026-07-03 09:00:01] Up to date
+# [2026-07-03 09:00:01] Update available — firing notification
+```
+
+**Uninstall the agent** (Homebrew handles this automatically on `brew uninstall`):
+
+```bash
+brew uninstall --cask taufinity
+```
+
+Or manually:
+
+```bash
+launchctl bootout "gui/$(id -u)/io.taufinity.cli"
+sudo rm /Library/LaunchAgents/io.taufinity.cli.plist
+sudo rm /usr/local/bin/taufinity /usr/local/bin/taufinity-update-check
+```
+
 ### Build from source
 
 ```bash

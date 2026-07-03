@@ -1,7 +1,18 @@
 #!/bin/bash
+PLIST="/Library/LaunchAgents/io.taufinity.cli.plist"
 CURRENT_USER=$(stat -f "%Su" /dev/console)
-if [ -n "$CURRENT_USER" ] && [ "$CURRENT_USER" != "root" ]; then
-  USER_UID=$(id -u "$CURRENT_USER")
-  launchctl bootout "gui/$USER_UID/io.taufinity.cli" 2>/dev/null || true
-  launchctl bootstrap "gui/$USER_UID" /Library/LaunchAgents/io.taufinity.cli.plist
+
+if [ -z "$CURRENT_USER" ] || [ "$CURRENT_USER" = "root" ]; then
+  exit 0
+fi
+
+USER_UID=$(id -u "$CURRENT_USER")
+DOMAIN="gui/$USER_UID"
+
+# Unload any existing instance first to avoid duplicate registration
+launchctl bootout "$DOMAIN/io.taufinity.cli" 2>/dev/null || true
+
+# Load the agent; errors go to installer log but do not fail the install
+if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
+  echo "Warning: could not load io.taufinity.cli agent (will load on next login)" >&2
 fi

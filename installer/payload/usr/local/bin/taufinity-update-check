@@ -1,5 +1,52 @@
 #!/bin/bash
-/usr/local/bin/taufinity update --check 2>/dev/null
-if [ $? -eq 1 ]; then
-  osascript -e 'display notification "Run: taufinity update" with title "Taufinity CLI" subtitle "Update available"'
+# Daily update check agent for the Taufinity CLI.
+# Called by launchd (io.taufinity.cli) at 09:00.
+# Exit codes from `taufinity update --check`:
+#   0 = up to date
+#   1 = update available
+#   * = error (network, API, binary issue, etc.)
+
+BINARY="/usr/local/bin/taufinity"
+TELEMETRY_URL=""  # set to Studio endpoint when available, e.g. https://studio.taufinity.io/api/v1/cli/agent-error
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+notify() {
+  osascript -e "display notification \"$2\" with title \"Taufinity CLI\" subtitle \"$1\"" 2>/dev/null || true
+}
+
+report_error() {
+  local code="$1" message="$2"
+  log "ERROR (exit $code): $message"
+  if [ -n "$TELEMETRY_URL" ]; then
+    curl -sf -X POST "$TELEMETRY_URL" \
+      -H "Content-Type: application/json" \
+      -d "{\"event\":\"agent_error\",\"exit_code\":$code,\"message\":\"$(echo "$message" | sed 's/"/\\"/g')\"}" \
+      --max-time 5 >/dev/null 2>&1 || true
+  fi
+}
+
+# Guard: binary missing (e.g. manual removal without uninstalling the cask)
+if [ ! -x "$BINARY" ]; then
+  report_error 127 "binary not found at $BINARY"
+  exit 0  # exit 0 so launchd does not throttle or restart the agent
 fi
+
+# Run the update check; capture exit code without triggering set -e
+CHECK_EXIT=0
+OUTPUT=$("$BINARY" update --check 2>&1) || CHECK_EXIT=$?
+
+case "$CHECK_EXIT" in
+  0)
+    log "Up to date"
+    ;;
+  1)
+    log "Update available — firing notification"
+    notify "Update available" "Run: taufinity update"
+    ;;
+  *)
+    report_error "$CHECK_EXIT" "${OUTPUT:-update check failed}"
+    ;;
+esac
