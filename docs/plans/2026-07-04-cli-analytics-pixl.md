@@ -101,11 +101,11 @@ Query params on every hit: `v` (version), `os`, `arch`, `did` (anonymous UUID fr
   }
 
   resource "google_storage_bucket_object" "pixl" {
-    for_each     = toset(local.events)
-    bucket       = google_storage_bucket.pixl.name
-    name         = each.key
-    content      = base64decode(local.pixel_b64)
-    content_type = "image/gif"
+    for_each       = toset(local.events)
+    bucket         = google_storage_bucket.pixl.name
+    name           = each.key
+    content_base64 = local.pixel_b64    # binary — must use content_base64, not content
+    content_type   = "image/gif"
   }
   ```
 
@@ -143,10 +143,13 @@ Query params on every hit: `v` (version), `os`, `arch`, `did` (anonymous UUID fr
   // Empty in local builds → all calls are no-ops.
   var PixlBaseURL string
 
-  // Version is shared with commands package via ldflags.
-  var Version string
+  // version is set by Init(); not a separate ldflag to avoid silent mismatch.
+  var version string
 
   func Enabled() bool { return PixlBaseURL != "" }
+
+  // Init wires the version string from main.go (called alongside telemetry.Init).
+  func Init(v string) { version = v }
 
   // Fire sends a GET to {PixlBaseURL}/{event}?params in a goroutine.
   // Never blocks. Never surfaces errors (analytics must not affect UX).
@@ -154,18 +157,24 @@ Query params on every hit: `v` (version), `os`, `arch`, `did` (anonymous UUID fr
       if !Enabled() {
           return
       }
+      wg.Add(1)
       go func() {
+          defer wg.Done()
           params := baseParams()
           for k, v := range extra {
               params[k] = v
           }
-          url := fmt.Sprintf("%s/%s?%s", PixlBaseURL, event, encodeParams(params))
+          q := url.Values{}
+          for k, v := range params {
+              q.Set(k, v)
+          }
+          reqURL := fmt.Sprintf("%s/%s?%s", PixlBaseURL, event, q.Encode())
           client := &http.Client{Timeout: 3 * time.Second}
-          req, err := http.NewRequest(http.MethodGet, url, nil)
+          req, err := http.NewRequest(http.MethodGet, reqURL, nil)
           if err != nil {
               return
           }
-          req.Header.Set("User-Agent", fmt.Sprintf("taufinity-cli/%s", Version))
+          req.Header.Set("User-Agent", fmt.Sprintf("taufinity-cli/%s", version))
           resp, err := client.Do(req)
           if err != nil {
               return
@@ -174,73 +183,72 @@ Query params on every hit: `v` (version), `os`, `arch`, `did` (anonymous UUID fr
       }()
   }
 
+  // Flush waits up to d for in-flight pixl goroutines to complete.
+  // Call from main.go alongside telemetry.Flush() to avoid losing tail events.
+  var wg sync.WaitGroup
+
+  func Flush(d time.Duration) {
+      done := make(chan struct{})
+      go func() { wg.Wait(); close(done) }()
+      select {
+      case <-done:
+      case <-time.After(d):
+      }
+  }
+
   func baseParams() map[string]string {
       return map[string]string{
-          "v":    Version,
+          "v":    version,
           "os":   runtime.GOOS,
           "arch": runtime.GOARCH,
-          "did":  deviceID(),
+          "did":  telemetry.DeviceID(), // reuse telemetry's reader+creator, avoids duplication
       }
-  }
-
-  func deviceID() string {
-      home, err := os.UserHomeDir()
-      if err != nil {
-          return "unknown"
-      }
-      path := filepath.Join(home, ".config", "taufinity", "device.json")
-      data, err := os.ReadFile(path)
-      if err != nil {
-          return "unknown"
-      }
-      var d struct {
-          DeviceID string `json:"device_id"`
-      }
-      if err := json.Unmarshal(data, &d); err != nil || d.DeviceID == "" {
-          return "unknown"
-      }
-      return d.DeviceID
-  }
-
-  func encodeParams(params map[string]string) string {
-      var parts []string
-      for k, v := range params {
-          parts = append(parts, k+"="+v)
-      }
-      // deterministic order not required — this is analytics
-      result := ""
-      for i, p := range parts {
-          if i > 0 { result += "&" }
-          result += p
-      }
-      return result
   }
   ```
 
 - [ ] **2.2** Run `go build ./...` — must compile clean
 
-- [ ] **2.3** Wire into `commands/update.go` — fire `updated` on success, `update_error` on failure:
+- [ ] **2.3** Wire into `commands/update.go` — fire `updated` on success, `update_error` on failure.
+  `commands.Version` holds the running binary's version (ldflag). The release tag comes from the `*githubRelease` returned by `fetchLatestRelease()`:
   ```go
-  // after successful update:
-  pixl.Fire("v1/updated", map[string]string{"from": currentVersion, "to": newVersion})
+  // at tail of runInstall(), after smoke test passes:
+  pixl.Fire("v1/updated", map[string]string{
+      "from": commands.Version,   // e.g. "v0.6.13"
+      "to":   rel.TagName,        // e.g. "v0.6.14" — field on *githubRelease
+  })
 
-  // on error:
-  pixl.Fire("v1/update_error", map[string]string{"err": err.Error()})
+  // in error paths (before returning the error):
+  pixl.Fire("v1/update_error", map[string]string{"code": fmt.Sprintf("%T", err)})
   ```
+  Note: pass `fmt.Sprintf("%T", err)` not `err.Error()` to avoid leaking file paths in query params.
 
-- [ ] **2.4** Add ldflags to `.github/workflows/release.yml`:
+- [ ] **2.4** Add ldflags to `.github/workflows/release.yml` (one new ldflag only — version comes from pixl.Init, not a second ldflag):
   ```yaml
   PIXL_BASE_URL: ${{ secrets.PIXL_BASE_URL }}
   ```
   ```
   -X 'github.com/taufinity/cli/internal/pixl.PixlBaseURL=${PIXL_BASE_URL}'
-  -X 'github.com/taufinity/cli/internal/pixl.Version=${VERSION}'
   ```
 
 - [ ] **2.5** Add `PIXL_BASE_URL` secret to the `taufinity/cli` GitHub repo Actions secrets
   (value: `https://storage.googleapis.com/taufinity-cli-pixl`)
 
-- [ ] **2.6** Run `go test ./...` — all green
+- [ ] **2.6** Export `DeviceID() string` from `internal/telemetry` so pixl can call it without duplicating the read logic:
+  ```go
+  // internal/telemetry/device.go — add one exported function:
+  func DeviceID() string { return globalDeviceID }
+  ```
+  (globalDeviceID is already populated by Init())
+
+- [ ] **2.7** Wire pixl.Init and pixl.Flush into `cmd/taufinity/main.go`:
+  ```go
+  telemetry.Init(commands.Version, commands.GitCommit)
+  pixl.Init(commands.Version)              // no ldflag — version passed at runtime
+  defer pixl.Flush(2 * time.Second)        // drain in-flight events before exit
+  defer telemetry.Flush()
+  ```
+
+- [ ] **2.8** Run `go test ./...` — all green
 
 ### Phase 3 — Shell scripts
 
@@ -250,18 +258,22 @@ Query params on every hit: `v` (version), `os`, `arch`, `did` (anonymous UUID fr
   ```bash
   PIXL_BASE="https://storage.googleapis.com/taufinity-cli-pixl"
 
+  # Resolve version once at startup (after binary-exists guard), cache in var.
+  # Strips +dirty suffix so analytics see clean semver.
+  TAUFINITY_VERSION=$("$BINARY" version 2>/dev/null \
+    | awk '/^taufinity v/{gsub(/\+.*$/,"",$2); print substr($2,2)}') || TAUFINITY_VERSION="unknown"
+
+  # Read device ID once (jq not required — use grep+sed for portability).
+  TAUFINITY_DID="unknown"
+  _did_file="$HOME/.config/taufinity/device.json"
+  if [ -f "$_did_file" ]; then
+    TAUFINITY_DID=$(grep -o '"device_id":"[^"]*"' "$_did_file" \
+      | sed 's/"device_id":"//;s/"//') 2>/dev/null || TAUFINITY_DID="unknown"
+  fi
+
   fire_pixl() {
     local event="$1"; shift
-    local params="os=darwin&arch=$(uname -m)"
-    local v
-    v=$("$BINARY" version 2>/dev/null | awk '/^taufinity v/{gsub(/\+.*$/,"",$2); print substr($2,2)}') || v="unknown"
-    params="${params}&v=${v}"
-    local did_file="$HOME/.config/taufinity/device.json"
-    if [ -f "$did_file" ]; then
-      local did
-      did=$(python3 -c "import json,sys; print(json.load(open('$did_file')).get('device_id','unknown'))" 2>/dev/null || echo "unknown")
-      params="${params}&did=${did}"
-    fi
+    local params="os=darwin&arch=$(uname -m)&v=${TAUFINITY_VERSION}&did=${TAUFINITY_DID}"
     while [ $# -gt 0 ]; do params="${params}&$1"; shift; done
     curl -sf "${PIXL_BASE}/${event}?${params}" &>/dev/null &
   }
@@ -303,7 +315,9 @@ Query params on every hit: `v` (version), `os`, `arch`, `did` (anonymous UUID fr
     local event="$1"; shift
     local params="os=darwin&v=unknown"
     while [ $# -gt 0 ]; do params="${params}&$1"; shift; done
-    curl -sf "${PIXL_BASE}/${event}?${params}" &>/dev/null & 2>/dev/null || true
+    curl -sf "${PIXL_BASE}/${event}?${params}" &>/dev/null &
+    # postinstall runs as root; $HOME undefined; device.json not yet created.
+    # v=unknown is intentional — the binary isn't running here.
   }
   ```
 
