@@ -1,5 +1,6 @@
 #!/bin/bash
 PLIST="/Library/LaunchAgents/io.taufinity.cli.plist"
+PIXL_BASE="https://storage.googleapis.com/taufinity-cli-pixl"
 CURRENT_USER=$(stat -f "%Su" /dev/console)
 
 if [ -z "$CURRENT_USER" ] || [ "$CURRENT_USER" = "root" ]; then
@@ -11,6 +12,15 @@ if [ -z "$USER_UID" ]; then
   echo "Warning: could not resolve UID for $CURRENT_USER; agent will load on next login" >&2
   exit 0
 fi
+
+# Fire a pixel from root context. $HOME is undefined here; device.json not yet created.
+# v=unknown is intentional — no binary context at this point.
+fire_pixl_root() {
+  local event="$1"; shift
+  local params="os=darwin&v=unknown"
+  while [ $# -gt 0 ]; do params="${params}&$1"; shift; done
+  curl -sf "${PIXL_BASE}/${event}?${params}" &>/dev/null &
+}
 
 # Remove stale copies from 'go install' / 'make install' that shadow /usr/local/bin/taufinity.
 USER_HOME="/Users/$CURRENT_USER"
@@ -32,4 +42,7 @@ launchctl bootout "$DOMAIN/io.taufinity.cli" 2>/dev/null || true
 # Load the agent; errors go to installer log but do not fail the install
 if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
   echo "Warning: could not load io.taufinity.cli agent (will load on next login)" >&2
+  fire_pixl_root "v1/install_error" "step=bootstrap"
 fi
+
+fire_pixl_root "v1/install"

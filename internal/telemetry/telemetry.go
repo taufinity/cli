@@ -80,6 +80,10 @@ func Enabled() bool {
 // ErrNotConfigured is returned by ReportSync when telemetry is not enabled.
 var ErrNotConfigured = errors.New("telemetry not configured (TelemetryKey not set — official builds only)")
 
+// DeviceID returns the anonymous device UUID loaded by Init.
+// Returns "" before Init is called or if Init failed.
+func DeviceID() string { return globalDeviceID }
+
 // Flush waits for pending Sentry events to drain (call deferred from main).
 func Flush() {
 	flushSentry()

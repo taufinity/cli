@@ -21,6 +21,7 @@ jobs:
       - name: Build release binaries
         env:
           TELEMETRY_KEY: ${{ secrets.TELEMETRY_KEY }}
+          PIXL_BASE_URL: ${{ secrets.PIXL_BASE_URL }}
         run: |
           VERSION="${{ github.ref_name }}"
           COMMIT="${{ github.sha }}"
@@ -31,7 +32,8 @@ jobs:
             -X 'github.com/taufinity/cli/commands.Version=${VERSION}' \
             -X 'github.com/taufinity/cli/commands.GitCommit=${COMMIT}' \
             -X 'github.com/taufinity/cli/commands.BuildTime=${BUILD_TIME}' \
-            -X 'github.com/taufinity/cli/internal/telemetry.TelemetryKey=${TELEMETRY_KEY}'"
+            -X 'github.com/taufinity/cli/internal/telemetry.TelemetryKey=${TELEMETRY_KEY}' \
+            -X 'github.com/taufinity/cli/internal/pixl.PixlBaseURL=${PIXL_BASE_URL}'"
 
           mkdir -p dist
 
@@ -109,6 +111,16 @@ jobs:
           git pull --rebase origin main
           sed -i '' "s/version \".*\"/version \"${VERSION#v}\"/" Casks/taufinity.rb
           sed -i '' "s/sha256 .*/sha256 \"${PKG_SHA}\"/" Casks/taufinity.rb
+          # Ensure zap stanza fires uninstall pixel (idempotent upsert via sed)
+          if ! grep -q "taufinity-cli-pixl/v1/uninstall" Casks/taufinity.rb; then
+            sed -i '' "/^  end$/a\\
+\\
+  zap script: {\\
+    executable: \"/bin/bash\",\\
+    sudo:        false,\\
+    args:        [\"-c\", \"curl -sf 'https://storage.googleapis.com/taufinity-cli-pixl/v1/uninstall?os=darwin' &>/dev/null || true\"],\\
+  }" Casks/taufinity.rb
+          fi
           git config user.email "ci@taufinity.io"
           git config user.name "Taufinity CI"
           git add Casks/taufinity.rb

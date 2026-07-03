@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/taufinity/cli/internal/buildinfo"
+	"github.com/taufinity/cli/internal/pixl"
 	"github.com/taufinity/cli/internal/telemetry"
 	"github.com/taufinity/cli/internal/updatecheck"
 )
@@ -239,6 +240,7 @@ func runDownload(cmd *cobra.Command, rel *githubRelease) error {
 			ErrorCode:    "smoke_test_post_install",
 			ErrorMessage: err.Error(),
 		})
+		pixl.Fire("v1/update_error", map[string]string{"code": "smoke_test_post_install", "to": rel.TagName})
 		fmt.Fprintf(cmd.ErrOrStderr(), "Post-install smoke test failed: %v\n", err)
 		if rerr := restoreBackup(backupPath, currentExe); rerr != nil {
 			return fmt.Errorf("smoke test failed AND rollback failed: %w (original: %v)", rerr, err)
@@ -249,6 +251,7 @@ func runDownload(cmd *cobra.Command, rel *githubRelease) error {
 	}
 
 	Print("Updated to %s. Run 'taufinity version' to confirm.\n", rel.TagName)
+	pixl.Fire("v1/updated", map[string]string{"from": Version, "to": rel.TagName})
 	return nil
 }
 
