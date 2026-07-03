@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +27,6 @@ var (
 // Avoids a second -ldflags entry that could silently diverge from commands.Version.
 func Init(v string) { version = v }
 
-// Enabled reports whether pixel firing is active.
 func Enabled() bool { return PixlBaseURL != "" }
 
 // Fire sends GET {PixlBaseURL}/{event}?params in a background goroutine.
@@ -50,7 +50,7 @@ func Fire(event string, extra map[string]string) {
 			q.Set(k, v)
 		}
 
-		reqURL := fmt.Sprintf("%s/%s?%s", PixlBaseURL, event, q.Encode())
+		reqURL := fmt.Sprintf("%s/%s?%s", strings.TrimRight(PixlBaseURL, "/"), event, q.Encode())
 		client := &http.Client{Timeout: 3 * time.Second}
 		req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 		if err != nil {

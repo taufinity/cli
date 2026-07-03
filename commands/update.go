@@ -246,6 +246,8 @@ func runDownload(cmd *cobra.Command, rel *githubRelease) error {
 			return fmt.Errorf("smoke test failed AND rollback failed: %w (original: %v)", rerr, err)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "Rolled back to previous binary.\n")
+		pixl.Flush(2 * time.Second)
+		telemetry.Flush()
 		os.Exit(1)
 		return nil
 	}

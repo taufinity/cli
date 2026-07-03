@@ -103,6 +103,7 @@ jobs:
       - name: Update Homebrew tap
         env:
           TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          PIXL_BASE_URL: ${{ secrets.PIXL_BASE_URL }}
         run: |
           PKG_SHA=$(shasum -a 256 dist/taufinity_darwin_installer.pkg | awk '{print $1}')
           VERSION="${{ github.ref_name }}"
@@ -111,16 +112,35 @@ jobs:
           git pull --rebase origin main
           sed -i '' "s/version \".*\"/version \"${VERSION#v}\"/" Casks/taufinity.rb
           sed -i '' "s/sha256 .*/sha256 \"${PKG_SHA}\"/" Casks/taufinity.rb
-          # Ensure zap stanza fires uninstall pixel (idempotent upsert via sed)
-          if ! grep -q "taufinity-cli-pixl/v1/uninstall" Casks/taufinity.rb; then
-            sed -i '' "/^  end$/a\\
-\\
-  zap script: {\\
-    executable: \"/bin/bash\",\\
-    sudo:        false,\\
-    args:        [\"-c\", \"curl -sf 'https://storage.googleapis.com/taufinity-cli-pixl/v1/uninstall?os=darwin' &>/dev/null || true\"],\\
-  }" Casks/taufinity.rb
-          fi
+          # Ensure zap stanza fires uninstall pixel (idempotent; inserts before outermost end).
+          # Uses $PIXL_BASE_URL so the URL stays in sync with the binary's ldflag.
+          # Python rfind ensures nested do...end blocks (livecheck etc.) are not affected.
+          python3 << 'PYEOF'
+import os
+
+base = os.environ.get('PIXL_BASE_URL', '').rstrip('/')
+if not base:
+    exit(0)
+
+path = 'Casks/taufinity.rb'
+content = open(path).read()
+if (base + '/v1/uninstall') in content:
+    exit(0)
+
+zap = f"""
+  zap script: {{
+    executable: "/bin/bash",
+    sudo:        false,
+    args:        ["-c", "curl -sf '{base}/v1/uninstall?os=darwin' &>/dev/null || true"],
+  }}"""
+
+last_end = content.rfind('\nend\n')
+if last_end == -1:
+    last_end = content.rfind('\nend')
+if last_end != -1:
+    content = content[:last_end] + zap + content[last_end:]
+    open(path, 'w').write(content)
+PYEOF
           git config user.email "ci@taufinity.io"
           git config user.name "Taufinity CI"
           git add Casks/taufinity.rb
