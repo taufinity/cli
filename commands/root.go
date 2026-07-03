@@ -21,8 +21,8 @@ import (
 // DefaultAPIURL is the default Taufinity API endpoint.
 const DefaultAPIURL = "https://studio.taufinity.io"
 
-// StagingAPIURL is the Cloud Run staging endpoint.
-const StagingAPIURL = "https://sitegen-staging-yzp5ws7u4a-ew.a.run.app"
+// StagingAPIURL is the staging Studio endpoint.
+const StagingAPIURL = "https://staging.studio.taufinity.io"
 
 var (
 	// Global flags
