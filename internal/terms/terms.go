@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/taufinity/cli/internal/config"
 )
 
 // EnvNoTelemetry disables all data collection when set to "1".
@@ -17,39 +19,23 @@ const EnvNoTelemetry = "TAUFINITY_NO_TELEMETRY"
 const notice = `Taufinity CLI collects anonymous usage data (device ID, OS, version, commands run).
 Set TAUFINITY_NO_TELEMETRY=1 to opt out. Details: https://taufinity.io/privacy/cli`
 
-func flagPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "taufinity", "privacy_accepted"), nil
+func flagPath() string {
+	return filepath.Join(config.Dir(), "privacy_accepted")
 }
 
 // IsAccepted reports whether the privacy notice has been shown/accepted.
 func IsAccepted() bool {
-	p, err := flagPath()
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(p)
+	_, err := os.Stat(flagPath())
 	return err == nil
 }
 
-// Accept creates the acceptance flag file. Called by the pkg postinstall script
-// (via a touch command) and by ShowOnce after the first-run display.
+// Accept creates the acceptance flag file.
 func Accept() error {
-	p, err := flagPath()
-	if err != nil {
-		return err
-	}
+	p := flagPath()
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	return f.Close()
+	return os.WriteFile(p, nil, 0o600)
 }
 
 // ShowOnce prints the privacy notice to w if it hasn't been shown before,

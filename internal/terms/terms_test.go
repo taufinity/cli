@@ -12,9 +12,7 @@ func TestShowOnce(t *testing.T) {
 	tmp := t.TempDir()
 	flag := filepath.Join(tmp, ".config", "taufinity", "privacy_accepted")
 
-	origHome := os.Getenv("HOME")
 	t.Setenv("HOME", tmp)
-	t.Cleanup(func() { os.Setenv("HOME", origHome) })
 
 	var buf bytes.Buffer
 

@@ -21,6 +21,7 @@ import (
 	"github.com/taufinity/cli/internal/buildinfo"
 	"github.com/taufinity/cli/internal/pixl"
 	"github.com/taufinity/cli/internal/telemetry"
+	"github.com/taufinity/cli/internal/terms"
 	"github.com/taufinity/cli/internal/updatecheck"
 )
 
@@ -381,7 +382,7 @@ func smokeTest(binPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), smokeTestTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binPath, "version")
-	cmd.Env = append(os.Environ(), updatecheck.EnvDisable+"=1")
+	cmd.Env = append(os.Environ(), updatecheck.EnvDisable+"=1", terms.EnvNoTelemetry+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: output: %s", err, string(out))

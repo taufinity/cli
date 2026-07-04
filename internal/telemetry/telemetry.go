@@ -43,6 +43,11 @@ func Init(version, commit string) {
 		return
 	}
 	globalDeviceID = id
+
+	if os.Getenv(terms.EnvNoTelemetry) == "1" {
+		return
+	}
+
 	initSentry(version, commit)
 
 	if firstRun {
@@ -52,9 +57,9 @@ func Init(version, commit string) {
 
 // Report sends a telemetry event to both sinks.
 // Safe to call from any goroutine; the beacon is fire-and-forget (goroutine).
-// No-op if Init() was not called or failed.
+// No-op if Init() was not called or failed, or if the user has opted out.
 func Report(e Event) {
-	if globalDeviceID == "" {
+	if !Enabled() {
 		return
 	}
 	e.ErrorMessage = scrub(e.ErrorMessage)

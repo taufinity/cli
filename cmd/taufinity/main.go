@@ -17,7 +17,7 @@ func main() {
 	defer telemetry.Flush()
 	defer pixl.Flush(2 * time.Second)
 
-	terms.ShowOnce(os.Stdout)
+	terms.ShowOnce(os.Stderr)
 
 	if err := commands.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
