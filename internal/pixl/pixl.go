@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/taufinity/cli/internal/telemetry"
+	"github.com/taufinity/cli/internal/terms"
 )
 
 // PixlBaseURL is injected at build time via -ldflags. Empty → all calls no-op.
@@ -27,7 +29,7 @@ var (
 // Avoids a second -ldflags entry that could silently diverge from commands.Version.
 func Init(v string) { version = v }
 
-func Enabled() bool { return PixlBaseURL != "" }
+func Enabled() bool { return PixlBaseURL != "" && os.Getenv(terms.EnvNoTelemetry) != "1" }
 
 // Fire sends GET {PixlBaseURL}/{event}?params in a background goroutine.
 // extra key=value pairs are merged on top of the standard params (v, os, arch, did).

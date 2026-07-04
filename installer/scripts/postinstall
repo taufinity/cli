@@ -46,3 +46,9 @@ if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
 fi
 
 fire_pixl_root "v1/install"
+
+# Record that the privacy notice was accepted via the installer license screen.
+# This prevents the binary from showing the first-run notice again.
+TERMS_FLAG="$USER_HOME/.config/taufinity/privacy_accepted"
+mkdir -p "$(dirname "$TERMS_FLAG")"
+touch "$TERMS_FLAG"

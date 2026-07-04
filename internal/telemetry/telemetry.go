@@ -6,7 +6,10 @@ package telemetry
 import (
 	"errors"
 	"log/slog"
+	"os"
 	"time"
+
+	"github.com/taufinity/cli/internal/terms"
 )
 
 // Event is a single telemetry event.
@@ -72,9 +75,10 @@ func ReportSync(e Event, timeout time.Duration) error {
 	return sendBeaconSync(e, timeout)
 }
 
-// Enabled reports whether telemetry is active (TelemetryKey set + device ID loaded).
+// Enabled reports whether telemetry is active (TelemetryKey set + device ID
+// loaded + user has not opted out via TAUFINITY_NO_TELEMETRY=1).
 func Enabled() bool {
-	return TelemetryKey != "" && globalDeviceID != ""
+	return TelemetryKey != "" && globalDeviceID != "" && os.Getenv(terms.EnvNoTelemetry) != "1"
 }
 
 // ErrNotConfigured is returned by ReportSync when telemetry is not enabled.
