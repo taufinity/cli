@@ -2,6 +2,8 @@
 /taufinity
 /taufinity-*
 *.exe
+dist/
+installer/payload/usr/local/bin/taufinity
 
 # Credentials — never commit
 credentials.json
