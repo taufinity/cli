@@ -21,6 +21,7 @@ jobs:
       - name: Build release binaries
         env:
           TELEMETRY_KEY: ${{ secrets.TELEMETRY_KEY }}
+          PIXL_BASE_URL: ${{ secrets.PIXL_BASE_URL }}
         run: |
           VERSION="${{ github.ref_name }}"
           COMMIT="${{ github.sha }}"
@@ -31,7 +32,8 @@ jobs:
             -X 'github.com/taufinity/cli/commands.Version=${VERSION}' \
             -X 'github.com/taufinity/cli/commands.GitCommit=${COMMIT}' \
             -X 'github.com/taufinity/cli/commands.BuildTime=${BUILD_TIME}' \
-            -X 'github.com/taufinity/cli/internal/telemetry.TelemetryKey=${TELEMETRY_KEY}'"
+            -X 'github.com/taufinity/cli/internal/telemetry.TelemetryKey=${TELEMETRY_KEY}' \
+            -X 'github.com/taufinity/cli/internal/pixl.PixlBaseURL=${PIXL_BASE_URL}'"
 
           mkdir -p dist
 
@@ -66,3 +68,113 @@ jobs:
             dist/*
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  macos-pkg:
+    runs-on: macos-latest
+    needs: release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download darwin binaries from release
+        run: |
+          mkdir -p dist
+          gh release download "${{ github.ref_name }}" \
+            --pattern "taufinity_darwin_*" \
+            --dir dist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build universal macOS binary
+        run: |
+          lipo -create -output dist/taufinity_darwin_universal \
+            dist/taufinity_darwin_amd64 \
+            dist/taufinity_darwin_arm64
+
+      - name: Build macOS pkg
+        env:
+          PIXL_BASE_URL: ${{ secrets.PIXL_BASE_URL }}
+        run: |
+          bash installer/build-pkg.sh \
+            dist/taufinity_darwin_universal \
+            "${{ github.ref_name }}" \
+            "${PIXL_BASE_URL:-https://studio.taufinity.io/pixl}"
+
+      - name: Sign pkg
+        env:
+          DEVELOPER_ID_CERT_B64: ${{ secrets.DEVELOPER_ID_CERT_B64 }}
+          CERT_PASSWORD: ${{ secrets.CERT_PASSWORD }}
+          SIGNING_IDENTITY: ${{ secrets.SIGNING_IDENTITY }}
+        run: |
+          # Import Developer ID Installer cert into a temp keychain
+          security create-keychain -p "ci" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "ci" build.keychain
+          security set-keychain-settings -lut 21600 build.keychain
+
+          echo "$DEVELOPER_ID_CERT_B64" | base64 -d > /tmp/cert.p12
+          security import /tmp/cert.p12 -k build.keychain \
+            -P "$CERT_PASSWORD" -T /usr/bin/productsign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "ci" build.keychain
+          rm /tmp/cert.p12
+
+          productsign \
+            --sign "$SIGNING_IDENTITY" \
+            --keychain build.keychain \
+            dist/taufinity_darwin_installer.pkg \
+            dist/taufinity_darwin_installer_signed.pkg
+
+          security delete-keychain build.keychain
+          mv dist/taufinity_darwin_installer_signed.pkg dist/taufinity_darwin_installer.pkg
+
+      - name: Notarize and staple
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.ASC_ISSUER }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          echo "$ASC_PRIVATE_KEY" > /tmp/auth.p8
+          xcrun notarytool submit dist/taufinity_darwin_installer.pkg \
+            --key /tmp/auth.p8 \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER" \
+            --wait
+          rm /tmp/auth.p8
+          xcrun stapler staple dist/taufinity_darwin_installer.pkg
+
+      - name: Upload pkg to release
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            dist/taufinity_darwin_installer.pkg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          PIXL_BASE_URL: ${{ secrets.PIXL_BASE_URL }}
+        run: |
+          PKG_SHA=$(shasum -a 256 dist/taufinity_darwin_installer.pkg | awk '{print $1}')
+          VERSION="${{ github.ref_name }}"
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/taufinity/homebrew-tap.git
+          cd homebrew-tap
+          git pull --rebase origin main
+          sed -i '' "s/version \".*\"/version \"${VERSION#v}\"/" Casks/taufinity.rb
+          sed -i '' "s/sha256 .*/sha256 \"${PKG_SHA}\"/" Casks/taufinity.rb
+          # Ensure zap stanza fires uninstall pixel (idempotent; inserted before outermost end).
+          # Uses $PIXL_BASE_URL so the URL stays in sync with the binary's ldflag.
+          # Anchored on /^end$/ (no indent) to avoid matching nested do...end blocks.
+          if ! grep -q "${PIXL_BASE_URL}/v1/uninstall" Casks/taufinity.rb; then
+            PIXL_BASE_CLEAN="${PIXL_BASE_URL%/}"
+            sed -i '' "/^end$/i\\
+          \\
+            zap script: {\\
+              executable: \"/bin/bash\",\\
+              sudo:        false,\\
+              args:        [\"-c\", \"curl -sf '${PIXL_BASE_CLEAN}/v1/uninstall?os=darwin' &>/dev/null || true\"],\\
+            }" Casks/taufinity.rb
+          fi
+          git config user.email "ci@taufinity.io"
+          git config user.name "Taufinity CI"
+          git add Casks/taufinity.rb
+          git commit -m "bump taufinity to ${VERSION}"
+          git push origin main

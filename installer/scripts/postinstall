@@ -1,0 +1,55 @@
+#!/bin/bash
+PLIST="/Library/LaunchAgents/io.taufinity.cli.plist"
+PIXL_BASE="@@PIXL_BASE_URL@@"
+CURRENT_USER=$(stat -f "%Su" /dev/console)
+
+if [ -z "$CURRENT_USER" ] || [ "$CURRENT_USER" = "root" ]; then
+  exit 0
+fi
+
+USER_UID=$(id -u "$CURRENT_USER" 2>/dev/null)
+if [ -z "$USER_UID" ]; then
+  echo "Warning: could not resolve UID for $CURRENT_USER; agent will load on next login" >&2
+  exit 0
+fi
+
+# Fire a pixel from root context. $HOME is undefined here; device.json not yet created.
+# v=unknown is intentional — no binary context at this point.
+fire_pixl_root() {
+  local event="$1"; shift
+  local params="os=darwin&v=unknown"
+  while [ $# -gt 0 ]; do params="${params}&$1"; shift; done
+  curl -sf "${PIXL_BASE}/${event}?${params}" &>/dev/null &
+}
+
+# Remove stale copies from 'go install' / 'make install' that shadow /usr/local/bin/taufinity.
+USER_HOME="/Users/$CURRENT_USER"
+for stale in \
+  "$USER_HOME/go/bin/taufinity" \
+  "$USER_HOME/bin/taufinity" \
+  "$USER_HOME/.local/bin/taufinity"
+do
+  if [ -e "$stale" ]; then
+    rm -f "$stale" && echo "Removed stale taufinity binary: $stale"
+  fi
+done
+
+DOMAIN="gui/$USER_UID"
+
+# Unload any existing instance first to avoid duplicate registration
+launchctl bootout "$DOMAIN/io.taufinity.cli" 2>/dev/null || true
+
+# Load the agent; errors go to installer log but do not fail the install
+if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
+  echo "Warning: could not load io.taufinity.cli agent (will load on next login)" >&2
+  fire_pixl_root "v1/install_error" "step=bootstrap"
+fi
+
+fire_pixl_root "v1/install"
+
+# Record that the privacy notice was accepted via the installer license screen.
+# This prevents the binary from showing the first-run notice again.
+TERMS_FLAG="$USER_HOME/.config/taufinity/privacy_accepted"
+mkdir -p "$(dirname "$TERMS_FLAG")"
+touch "$TERMS_FLAG"
+chown "$CURRENT_USER" "$(dirname "$TERMS_FLAG")" "$TERMS_FLAG" 2>/dev/null || true

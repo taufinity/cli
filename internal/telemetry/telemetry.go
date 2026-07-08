@@ -6,7 +6,10 @@ package telemetry
 import (
 	"errors"
 	"log/slog"
+	"os"
 	"time"
+
+	"github.com/taufinity/cli/internal/terms"
 )
 
 // Event is a single telemetry event.
@@ -40,6 +43,11 @@ func Init(version, commit string) {
 		return
 	}
 	globalDeviceID = id
+
+	if os.Getenv(terms.EnvNoTelemetry) == "1" {
+		return
+	}
+
 	initSentry(version, commit)
 
 	if firstRun {
@@ -49,9 +57,9 @@ func Init(version, commit string) {
 
 // Report sends a telemetry event to both sinks.
 // Safe to call from any goroutine; the beacon is fire-and-forget (goroutine).
-// No-op if Init() was not called or failed.
+// No-op if Init() was not called or failed, or if the user has opted out.
 func Report(e Event) {
-	if globalDeviceID == "" {
+	if !Enabled() {
 		return
 	}
 	e.ErrorMessage = scrub(e.ErrorMessage)
@@ -72,13 +80,18 @@ func ReportSync(e Event, timeout time.Duration) error {
 	return sendBeaconSync(e, timeout)
 }
 
-// Enabled reports whether telemetry is active (TelemetryKey set + device ID loaded).
+// Enabled reports whether telemetry is active (TelemetryKey set + device ID
+// loaded + user has not opted out via TAUFINITY_NO_TELEMETRY=1).
 func Enabled() bool {
-	return TelemetryKey != "" && globalDeviceID != ""
+	return TelemetryKey != "" && globalDeviceID != "" && os.Getenv(terms.EnvNoTelemetry) != "1"
 }
 
 // ErrNotConfigured is returned by ReportSync when telemetry is not enabled.
 var ErrNotConfigured = errors.New("telemetry not configured (TelemetryKey not set — official builds only)")
+
+// DeviceID returns the anonymous device UUID loaded by Init.
+// Returns "" before Init is called or if Init failed.
+func DeviceID() string { return globalDeviceID }
 
 // Flush waits for pending Sentry events to drain (call deferred from main).
 func Flush() {

@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>Taufinity CLI</title>
+    <license file="License.html"/>
+    <pkg-ref id="io.taufinity.cli"/>
+    <options customize="never" rootVolumeOnly="true"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="io.taufinity.cli"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="io.taufinity.cli" visible="false">
+        <pkg-ref id="io.taufinity.cli"/>
+    </choice>
+    <pkg-ref id="io.taufinity.cli" version="" onConclusion="none">taufinity_component.pkg</pkg-ref>
+</installer-gui-script>

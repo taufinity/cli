@@ -19,7 +19,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/taufinity/cli/internal/buildinfo"
+	"github.com/taufinity/cli/internal/pixl"
 	"github.com/taufinity/cli/internal/telemetry"
+	"github.com/taufinity/cli/internal/terms"
 	"github.com/taufinity/cli/internal/updatecheck"
 )
 
@@ -112,6 +114,7 @@ func runCheck(cmd *cobra.Command) error {
 
 	if currentVer == latestVer {
 		Print("taufinity %s is up to date.\n", currentVer)
+		pixl.Fire("v1/update_check", map[string]string{"status": "current"})
 		return nil
 	}
 
@@ -122,6 +125,8 @@ func runCheck(cmd *cobra.Command) error {
 	}
 
 	Print("taufinity is behind: %s → %s. Run: taufinity update\n", currentVer, latestVer)
+	pixl.Fire("v1/update_check", map[string]string{"status": "behind", "latest": latestVer})
+	pixl.Flush(2 * time.Second)
 	os.Exit(1)
 	return nil
 }
@@ -239,16 +244,20 @@ func runDownload(cmd *cobra.Command, rel *githubRelease) error {
 			ErrorCode:    "smoke_test_post_install",
 			ErrorMessage: err.Error(),
 		})
+		pixl.Fire("v1/update_error", map[string]string{"code": "smoke_test_post_install", "to": rel.TagName})
 		fmt.Fprintf(cmd.ErrOrStderr(), "Post-install smoke test failed: %v\n", err)
 		if rerr := restoreBackup(backupPath, currentExe); rerr != nil {
 			return fmt.Errorf("smoke test failed AND rollback failed: %w (original: %v)", rerr, err)
 		}
 		fmt.Fprintf(cmd.ErrOrStderr(), "Rolled back to previous binary.\n")
+		pixl.Flush(2 * time.Second)
+		telemetry.Flush()
 		os.Exit(1)
 		return nil
 	}
 
 	Print("Updated to %s. Run 'taufinity version' to confirm.\n", rel.TagName)
+	pixl.Fire("v1/updated", map[string]string{"from": Version, "to": rel.TagName})
 	return nil
 }
 
@@ -376,7 +385,7 @@ func smokeTest(binPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), smokeTestTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binPath, "version")
-	cmd.Env = append(os.Environ(), updatecheck.EnvDisable+"=1")
+	cmd.Env = append(os.Environ(), updatecheck.EnvDisable+"=1", terms.EnvNoTelemetry+"=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: output: %s", err, string(out))

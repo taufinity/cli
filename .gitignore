@@ -17,3 +17,4 @@ credentials.json
 *.swp
 .claude/
 .worktrees/
+.snippets

@@ -1,0 +1,92 @@
+#!/bin/bash
+# Daily update check agent for the Taufinity CLI.
+# Called by launchd (io.taufinity.cli) at 09:00.
+#
+# Exit codes from `taufinity update --check`:
+#   0 = up to date
+#   1 = update available
+#   * = error — reported to Studio via `taufinity agent report-error`
+#             and to the analytics pixel bucket
+
+BINARY="/usr/local/bin/taufinity"
+PIXL_BASE="https://storage.googleapis.com/taufinity-cli-pixl"
+
+log() {
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+notify_update() {
+  # Pkg/Homebrew install: the correct update command is brew upgrade, not taufinity update
+  # (taufinity update uses go install → ~/go/bin, which is not the active binary location).
+  UPDATE_CMD="brew upgrade --cask taufinity"
+
+  # terminal-notifier gives a clickable action that opens Terminal to run the update.
+  # Falls back to a plain macOS notification when not installed (brew install terminal-notifier).
+  if command -v terminal-notifier &>/dev/null; then
+    terminal-notifier \
+      -title "Taufinity CLI" \
+      -subtitle "Update available" \
+      -message "Run: $UPDATE_CMD" \
+      -execute "osascript -e 'tell application \"Terminal\" to activate' -e 'tell application \"Terminal\" to do script \"$UPDATE_CMD\"'" \
+      2>/dev/null || true
+  else
+    osascript -e "display notification \"Run: $UPDATE_CMD\" with title \"Taufinity CLI\" subtitle \"Update available\"" \
+      2>/dev/null || true
+  fi
+}
+
+fire_pixl() {
+  local event="$1"; shift
+  local params="os=darwin&arch=${TAUFINITY_ARCH}&v=${TAUFINITY_VERSION}&did=${TAUFINITY_DID}"
+  while [ $# -gt 0 ]; do params="${params}&$1"; shift; done
+  curl -sf "${PIXL_BASE}/${event}?${params}" &>/dev/null &
+}
+
+# Guard: binary missing (e.g. manual removal without uninstalling the cask).
+# Exit 0 so launchd does not throttle or restart the agent on every interval.
+if [ ! -x "$BINARY" ]; then
+  log "ERROR (exit 127): binary not found at $BINARY"
+  exit 0
+fi
+
+# Resolve version and device ID once at startup; cache in vars for reuse.
+# Strips +dirty suffix so analytics see clean semver.
+TAUFINITY_ARCH=$(uname -m)
+TAUFINITY_VERSION=$("$BINARY" version 2>/dev/null \
+  | awk '/^taufinity v/{gsub(/\+.*$/,"",$2); print substr($2,2)}') || TAUFINITY_VERSION="unknown"
+TAUFINITY_VERSION="${TAUFINITY_VERSION:-unknown}"
+
+TAUFINITY_DID="unknown"
+_did_file="$HOME/.config/taufinity/device.json"
+if [ -f "$_did_file" ]; then
+  _did=$(awk -F'"' '/device_id/{print $4}' "$_did_file" 2>/dev/null)
+  TAUFINITY_DID="${_did:-unknown}"
+fi
+
+# Trap unexpected script errors (not expected to fire in normal operation).
+trap 'fire_pixl "v1/script_error" "exit_code=$?"' ERR
+
+# Run the update check; capture exit code without triggering set -e.
+fire_pixl "v1/update_check"
+CHECK_EXIT=0
+OUTPUT=$("$BINARY" update --check 2>&1) || CHECK_EXIT=$?
+
+case "$CHECK_EXIT" in
+  0)
+    log "Up to date"
+    fire_pixl "v1/up_to_date"
+    ;;
+  1)
+    log "Update available — firing notification"
+    notify_update
+    fire_pixl "v1/update_available"
+    ;;
+  *)
+    log "ERROR (exit $CHECK_EXIT): ${OUTPUT:-update check failed}"
+    fire_pixl "v1/error" "exit_code=$CHECK_EXIT"
+    "$BINARY" agent report-error \
+      --exit-code "$CHECK_EXIT" \
+      --message "${OUTPUT:-update check failed}" \
+      2>/dev/null || true
+    ;;
+esac
