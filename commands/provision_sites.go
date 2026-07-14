@@ -437,6 +437,7 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	hasGeneralSettings := fileExists(filepath.Join(siteDir, "general-settings.yaml"))
 	hasContentSettings := fileExists(filepath.Join(siteDir, "content-settings.yaml"))
 	hasMetadataSettings := fileExists(filepath.Join(siteDir, "metadata-settings.yaml"))
+	hasTracker := fileExists(filepath.Join(siteDir, "tracker.yaml"))
 
 	sy, err := loadSiteYAML(filepath.Join(siteDir, "site.yaml"))
 	if err != nil {
@@ -446,7 +447,7 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 
 	if !hasPipeline && !hasSecureRender && !hasAISettings &&
 		!hasGeneralSettings && !hasContentSettings && !hasMetadataSettings &&
-		!hasCategoryPages {
+		!hasCategoryPages && !hasTracker {
 		return nil
 	}
 
@@ -506,6 +507,12 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 	if hasCategoryPages {
 		if err := pushCategoryPages(c, siteID, sy.CategoryPages); err != nil {
 			return fmt.Errorf("category-pages: %w", err)
+		}
+	}
+
+	if hasTracker {
+		if err := provisionTracker(c, siteID, siteDir); err != nil {
+			return fmt.Errorf("tracker: %w", err)
 		}
 	}
 
