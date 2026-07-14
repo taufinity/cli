@@ -11,10 +11,15 @@ import (
 
 // applyDashboards reads all *.json files from dir/dashboards/ and upserts them
 // via the admin dashboard-definitions API. Returns the number of dashboards that
-// diffed (drift count), which the caller uses for --strict mode exit codes.
+// actually differ from the server (drift count), which the caller uses for
+// --strict exit codes.
 //
-// Reuses apiCall, fetchExistingDefs, createDefinition, and updateDefinition from
-// dashboards.go. Dry-run is controlled by c.dryRun.
+// Existing dashboards are diffed field by field against a detail GET before any
+// write: if nothing changed, the dashboard is a NOOP and no PUT is issued. That
+// keeps apply from rewriting every row on every run, and from silently reverting
+// a UI edit that nobody pulled back into the spec yet.
+//
+// Dry-run is handled by the client: writes are printed, not sent.
 func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, draft bool, previewDataset string) (int, error) {
 	dashDir := filepath.Join(dir, "dashboards")
 	if !fileExists(dashDir) {
@@ -35,10 +40,13 @@ func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, dra
 		return applyDashboardsAsDraft(c, entries, previewDataset)
 	}
 
-	// Fetch existing definitions (all orgs; filtered by slug match below).
-	existingBySlug, err := fetchExistingDefs(c.base, c.token)
+	existing, err := listDashboardDefs(c, orgID)
 	if err != nil {
-		return 0, fmt.Errorf("fetch existing dashboard definitions: %w", err)
+		return 0, err
+	}
+	bySlug := make(map[string]provisionDashboardDef, len(existing))
+	for _, d := range existing {
+		bySlug[d.Slug] = d
 	}
 
 	var created, updated, noop, drift int
@@ -46,67 +54,71 @@ func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, dra
 		if strings.HasPrefix(filepath.Base(path), "_") {
 			continue
 		}
-		spec, err := loadSpec(path)
+		raw, err := os.ReadFile(path)
 		if err != nil {
-			return drift, fmt.Errorf("load %s: %w", path, err)
+			return drift, fmt.Errorf("read %s: %w", path, err)
 		}
-		slug, _ := spec["slug"].(string)
-		if slug == "" {
+		var local provisionDashboardDef
+		if err := json.Unmarshal(raw, &local); err != nil {
+			return drift, fmt.Errorf("parse %s: %w", path, err)
+		}
+		if local.Slug == "" {
 			fmt.Fprintf(os.Stderr, "provision: SKIP dashboard spec missing slug: %s\n", path)
 			continue
 		}
 
-		// Inject provisioned fields — always overwrite so specs stay portable.
-		spec["org_id"] = orgID
-		if providerID > 0 {
-			spec["provider_id"] = providerID
-		}
-		if draft {
-			spec["draft"] = true
-		}
-		if previewDataset != "" {
-			spec["preview_dataset"] = previewDataset
-		}
+		payload, _ := json.Marshal(map[string]any{
+			"org_id":               orgID,
+			"provider_id":          providerID,
+			"slug":                 local.Slug,
+			"name":                 local.Name,
+			"description":          local.Description,
+			"source_view":          local.SourceView,
+			"columns":              rawStrOrNull(local.Columns),
+			"filters":              rawStrOrNull(local.Filters),
+			"default_chart":        local.DefaultChart,
+			"default_sort":         rawStrOrNull(local.DefaultSort),
+			"layout":               rawStrOrNull(local.Layout),
+			"max_rows":             local.MaxRows,
+			"position":             local.Position,
+			"static_filters":       rawStrOrNull(local.normalizedStaticFilters()),
+			"hidden_from_overview": local.HiddenFromOverview,
+			"export_enabled":       local.ExportEnabled,
+			"client_group_filter":  rawStrOrNull(local.ClientGroupFilter),
+		})
 
-		existing, exists := existingBySlug[slug]
-		if c.dryRun {
-			if exists {
-				fmt.Printf("  [dry-run] UPDATE %-45s (id=%d)\n", slug, existing.ID)
-				drift++
-			} else {
-				fmt.Printf("  [dry-run] CREATE %s\n", slug)
+		cur, exists := bySlug[local.Slug]
+		if !exists {
+			fmt.Printf("CREATE %s\n", local.Slug)
+			body, status, err := c.post("/admin/dashboard-definitions", payload)
+			if err != nil || status >= 300 {
+				return drift, provisionAPIErr(fmt.Sprintf("create dashboard %q", local.Slug), status, body, err)
 			}
+			created++
 			continue
 		}
 
-		if exists {
-			// Check whether anything actually changed by comparing the marshalled spec
-			// against the stored definition fields we can compare. We do a lightweight
-			// comparison: if the spec's org_id/provider_id/slug match and the full spec
-			// JSON differs from what the server would return, call it drift and update.
-			//
-			// Simpler than the full diffFields approach from the standalone provision
-			// tool — we don't have a detail endpoint here, so we always PUT on update.
-			// This is still idempotent: PUT is version-snapshotted server-side.
-			fmt.Printf("  UPDATE %-45s (id=%d)\n", slug, existing.ID)
-			if err := updateDefinition(c.base, c.token, existing.ID, spec); err != nil {
-				return drift, fmt.Errorf("update dashboard %q: %w", slug, err)
-			}
-			updated++
-			drift++
-		} else {
-			fmt.Printf("  CREATE %s\n", slug)
-			id, err := createDefinition(c.base, c.token, spec)
-			if err != nil {
-				return drift, fmt.Errorf("create dashboard %q: %w", slug, err)
-			}
-			fmt.Printf("  CREATE %-45s ok (id=%d)\n", slug, id)
-			created++
+		detail, err := getDashboardDetail(c, orgID, cur.ID)
+		if err != nil {
+			return drift, fmt.Errorf("get detail for %q: %w", local.Slug, err)
 		}
+		diffs := diffFields(local, *detail)
+		if len(diffs) == 0 {
+			fmt.Printf("NOOP   %s id=%d\n", local.Slug, cur.ID)
+			noop++
+			continue
+		}
+		fmt.Printf("UPDATE %s id=%d [%s]\n", local.Slug, cur.ID, strings.Join(diffs, ", "))
+		drift++
+		body, status, err := c.put(fmt.Sprintf("/admin/dashboard-definitions/%d", cur.ID), payload)
+		if err != nil || status >= 300 {
+			return drift, provisionAPIErr(fmt.Sprintf("update dashboard %q", local.Slug), status, body, err)
+		}
+		updated++
 	}
-	_ = noop // reported implicitly via absence in summary
 
-	fmt.Printf("provision: dashboards summary: created=%d updated=%d drift=%d\n", created, updated, drift)
+	fmt.Printf("provision: dashboards summary: created=%d updated=%d noop=%d drift=%d\n",
+		created, updated, noop, drift)
 	return drift, nil
 }
 
@@ -133,21 +145,14 @@ func applyDashboardsAsDraft(c *provisionClient, entries []string, previewDataset
 		}
 
 		fmt.Printf("  DRAFT  %s\n", slug)
-		if c.dryRun {
-			count++
-			continue
-		}
 
 		payload, _ := json.Marshal(map[string]any{
 			"spec":               string(raw),
 			"preview_dataset_id": previewDataset,
 		})
-		respBody, status, err := apiCall("POST",
-			c.base+"/api/admin/dashboards/"+slug+"/preview",
-			c.token, payload)
+		respBody, status, err := c.post("/admin/dashboards/"+slug+"/preview", payload)
 		if err != nil || status >= 300 {
-			return count, fmt.Errorf("draft %q: status=%d err=%v body=%s",
-				slug, status, err, provisionSummarize(respBody))
+			return count, provisionAPIErr(fmt.Sprintf("draft dashboard %q", slug), status, respBody, err)
 		}
 		count++
 	}
