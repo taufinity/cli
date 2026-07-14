@@ -280,27 +280,151 @@ func resolveProviderRefs(c *provisionClient, orgID uint, steps []pipelineStep) e
 	return nil
 }
 
-// upsertPipeline applies the given steps to the site's pipeline using mode=replace,
-// which is idempotent — it replaces the entire pipeline rather than merging.
-func upsertPipeline(c *provisionClient, siteID uint, steps []pipelineStep) error {
+// upsertPipeline applies the given steps to the site's pipeline with
+// mode=replace. Replace is not "idempotent" in any sense that makes it safe: it
+// overwrites the entire pipeline, so every step the local file does not carry is
+// deleted from the live site. A stale or partial pipeline.yaml therefore reverts
+// the site's whole content pipeline without a word.
+//
+// So the write is gated by a diff against the live state — which the GET below
+// was already fetching and discarding:
+//
+//   - no difference          → NOOP, zero writes
+//   - LOW drift              → apply (a prompt tweak, a threshold change)
+//   - HIGH drift             → print what would be lost, then refuse unless allowDrift
+//   - HIGH drift + --dry-run → warning only; a dry-run never refuses and never writes
+//
+// If the live pipeline can't be parsed we degrade to the historical behaviour
+// (blind PUT) with a warning, rather than blocking a deploy on a read failure.
+func upsertPipeline(c *provisionClient, siteID uint, steps []pipelineStep, allowDrift bool) error {
 	path := fmt.Sprintf("/sites/%d/pipeline", siteID)
 
-	// Verify site exists before writing.
-	_, status, err := c.get(path)
+	// The site must exist before we write to it. The body is the remote side of
+	// the diff.
+	body, status, err := c.get(path)
 	if err != nil || status != 200 {
 		return fmt.Errorf("get pipeline for site %d: status=%d err=%v", siteID, status, err)
 	}
 
+	remote, parseErr := parsePipelineRemote(body)
+	if parseErr != nil {
+		c.Warn("site %d: could not read the live pipeline for a drift check (%v) — applying without a diff", siteID, parseErr)
+		return putPipeline(c, siteID, steps)
+	}
+
+	diff := diffPipeline(steps, remote)
+	if diff.empty() {
+		fmt.Printf("NOOP   pipeline site=%d (%d steps)\n", siteID, len(steps))
+		return nil
+	}
+
+	severity, reasons := diff.severity()
+	if severity == driftHigh {
+		printPipelineHighDriftWarning(c, siteID, diff, reasons)
+		if !c.dryRun && !allowDrift {
+			return fmt.Errorf("site %d pipeline: HIGH drift — refusing to apply. Reconcile your local pipeline.yaml with the live steps printed above, or re-run with --allow-drift to overwrite the live pipeline", siteID)
+		}
+	}
+
+	printPipelineDiff(siteID, diff, severity)
+	return putPipeline(c, siteID, steps)
+}
+
+// putPipeline issues the write itself.
+func putPipeline(c *provisionClient, siteID uint, steps []pipelineStep) error {
 	payload, _ := json.Marshal(map[string]interface{}{
 		"mode":  "replace",
 		"steps": steps,
 	})
 	fmt.Printf("provision: updating pipeline for site %d (%d steps)\n", siteID, len(steps))
-	_, status, err = c.put(path, payload)
+	_, status, err := c.put(fmt.Sprintf("/sites/%d/pipeline", siteID), payload)
 	if err != nil || status >= 300 {
 		return fmt.Errorf("update pipeline for site %d: status=%d err=%v", siteID, status, err)
 	}
 	return nil
+}
+
+// printPipelineDiff reports what the apply is about to change, in the same shape
+// as the playbook diff output.
+func printPipelineDiff(siteID uint, diff pipelineDiff, severity driftSeverity) {
+	fmt.Printf("UPDATE pipeline site=%d (%d steps → %d steps)\n", siteID, diff.RemoteStepCount, diff.LocalStepCount)
+	fmt.Printf("DRIFT  pipeline site=%d severity=%s\n", siteID, severity)
+	for _, s := range diff.Steps {
+		switch s.Kind {
+		case stepAdded:
+			fmt.Printf("  ADD    step %q\n", s.Label)
+		case stepRemoved:
+			fmt.Printf("  DELETE step %q (not in pipeline.yaml)\n", s.Label)
+		default:
+			fmt.Printf("  MODIFY step %q\n", s.Label)
+			for _, ch := range s.Changes {
+				fmt.Printf("      %s\n", ch)
+			}
+		}
+	}
+}
+
+// printPipelineHighDriftWarning explains exactly what would be overwritten, why
+// it is flagged, and what the operator can actually do about it. A refusal you
+// can only bypass is worse than no refusal at all.
+//
+// There is no `provision pull pipelines` yet, so the honest instruction is to
+// reconcile the local file against the live steps printed here. The recovery path
+// is real, though: the API versions a site's pipeline on every write, so the
+// version current *before* this apply can be reverted to afterwards.
+func printPipelineHighDriftWarning(c *provisionClient, siteID uint, diff pipelineDiff, reasons []string) {
+	fmt.Printf("\nHIGH DRIFT: pipeline site=%d\n", siteID)
+	for _, s := range diff.Steps {
+		switch s.Kind {
+		case stepAdded:
+			fmt.Printf("    step %q: would be ADDED\n", s.Label)
+		case stepRemoved:
+			fmt.Printf("    step %q: would be REMOVED (not present in pipeline.yaml — mode=replace deletes it)\n", s.Label)
+		default:
+			for _, ch := range s.Changes {
+				fmt.Printf("    step %q: %s\n", s.Label, ch)
+			}
+		}
+	}
+	fmt.Printf("    Flagged because: %s\n", strings.Join(reasons, "; "))
+	fmt.Printf("    This apply REPLACES the site's entire pipeline. If your local file is stale, the live steps above are what you would lose.\n")
+	fmt.Printf("    There is no `provision pull pipelines` yet: reconcile studio/sites/<site>/pipeline.yaml against the live steps by hand, or read them with GET /api/sites/%d/pipeline\n", siteID)
+	if v := fetchPipelineVersion(c, siteID); v > 0 {
+		fmt.Printf("    Current remote pipeline version: %d. To undo this apply afterwards:\n", v)
+		fmt.Printf("        POST /api/sites/%d/pipeline/versions/%d/revert\n", siteID, v)
+	} else {
+		// Said plainly rather than hinted at: with no version to revert to, an
+		// overwrite of the live pipeline cannot be undone through provision.
+		fmt.Printf("    No pipeline version history found for this site — an overwrite here is NOT recoverable through provision. Copy the live steps above before proceeding.\n")
+	}
+	fmt.Printf("    To proceed anyway: --allow-drift\n\n")
+}
+
+// fetchPipelineVersion returns the current (highest) version number of a site's
+// pipeline so the drift warning can print a concrete revert command. The API
+// snapshots the pipeline after each write, so the version current at this moment
+// is the pre-apply state — reverting to it undoes the apply, steps included.
+//
+// Returns 0 when the history can't be read. Advisory only: never abort an apply
+// because a lookup for a warning message failed.
+func fetchPipelineVersion(c *provisionClient, siteID uint) int {
+	body, status, err := c.get(fmt.Sprintf("/sites/%d/pipeline/versions", siteID))
+	if err != nil || status != 200 {
+		return 0
+	}
+	var versions []struct {
+		Version int `json:"version"`
+	}
+	if err := unmarshalListEnvelope(body, &versions); err != nil {
+		return 0
+	}
+	max := 0
+	for _, v := range versions {
+		if v.Version > max {
+			max = v.Version
+		}
+	}
+	return max
 }
 
 // ---------------------------------------------------------------------------
@@ -427,7 +551,10 @@ func pushCategoryPages(c *provisionClient, siteID uint, pages any) error {
 // applySiteDir provisions all resources for a single site directory:
 // pipeline, secure-render, AI settings, general/content/metadata settings,
 // and category_pages from site.yaml.
-func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
+//
+// allowDrift lets the operator opt in to a HIGH-drift pipeline apply (see
+// upsertPipeline).
+func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift bool) error {
 	dirName := filepath.Base(siteDir)
 	sitesDir := filepath.Dir(siteDir)
 
@@ -464,7 +591,7 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 		if err := resolveProviderRefs(c, orgID, cfg.Steps); err != nil {
 			return fmt.Errorf("pipeline: %w", err)
 		}
-		if err := upsertPipeline(c, siteID, cfg.Steps); err != nil {
+		if err := upsertPipeline(c, siteID, cfg.Steps, allowDrift); err != nil {
 			return fmt.Errorf("pipeline: %w", err)
 		}
 	}
@@ -520,7 +647,7 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint) error {
 }
 
 // applySites walks the sites/ subdirectory and provisions each site directory.
-func applySites(c *provisionClient, dir string, orgID uint) error {
+func applySites(c *provisionClient, dir string, orgID uint, allowDrift bool) error {
 	sitesDir := filepath.Join(dir, "sites")
 	if !fileExists(sitesDir) {
 		return nil
@@ -534,7 +661,7 @@ func applySites(c *provisionClient, dir string, orgID uint) error {
 			continue
 		}
 		siteDir := filepath.Join(sitesDir, e.Name())
-		if err := applySiteDir(c, siteDir, orgID); err != nil {
+		if err := applySiteDir(c, siteDir, orgID, allowDrift); err != nil {
 			return fmt.Errorf("site %s: %w", e.Name(), err)
 		}
 	}

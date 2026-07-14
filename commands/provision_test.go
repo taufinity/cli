@@ -133,7 +133,7 @@ func TestApplyProvidersNoFiles(t *testing.T) {
 func TestApplySitesNoDir(t *testing.T) {
 	dir := t.TempDir()
 	c := newProvisionClient("http://localhost:9999", "key", true)
-	if err := applySites(c, dir, 1); err != nil {
+	if err := applySites(c, dir, 1, false); err != nil {
 		t.Fatalf("applySites with no sites dir: %v", err)
 	}
 }
