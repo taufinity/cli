@@ -73,12 +73,35 @@ Examples:
 	RunE: runPlaybookRuns,
 }
 
+var playbookFeedbackCmd = &cobra.Command{
+	Use:   "feedback <run-id>",
+	Short: "Submit feedback on a playbook run's output",
+	Long: `Submit feedback (thumbs up/down + optional details) on a specific playbook run's output.
+
+Feedback with --learn (the default) accumulates: every 5 such submissions for a
+playbook regenerates a quality-instructions summary that's automatically applied
+to that playbook's future runs — specific, actionable --details matter more than
+a bare thumbs-down.
+
+Examples:
+  taufinity playbook feedback 4512 --negative --details "the proof-point stat wasn't in the brief"
+  taufinity playbook feedback 4512 --positive
+  taufinity playbook feedback 4512 --negative --details "too generic" --learn=false
+`,
+	Args: cobra.ExactArgs(1),
+	RunE: runPlaybookFeedback,
+}
+
 var (
-	playbookInputFile   string
-	playbookDryRun      bool
-	playbookWait        bool
-	playbookWaitTimeout time.Duration
-	playbookRunsLimit   int
+	playbookInputFile        string
+	playbookDryRun           bool
+	playbookWait             bool
+	playbookWaitTimeout      time.Duration
+	playbookRunsLimit        int
+	playbookFeedbackPositive bool
+	playbookFeedbackNegative bool
+	playbookFeedbackDetails  string
+	playbookFeedbackLearn    bool
 )
 
 func init() {
@@ -86,6 +109,7 @@ func init() {
 	playbookCmd.AddCommand(playbookListCmd)
 	playbookCmd.AddCommand(playbookTriggerCmd)
 	playbookCmd.AddCommand(playbookRunsCmd)
+	playbookCmd.AddCommand(playbookFeedbackCmd)
 
 	playbookTriggerCmd.Flags().StringVar(&playbookInputFile, "input-file", "", "Path to JSON input file, or '-' for stdin")
 	playbookTriggerCmd.Flags().BoolVar(&playbookDryRun, "dry-run", false, "Pass dry_run flag to the playbook (does not skip the API call)")
@@ -93,6 +117,11 @@ func init() {
 	playbookTriggerCmd.Flags().DurationVar(&playbookWaitTimeout, "timeout", 10*time.Minute, "Timeout when waiting for completion (used with --wait)")
 
 	playbookRunsCmd.Flags().IntVar(&playbookRunsLimit, "limit", 10, "Number of recent runs to show")
+
+	playbookFeedbackCmd.Flags().BoolVar(&playbookFeedbackPositive, "positive", false, "Mark the run's output as good")
+	playbookFeedbackCmd.Flags().BoolVar(&playbookFeedbackNegative, "negative", false, "Mark the run's output as wrong or low-quality")
+	playbookFeedbackCmd.Flags().StringVar(&playbookFeedbackDetails, "details", "", "What was wrong (or right) and why — specific detail improves future runs")
+	playbookFeedbackCmd.Flags().BoolVar(&playbookFeedbackLearn, "learn", true, "Count this toward the playbook's accumulated quality-instructions summary")
 }
 
 // playbookTriggerResponse is the API response from triggering a playbook.
@@ -113,13 +142,26 @@ func (r *playbookTriggerResponse) effectiveRunID() int {
 
 // playbookRun represents a single playbook run.
 type playbookRun struct {
-	ID          int    `json:"id"`
-	PlaybookID  int    `json:"playbook_id"`
-	Status      string `json:"status"`
-	Output      string `json:"output"`
-	Error       string `json:"error"`
-	CreatedAt   string `json:"created_at"`
-	CompletedAt string `json:"completed_at"`
+	ID          int                  `json:"id"`
+	PlaybookID  int                  `json:"playbook_id"`
+	Status      string               `json:"status"`
+	Output      string               `json:"output"`
+	Error       string               `json:"error"`
+	CreatedAt   string               `json:"created_at"`
+	CompletedAt string               `json:"completed_at"`
+	Warnings    []playbookRunWarning `json:"warnings"`
+}
+
+// playbookRunWarning is a non-blocking concern flagged by an llm_verify or
+// sanity_review step (e.g. a grounding check that found an unsupported claim).
+// The run still completed — these are advisory, not failures. Mirrors
+// internal/playbooks.StepWarning in ai-site-gen; kept as a local copy since
+// this CLI has no dependency on that module.
+type playbookRunWarning struct {
+	StepName  string `json:"step_name"`
+	StepType  string `json:"step_type"`
+	OutputKey string `json:"output_key"`
+	Summary   string `json:"summary"`
 }
 
 // playbookListItem represents a playbook returned by the list endpoint.
@@ -311,6 +353,13 @@ func pollPlaybookRun(client *api.Client, playbookID string, runID int, timeout t
 			switch run.Status {
 			case "completed":
 				Print("\nRun completed.\n")
+				if len(run.Warnings) > 0 {
+					Print("⚠ %d warning(s):\n", len(run.Warnings))
+					for _, w := range run.Warnings {
+						Print("  - %s: %s\n", w.StepName, w.Summary)
+					}
+					Print("If this is wrong, re-run with feedback: taufinity playbook feedback %d --negative --details \"...\"\n", run.ID)
+				}
 				if run.Output != "" {
 					fmt.Println(run.Output)
 				}
@@ -367,6 +416,62 @@ func runPlaybookRuns(cmd *cobra.Command, args []string) error {
 	default:
 		return printPlaybookRunsTable(resp.Body)
 	}
+}
+
+func runPlaybookFeedback(cmd *cobra.Command, args []string) error {
+	if !auth.HasCredentials() {
+		return fmt.Errorf("not authenticated. Run 'taufinity auth login' first")
+	}
+
+	if playbookFeedbackPositive == playbookFeedbackNegative {
+		return fmt.Errorf("specify exactly one of --positive or --negative")
+	}
+	sentiment := "positive"
+	if playbookFeedbackNegative {
+		sentiment = "negative"
+	}
+
+	runID := args[0]
+
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+	if org := GetOrg(); org != "" {
+		client.SetOrg(org)
+	}
+
+	// The feedback endpoint is nested under its playbook (POST
+	// /api/playbooks/{playbookId}/runs/{runId}/feedback), but this command
+	// only takes a run ID for a cleaner UX matching the hint printed by
+	// `playbook trigger --wait` — resolve playbook_id first.
+	runResp, err := client.GetWithAuth(context.Background(), fmt.Sprintf("/api/playbook-runs/%s", runID))
+	if err != nil {
+		return fmt.Errorf("look up run: %w", err)
+	}
+	if !runResp.IsSuccess() {
+		return fmt.Errorf("look up run failed: %s", string(runResp.Body))
+	}
+	var run playbookRun
+	if err := json.Unmarshal(runResp.Body, &run); err != nil {
+		return fmt.Errorf("decode run: %w", err)
+	}
+
+	payload := map[string]any{
+		"sentiment":           sentiment,
+		"details":             playbookFeedbackDetails,
+		"learn_from_feedback": playbookFeedbackLearn,
+	}
+	path := fmt.Sprintf("/api/playbooks/%d/runs/%s/feedback", run.PlaybookID, runID)
+
+	resp, err := client.PostJSONWithAuth(context.Background(), path, payload)
+	if err != nil {
+		return fmt.Errorf("submit feedback: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return fmt.Errorf("submit feedback failed: %s", string(resp.Body))
+	}
+
+	Print("Feedback recorded (%s).\n", sentiment)
+	return nil
 }
 
 // decodeRunsArray decodes the runs list endpoint response.
