@@ -19,6 +19,10 @@ import (
 // keeps apply from rewriting every row on every run, and from silently reverting
 // a UI edit that nobody pulled back into the spec yet.
 //
+// Deletion happens only for slugs named in dashboards/_tombstones.json — see
+// provision_dashboards_tombstones.go for why absence from the directory is
+// deliberately not enough.
+//
 // Dry-run is handled by the client: writes are printed, not sent.
 func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, draft bool, previewDataset string) (int, error) {
 	dashDir := filepath.Join(dir, "dashboards")
@@ -47,6 +51,14 @@ func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, dra
 	bySlug := make(map[string]provisionDashboardDef, len(existing))
 	for _, d := range existing {
 		bySlug[d.Slug] = d
+	}
+
+	// Tombstones run before the upserts so that a slug being deleted and then
+	// re-created under the same name (the supported way to rebuild a dashboard
+	// from scratch) resolves in that order rather than the reverse.
+	deleted, err := applyDashboardTombstones(c, dashDir, bySlug)
+	if err != nil {
+		return 0, err
 	}
 
 	var created, updated, noop, drift int
@@ -117,8 +129,8 @@ func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, dra
 		updated++
 	}
 
-	fmt.Printf("provision: dashboards summary: created=%d updated=%d noop=%d drift=%d\n",
-		created, updated, noop, drift)
+	fmt.Printf("provision: dashboards summary: created=%d updated=%d deleted=%d noop=%d drift=%d\n",
+		created, updated, deleted, noop, drift)
 	return drift, nil
 }
 

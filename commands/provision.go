@@ -20,6 +20,7 @@ var (
 	provisionDraft            bool
 	provisionPreviewDataset   string
 	provisionAllowDrift       bool
+	provisionWorkspaceConfig  string
 )
 
 var provisionCmd = &cobra.Command{
@@ -86,6 +87,7 @@ func init() {
 		cmd.Flags().BoolVar(&provisionNoInviteEmail, "no-invite-email", false, "Create invitations without sending email (for testing)")
 		cmd.Flags().BoolVar(&provisionDraft, "draft", false, "Push dashboards as admin-only preview versions")
 		cmd.Flags().StringVar(&provisionPreviewDataset, "preview-dataset", "", "BQ dataset override for preview mode (use with --draft)")
+		cmd.Flags().StringVar(&provisionWorkspaceConfig, "workspace-config", "", "Path to the analytics workspace config declaring valid source write keys. Used to validate each site's tracker write_key before it is pushed. Without it the key cannot be checked, and an unknown key means the tracker deploys fine and then silently drops every event. Env: TAUFINITY_WORKSPACE_CONFIG")
 		cmd.Flags().BoolVar(&provisionAllowDrift, "allow-drift", false, "Apply playbooks even when the diff is classified HIGH drift (deleted steps, AI model/provider change, error-policy change, schedule/enabled flip, wholesale step rewrite). Default off: a HIGH-drift apply aborts so a stale local file can't silently revert live config")
 		_ = cmd.MarkFlagRequired("dir")
 		_ = cmd.MarkFlagRequired("org")
@@ -112,6 +114,17 @@ func resolveProvisionAPIKey() (string, error) {
 		return v, nil
 	}
 	return "", fmt.Errorf("admin API key required: pass --api-key or set TAUFINITY_ADMIN_TOKEN")
+}
+
+// resolveWorkspaceConfigPath returns the analytics workspace-config path from
+// the flag, falling back to the environment. Empty means "not supplied", which
+// leaves tracker write keys unvalidated — checkTrackerWriteKey warns about it
+// rather than passing over it in silence.
+func resolveWorkspaceConfigPath() string {
+	if provisionWorkspaceConfig != "" {
+		return provisionWorkspaceConfig
+	}
+	return os.Getenv("TAUFINITY_WORKSPACE_CONFIG")
 }
 
 // fileExists returns true if path exists on disk (file or dir).
@@ -158,6 +171,7 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 
 	c := newProvisionClient(apiURL, key, dryRun)
 	c.noInviteEmail = provisionNoInviteEmail
+	c.workspaceConfigPath = resolveWorkspaceConfigPath()
 
 	orgID, err := resolveProvisionOrgID(c, provisionOrgSlug)
 	if err != nil {
