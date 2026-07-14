@@ -260,6 +260,11 @@ func pullProvisionDashboards(c *provisionClient, orgID uint, dir string, dryRun 
 
 // ─── Playbook pull ───────────────────────────────────────────────────────────
 
+// playbookDetailRemote is the GET /api/playbooks/{id} shape (provisionable
+// fields only — id/timestamps/run state are ignored). It is also the "remote"
+// side of the apply-time drift diff, so every field provision can write must be
+// readable here: a field we send but cannot read back is a field we cannot tell
+// has drifted.
 type playbookDetailRemote struct {
 	Name             string  `json:"name"`
 	Slug             string  `json:"slug"`
@@ -267,6 +272,7 @@ type playbookDetailRemote struct {
 	TriggerType      string  `json:"trigger_type"`
 	Schedule         *string `json:"schedule"`
 	ScheduleTimezone string  `json:"schedule_timezone"`
+	SchedulePaused   bool    `json:"schedule_paused"`
 	OutputKey        string  `json:"output_key"`
 	Enabled          bool    `json:"enabled"`
 	AgentTriggerable bool    `json:"agent_triggerable"`
@@ -364,6 +370,15 @@ func fetchProvisionPlaybookConfig(c *provisionClient, orgID uint, item provision
 		OutputKey:        d.OutputKey,
 		AgentInputSchema: d.AgentInputSchema,
 	}
+	// Only emit schedule_paused for scheduled playbooks: on an unscheduled one it
+	// is meaningless noise, and apply would POST the pause endpoint for a playbook
+	// that has no cron.
+	if d.Schedule != nil && *d.Schedule != "" {
+		paused := d.SchedulePaused
+		cfg.SchedulePaused = &paused
+	}
+	// Bools are pointers in the YAML shape so false is emittable; always set them
+	// explicitly so the pulled YAML is unambiguous.
 	enabled := d.Enabled
 	agentTrig := d.AgentTriggerable
 	cfg.Enabled = &enabled
@@ -387,11 +402,13 @@ func fetchProvisionPlaybookConfig(c *provisionClient, orgID uint, item provision
 		}
 		e := rs.Enabled
 		cfg.Steps = append(cfg.Steps, playbookStep{
-			Name:      rs.Name,
-			StepType:  rs.StepType,
-			Config:    stepCfg,
-			OutputKey: rs.OutputKey,
-			Enabled:   &e,
+			Name:     rs.Name,
+			StepType: rs.StepType,
+			// Position intentionally omitted — derived from array index on apply.
+			Config:      stepCfg,
+			OutputKey:   rs.OutputKey,
+			Enabled:     &e,
+			ErrorPolicy: rs.ErrorPolicy,
 		})
 	}
 	return cfg, nil
