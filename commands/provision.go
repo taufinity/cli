@@ -245,6 +245,14 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// 19. Vanna training data — DDL, question/SQL examples and glossary terms
+	// that ground the natural-language-to-SQL assistant. Lives in
+	// <dir>/vanna-training.yaml; pushed last because it retrains the org's
+	// vector index and should run after the dashboards it answers about exist.
+	if err := applyVannaTraining(c, dir, orgID); err != nil {
+		return err
+	}
+
 	// Exit codes for --strict mode
 	if provisionStrict {
 		if driftCount > 0 {
