@@ -18,6 +18,13 @@ type provisionClient struct {
 	noInviteEmail bool
 	http          *http.Client
 	warnings      []string
+
+	// workspaceConfigPath points at the analytics workspace config that declares
+	// the valid source write keys. It lives with the analytics infrastructure
+	// rather than with the site specs, so provision has to be told where it is;
+	// empty means "not supplied", and tracker write keys go unvalidated (with a
+	// warning). See checkTrackerWriteKey.
+	workspaceConfigPath string
 }
 
 func newProvisionClient(base, token string, dryRun bool) *provisionClient {

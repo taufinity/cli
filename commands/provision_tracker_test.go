@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -120,6 +121,154 @@ func TestProvisionTrackerMissingFileIsNoOp(t *testing.T) {
 	}
 	if len(calls) != 0 {
 		t.Errorf("missing tracker.yaml issued %d call(s)", len(calls))
+	}
+}
+
+// writeWorkspaceConfig writes a workspace-config fixture. It is an
+// infrastructure template, not plain JSON — note the ${...} placeholder, which
+// is exactly why the write keys are matched with a regex rather than parsed.
+func writeWorkspaceConfig(t *testing.T, keys ...string) string {
+	t.Helper()
+	var sources string
+	for i, k := range keys {
+		if i > 0 {
+			sources += ",\n"
+		}
+		sources += `    {"id": "src-` + k + `", "writeKey": "` + k + `", "enabled": true}`
+	}
+	body := `{
+  "workspaceId": "${workspace_id}",
+  "sources": [
+` + sources + `
+  ]
+}`
+	path := filepath.Join(t.TempDir(), "workspaceConfig.json.tftpl")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A key that IS a declared source passes and is pushed.
+func TestProvisionTrackerAcceptsKnownWriteKey(t *testing.T) {
+	var mu sync.Mutex
+	var calls []trackerCall
+	ts := trackerServer(t, &calls, &mu)
+	defer ts.Close()
+
+	siteDir := writeTrackerYAML(t, t.TempDir(), "enabled: true\nwrite_key: wk_abc123\n")
+
+	c := newProvisionClient(ts.URL, "key", false)
+	c.workspaceConfigPath = writeWorkspaceConfig(t, "wk_other", "wk_abc123")
+
+	if err := provisionTracker(c, 12, siteDir); err != nil {
+		t.Fatalf("known write_key should pass validation, got: %v", err)
+	}
+	if c.WarningCount() != 0 {
+		t.Errorf("a validated key should not warn, got: %v", c.warnings)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("got %d call(s), want 1", len(calls))
+	}
+}
+
+// A key that is NOT a declared source means the collector 401s every event. The
+// tracker would deploy clean and drop all data, so this is a hard failure, and
+// nothing may be written.
+func TestProvisionTrackerRejectsUnknownWriteKey(t *testing.T) {
+	var mu sync.Mutex
+	var calls []trackerCall
+	ts := trackerServer(t, &calls, &mu)
+	defer ts.Close()
+
+	siteDir := writeTrackerYAML(t, t.TempDir(), "enabled: true\nwrite_key: wk_typo\n")
+
+	c := newProvisionClient(ts.URL, "key", false)
+	c.workspaceConfigPath = writeWorkspaceConfig(t, "wk_abc123")
+
+	err := provisionTracker(c, 12, siteDir)
+	if err == nil {
+		t.Fatal("expected an unknown write_key to be a hard failure")
+	}
+	if !strings.Contains(err.Error(), "wk_typo") {
+		t.Errorf("error should name the offending key, got: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 0 {
+		t.Errorf("an unknown write_key still issued %d call(s)", len(calls))
+	}
+}
+
+// No workspace config supplied: provision still applies, but it must say out
+// loud that the key went unchecked and what that costs. A safety check that
+// skips itself in silence is how this bug class survives.
+func TestProvisionTrackerWarnsWhenWriteKeyCannotBeValidated(t *testing.T) {
+	var mu sync.Mutex
+	var calls []trackerCall
+	ts := trackerServer(t, &calls, &mu)
+	defer ts.Close()
+
+	siteDir := writeTrackerYAML(t, t.TempDir(), "enabled: true\nwrite_key: wk_abc123\n")
+
+	c := newProvisionClient(ts.URL, "key", false)
+	c.workspaceConfigPath = "" // not supplied
+
+	if err := provisionTracker(c, 12, siteDir); err != nil {
+		t.Fatalf("missing workspace config should warn, not fail: %v", err)
+	}
+	if c.WarningCount() != 1 {
+		t.Fatalf("want exactly 1 warning, got %d: %v", c.WarningCount(), c.warnings)
+	}
+	warning := c.warnings[0]
+	for _, want := range []string{"could not be validated", "--workspace-config", "silently drop every event"} {
+		if !strings.Contains(warning, want) {
+			t.Errorf("warning is missing %q:\n%s", want, warning)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 1 {
+		t.Errorf("got %d call(s), want 1 — the unvalidated config should still apply", len(calls))
+	}
+}
+
+// A --workspace-config path that does not exist is an operator mistake. Falling
+// back to the unvalidated path would defeat the point of passing the flag.
+func TestProvisionTrackerFailsOnMissingWorkspaceConfigFile(t *testing.T) {
+	var mu sync.Mutex
+	var calls []trackerCall
+	ts := trackerServer(t, &calls, &mu)
+	defer ts.Close()
+
+	siteDir := writeTrackerYAML(t, t.TempDir(), "enabled: true\nwrite_key: wk_abc123\n")
+
+	c := newProvisionClient(ts.URL, "key", false)
+	c.workspaceConfigPath = filepath.Join(t.TempDir(), "nope.json.tftpl")
+
+	if err := provisionTracker(c, 12, siteDir); err == nil {
+		t.Fatal("expected a supplied-but-missing workspace config to fail")
+	}
+	if len(calls) != 0 {
+		t.Errorf("still issued %d call(s)", len(calls))
+	}
+}
+
+func TestWriteKeysInWorkspaceConfigParsesTemplate(t *testing.T) {
+	// Templated infra file: not valid JSON, so the keys are matched literally.
+	const tmpl = `{
+  "workspaceId": "${workspace_id}",
+  "sources": [
+    {"writeKey": "wk_one"},
+    {"writeKey" : "wk_two"}
+  ],
+  "destinations": [{"config": {"projectId": "${project}"}}]
+}`
+	got := writeKeysInWorkspaceConfig(tmpl)
+	if len(got) != 2 || got[0] != "wk_one" || got[1] != "wk_two" {
+		t.Errorf("got %v, want [wk_one wk_two]", got)
 	}
 }
 
