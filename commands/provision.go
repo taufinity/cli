@@ -19,6 +19,7 @@ var (
 	provisionNoInviteEmail    bool
 	provisionDraft            bool
 	provisionPreviewDataset   string
+	provisionAllowDrift       bool
 )
 
 var provisionCmd = &cobra.Command{
@@ -85,6 +86,7 @@ func init() {
 		cmd.Flags().BoolVar(&provisionNoInviteEmail, "no-invite-email", false, "Create invitations without sending email (for testing)")
 		cmd.Flags().BoolVar(&provisionDraft, "draft", false, "Push dashboards as admin-only preview versions")
 		cmd.Flags().StringVar(&provisionPreviewDataset, "preview-dataset", "", "BQ dataset override for preview mode (use with --draft)")
+		cmd.Flags().BoolVar(&provisionAllowDrift, "allow-drift", false, "Apply playbooks even when the diff is classified HIGH drift (deleted steps, AI model/provider change, error-policy change, schedule/enabled flip, wholesale step rewrite). Default off: a HIGH-drift apply aborts so a stale local file can't silently revert live config")
 		_ = cmd.MarkFlagRequired("dir")
 		_ = cmd.MarkFlagRequired("org")
 	}
@@ -212,7 +214,7 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// 12. Playbooks
-	if err := applyPlaybooks(c, dir, orgID); err != nil {
+	if err := applyPlaybooks(c, dir, orgID, provisionAllowDrift); err != nil {
 		return err
 	}
 	// 13. Test suites
@@ -258,4 +260,3 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\nprovision: done (warnings=%d)\n", c.WarningCount())
 	return nil
 }
-
