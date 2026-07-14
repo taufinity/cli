@@ -5,15 +5,9 @@ import (
 	"testing"
 )
 
-// On 2026-07-14 a provision apply deleted a live playbook step. The audit log said:
-//
-//	DELETE /api/playbooks/28/steps/329  taufinity-provision/1.0  204
-//
-// Both this CLI and ai-site-gen's cmd/provision sent that exact literal, so the log
-// could not say which binary did it, let alone which build. The investigation
-// concluded — wrongly, and confidently — that it came from the other binary.
-//
-// These tests pin the two properties that would have answered it.
+// Two separate provision implementations sent the same hardcoded product token, so
+// an audit log could not say which binary performed a write, let alone which build.
+// These tests pin the properties that make a write attributable.
 func TestProvisionUserAgent_IdentifiesTheBinary(t *testing.T) {
 	ua := provisionUserAgent()
 

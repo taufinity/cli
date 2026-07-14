@@ -7,26 +7,22 @@ import (
 	"github.com/taufinity/cli/internal/buildinfo"
 )
 
-// provisionUserAgent identifies WHICH binary and WHICH build performed a write.
+// provisionUserAgent identifies which binary and which build performed a write.
 //
-// Both this CLI and ai-site-gen's (deprecated) cmd/provision used to send the same
-// hardcoded "taufinity-provision/1.0". So when a provision apply deleted a live
-// playbook step on 2026-07-14 at 14:10:28, the audit log looked like this:
+// Two separate provision implementations existed and both sent the same hardcoded
+// product token, so a server-side audit log could not attribute a write to either
+// of them. Two clients with identical identity are, for forensics, one anonymous
+// client — and when a destructive apply needs explaining, "provision did it" is not
+// an answer.
 //
-//	DELETE /api/playbooks/28/steps/329  taufinity-provision/1.0  204
-//
-// and could not answer the only question that mattered: which binary, on which
-// build, run by whom. Two clients with identical identity are, for forensics, one
-// anonymous client.
-//
-// The shape is deliberately parseable, so an audit query or an alert can filter on
-// the product token and still read the build:
+// The shape is deliberately parseable, so an audit query or alert can filter on the
+// product token and still read the build:
 //
 //	taufinity-cli/1.4.2 (provision; commit=a1b2c3d)
 //	taufinity-cli/dev (provision; commit=a1b2c3d; dirty)
 //
-// A "dirty" build is worth surfacing loudly: it means the config that was applied
-// came from a working tree nobody can reconstruct from git.
+// A dirty build is worth surfacing: the configuration it applied came from a working
+// tree that cannot be reconstructed from git.
 var provisionUserAgent = sync.OnceValue(func() string {
 	info := buildinfo.FromBuildtime(Version, GitCommit, BuildTime)
 
