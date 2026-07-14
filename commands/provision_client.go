@@ -90,8 +90,10 @@ func (c *provisionClient) writeForOrg(method, path string, payload []byte, orgID
 }
 
 // writeWithHeaders injects X-Change-Source: provision on every write so version
-// rows are attributable to provision in audit logs. Also sets the custom User-Agent
-// required to bypass Cloudflare's WAF rules that block Go's default UA on POST.
+// rows are attributable to provision in audit logs. The User-Agent carries the
+// binary identity and build (see provisionUserAgent) — it both bypasses
+// Cloudflare's WAF rules that block Go's default UA on POST, and makes an audit
+// log entry answer "which binary, which build" instead of just "provision".
 func (c *provisionClient) writeWithHeaders(method, path string, payload []byte, extra map[string]string) ([]byte, int, error) {
 	if c.dryRun {
 		fmt.Printf("[dry-run] %s /api%s  payload=%s\n", method, path, provisionSummarize(payload))
@@ -104,7 +106,7 @@ func (c *provisionClient) writeWithHeaders(method, path string, payload []byte, 
 	req.Header.Set("X-API-Key", c.token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Change-Source", "provision")
-	req.Header.Set("User-Agent", "taufinity-provision/1.0")
+	req.Header.Set("User-Agent", provisionUserAgent())
 	for k, v := range extra {
 		req.Header.Set(k, v)
 	}
@@ -142,7 +144,7 @@ func (c *provisionClient) uploadMultipartForOrg(path, fileField, filename string
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.Header.Set("X-Organization-ID", fmt.Sprintf("%d", orgID))
 	req.Header.Set("X-Change-Source", "provision")
-	req.Header.Set("User-Agent", "taufinity-provision/1.0")
+	req.Header.Set("User-Agent", provisionUserAgent())
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, 0, err
