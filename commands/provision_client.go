@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -25,6 +26,20 @@ type provisionClient struct {
 	// empty means "not supplied", and tracker write keys go unvalidated (with a
 	// warning). See checkTrackerWriteKey.
 	workspaceConfigPath string
+
+	// cfAccessID and cfAccessSecret are a Cloudflare Access service token, sent
+	// as CF-Access-Client-Id / CF-Access-Client-Secret on every request. They let
+	// provision reach a Studio instance that sits behind Cloudflare Access (a
+	// pre-authentication gate in front of the app). Sourced from the environment
+	// only — a service token is a credential and must never land in a flag, where
+	// it would show up in shell history and process listings, nor in this repo.
+	// Empty when either is unset, in which case no CF-Access headers are sent and
+	// the request goes straight through (correct for any host not behind Access).
+	// These headers only pass Cloudflare's gate; the app's own X-API-Key still
+	// authorises every request, so sending them to a host that does not need them
+	// is harmless.
+	cfAccessID     string
+	cfAccessSecret string
 }
 
 func newProvisionClient(base, token string, dryRun bool) *provisionClient {
@@ -33,7 +48,26 @@ func newProvisionClient(base, token string, dryRun bool) *provisionClient {
 		token:  token,
 		dryRun: dryRun,
 		http:   &http.Client{Timeout: 30 * time.Second},
+		// CF-Access service token from the environment. The same variable names
+		// the rest of the codebase uses for its Cloudflare Access bypass.
+		cfAccessID:     os.Getenv("CF_ACCESS_CLIENT_ID"),
+		cfAccessSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"),
 	}
+}
+
+// setCFAccessHeaders attaches the Cloudflare Access service token to a request,
+// but only when both halves are present. Sent on reads and writes alike, because
+// Cloudflare Access gates every request — a diff that GETs remote state would 403
+// before it ever computed a change if the header only rode the write path.
+//
+// Never log these values. The dry-run and error paths print method, path and
+// status, and must never grow to print headers.
+func (c *provisionClient) setCFAccessHeaders(req *http.Request) {
+	if c.cfAccessID == "" || c.cfAccessSecret == "" {
+		return
+	}
+	req.Header.Set("CF-Access-Client-Id", c.cfAccessID)
+	req.Header.Set("CF-Access-Client-Secret", c.cfAccessSecret)
 }
 
 func (c *provisionClient) Warn(format string, args ...interface{}) {
@@ -61,6 +95,7 @@ func (c *provisionClient) getWithHeaders(path string, extra map[string]string) (
 	}
 	req.Header.Set("X-API-Key", c.token)
 	req.Header.Set("Accept", "application/json")
+	c.setCFAccessHeaders(req)
 	for k, v := range extra {
 		req.Header.Set(k, v)
 	}
@@ -114,6 +149,7 @@ func (c *provisionClient) writeWithHeaders(method, path string, payload []byte, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Change-Source", "provision")
 	req.Header.Set("User-Agent", provisionUserAgent())
+	c.setCFAccessHeaders(req)
 	for k, v := range extra {
 		req.Header.Set(k, v)
 	}
@@ -152,6 +188,7 @@ func (c *provisionClient) uploadMultipartForOrg(path, fileField, filename string
 	req.Header.Set("X-Organization-ID", fmt.Sprintf("%d", orgID))
 	req.Header.Set("X-Change-Source", "provision")
 	req.Header.Set("User-Agent", provisionUserAgent())
+	c.setCFAccessHeaders(req) // uploads are gated by Cloudflare Access too
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, 0, err
