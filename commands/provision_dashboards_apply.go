@@ -24,7 +24,17 @@ import (
 // deliberately not enough.
 //
 // Dry-run is handled by the client: writes are printed, not sent.
-func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, draft bool, previewDataset string) (int, error) {
+//
+// providerID is the default (the primary/root provider.yaml); providersBySlug
+// resolves a dashboard's own "provider" field (a providerConfig.Slug) to a
+// specific provider's ID for directories with more than one BQ provider.
+//
+// TODO: diffFields (below) does not compare provider_id, so an existing
+// dashboard whose "provider" field changes but nothing else does will NOOP
+// instead of updating — the resolved ID isn't threaded into the diff today.
+// Not hit by a brand-new dashboard (CREATE path), only by re-pointing one
+// that already exists.
+func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, providersBySlug map[string]uint, draft bool, previewDataset string) (int, error) {
 	dashDir := filepath.Join(dir, "dashboards")
 	if !fileExists(dashDir) {
 		return 0, nil
@@ -79,9 +89,18 @@ func applyDashboards(c *provisionClient, dir string, orgID, providerID uint, dra
 			continue
 		}
 
+		resolvedProviderID := providerID
+		if local.Provider != "" {
+			id, ok := providersBySlug[local.Provider]
+			if !ok {
+				return drift, fmt.Errorf("dashboard %q: provider %q not found (check providers/*.yaml has a matching slug)", local.Slug, local.Provider)
+			}
+			resolvedProviderID = id
+		}
+
 		payload, _ := json.Marshal(map[string]any{
 			"org_id":               orgID,
-			"provider_id":          providerID,
+			"provider_id":          resolvedProviderID,
 			"slug":                 local.Slug,
 			"name":                 local.Name,
 			"description":          local.Description,

@@ -121,7 +121,7 @@ func TestApplyNavNoFile(t *testing.T) {
 func TestApplyProvidersNoFiles(t *testing.T) {
 	dir := t.TempDir()
 	c := newProvisionClient("http://localhost:9999", "key", true)
-	id, err := applyProviders(c, dir, 1)
+	id, _, err := applyProviders(c, dir, 1)
 	if err != nil {
 		t.Fatalf("applyProviders with no files: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestApplySitesNoDir(t *testing.T) {
 func TestApplyDashboardsNoDashboardsDir(t *testing.T) {
 	dir := t.TempDir()
 	c := newProvisionClient("http://localhost:9999", "key", true)
-	drift, err := applyDashboards(c, dir, 1, 0, false, "")
+	drift, err := applyDashboards(c, dir, 1, 0, nil, false, "")
 	if err != nil {
 		t.Fatalf("applyDashboards with no dashboards dir: %v", err)
 	}
