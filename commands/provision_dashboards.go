@@ -35,6 +35,13 @@ type provisionDashboardDef struct {
 	Name               string          `json:"name"`
 	Description        string          `json:"description,omitempty"`
 	SourceView         string          `json:"source_view"`
+
+	// Provider selects a non-primary provider by its slug (see
+	// providerConfig.Slug), for a directory with more than one BQ provider
+	// under providers/ (e.g. two datasets in different projects). Empty means
+	// the primary provider — the root provider.yaml — same as before this
+	// field existed; every dashboard spec without it behaves unchanged.
+	Provider string `json:"provider,omitempty"`
 	Columns            json.RawMessage `json:"columns"`
 	Filters            json.RawMessage `json:"filters,omitempty"`
 	DefaultChart       string          `json:"default_chart,omitempty"`

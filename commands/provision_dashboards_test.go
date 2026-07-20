@@ -128,7 +128,7 @@ func TestDashboardsPullApplyRoundTrip(t *testing.T) {
 	}
 
 	// Now apply the file we just pulled: nothing changed, so nothing may be written.
-	drift, err := applyDashboards(c, dir, 1, 99, false, "")
+	drift, err := applyDashboards(c, dir, 1, 99, nil, false, "")
 	if err != nil {
 		t.Fatalf("apply after pull: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestApplyDashboardsUpdatesOnRealChange(t *testing.T) {
 	writeJSONFile(t, filepath.Join(dashDir, "orders-daily.json"), spec)
 
 	c := newProvisionClient(ts.URL, "key", false)
-	drift, err := applyDashboards(c, dir, 1, 99, false, "")
+	drift, err := applyDashboards(c, dir, 1, 99, nil, false, "")
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestApplyDashboardsDryRunNoWrites(t *testing.T) {
 	})
 
 	c := newProvisionClient(ts.URL, "key", true) // dry-run
-	drift, err := applyDashboards(c, dir, 1, 99, false, "")
+	drift, err := applyDashboards(c, dir, 1, 99, nil, false, "")
 	if err != nil {
 		t.Fatalf("dry-run apply: %v", err)
 	}
@@ -229,6 +229,90 @@ func TestApplyDashboardsDryRunNoWrites(t *testing.T) {
 	}
 	if n := srv.writeCount(); n != 0 {
 		t.Errorf("dry-run issued %d write(s), want 0", n)
+	}
+}
+
+// TestApplyDashboardsResolvesProviderBySlug: a dashboard spec with a
+// "provider" field must resolve to THAT provider's id, not the directory's
+// primary (root provider.yaml) one — the whole point of the field. Without
+// this, a directory with two BQ providers (two datasets, e.g. two different
+// GCP projects) can only ever bind every dashboard to the first one.
+func TestApplyDashboardsResolvesProviderBySlug(t *testing.T) {
+	var captured map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/admin/dashboard-definitions":
+			_ = json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/admin/dashboard-definitions":
+			_ = json.NewDecoder(r.Body).Decode(&captured)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 42})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	dashDir := filepath.Join(dir, "dashboards")
+	if err := os.MkdirAll(dashDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, filepath.Join(dashDir, "secondary.json"), map[string]any{
+		"slug":        "secondary-dash",
+		"name":        "Secondary",
+		"source_view": "other_dataset.some_view",
+		"columns":     []any{},
+		"provider":    "secondary-provider",
+	})
+
+	c := newProvisionClient(ts.URL, "key", false)
+	providersBySlug := map[string]uint{"secondary-provider": 26}
+	const primaryID = 11 // deliberately different from 26, to prove it's NOT used
+	if _, err := applyDashboards(c, dir, 1, primaryID, providersBySlug, false, ""); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	if captured == nil {
+		t.Fatal("no dashboard was created")
+	}
+	got, ok := captured["provider_id"].(float64) // JSON numbers decode as float64
+	if !ok || uint(got) != 26 {
+		t.Errorf("provider_id = %v, want 26 (the secondary provider, not the primary %d)", captured["provider_id"], primaryID)
+	}
+}
+
+// TestApplyDashboardsUnknownProviderErrors: a typo'd "provider" field must
+// fail loudly, not silently fall back to the primary provider — that would
+// point a dashboard at the wrong BQ dataset without any indication why.
+func TestApplyDashboardsUnknownProviderErrors(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"definitions": []map[string]any{}})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	dashDir := filepath.Join(dir, "dashboards")
+	if err := os.MkdirAll(dashDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeJSONFile(t, filepath.Join(dashDir, "typo.json"), map[string]any{
+		"slug":        "typo-dash",
+		"name":        "Typo",
+		"source_view": "v",
+		"columns":     []any{},
+		"provider":    "this-slug-does-not-exist",
+	})
+
+	c := newProvisionClient(ts.URL, "key", false)
+	_, err := applyDashboards(c, dir, 1, 11, map[string]uint{"secondary-provider": 26}, false, "")
+	if err == nil {
+		t.Fatal("want an error for an unresolvable provider slug, got nil")
+	}
+	if !strings.Contains(err.Error(), "this-slug-does-not-exist") {
+		t.Errorf("error should name the bad slug, got: %v", err)
 	}
 }
 

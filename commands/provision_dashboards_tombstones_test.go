@@ -79,7 +79,7 @@ func TestTombstoneDeletesSlugPresentOnServer(t *testing.T) {
 	})
 
 	c := newProvisionClient(ts.URL, "key", false)
-	if _, err := applyDashboards(c, dir, 1, 99, false, ""); err != nil {
+	if _, err := applyDashboards(c, dir, 1, 99, nil, false, ""); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestTombstoneForAbsentSlugIsNoOpNotError(t *testing.T) {
 	})
 
 	c := newProvisionClient(ts.URL, "key", false)
-	if _, err := applyDashboards(c, dir, 1, 99, false, ""); err != nil {
+	if _, err := applyDashboards(c, dir, 1, 99, nil, false, ""); err != nil {
 		t.Fatalf("tombstone for an already-deleted slug should be a no-op, got: %v", err)
 	}
 	if writes := srv.writes(); len(writes) != 0 {
@@ -127,7 +127,7 @@ func TestTombstonePrintsSlugAndReason(t *testing.T) {
 
 	c := newProvisionClient(ts.URL, "key", false)
 	out := captureStdout(t, func() {
-		if _, err := applyDashboards(c, dir, 1, 99, false, ""); err != nil {
+		if _, err := applyDashboards(c, dir, 1, 99, nil, false, ""); err != nil {
 			t.Fatalf("apply: %v", err)
 		}
 	})
@@ -164,7 +164,7 @@ func TestTombstoneDryRunIssuesNoWrites(t *testing.T) {
 
 	c := newProvisionClient(ts.URL, "key", true) // dry-run
 	out := captureStdout(t, func() {
-		if _, err := applyDashboards(c, dir, 1, 99, false, ""); err != nil {
+		if _, err := applyDashboards(c, dir, 1, 99, nil, false, ""); err != nil {
 			t.Fatalf("dry-run apply: %v", err)
 		}
 	})

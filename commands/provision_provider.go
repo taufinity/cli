@@ -259,8 +259,15 @@ func pinProviderID(path string, cfgID, liveID int) error {
 	return nil
 }
 
-func applyProviders(c *provisionClient, dir string, orgID uint) (uint, error) {
+// applyProviders upserts every provider declared under dir (the single root
+// provider.yaml, if present, plus every *.yaml under providers/). It returns
+// the primary provider's ID (root provider.yaml — dashboards default to this
+// one, unchanged behavior) and a slug→ID lookup covering ALL upserted
+// providers, root included, so a dashboard can opt into a non-primary
+// provider via its own "provider" field (see provisionDashboardDef.Provider).
+func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[string]uint, error) {
 	var primaryID uint
+	bySlug := make(map[string]uint)
 
 	// Single provider at root
 	if pf := filepath.Join(dir, "provider.yaml"); fileExists(pf) {
@@ -272,14 +279,17 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, error) {
 		} else {
 			id, err := upsertProvider(c, orgID, cfg)
 			if err != nil {
-				return 0, fmt.Errorf("provider: %w", err)
+				return 0, nil, fmt.Errorf("provider: %w", err)
 			}
 			if !c.dryRun {
 				if err := pinProviderID(pf, cfg.ID, int(id)); err != nil {
-					return 0, fmt.Errorf("pin provider id: %w", err)
+					return 0, nil, fmt.Errorf("pin provider id: %w", err)
 				}
 			}
 			primaryID = uint(id)
+		}
+		if cfg.Slug != "" {
+			bySlug[cfg.Slug] = primaryID
 		}
 	}
 
@@ -288,7 +298,7 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, error) {
 	if fileExists(pd) {
 		entries, err := os.ReadDir(pd)
 		if err != nil {
-			return 0, fmt.Errorf("providers/: %w", err)
+			return 0, nil, fmt.Errorf("providers/: %w", err)
 		}
 		for _, e := range entries {
 			if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
@@ -299,19 +309,25 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, error) {
 			mustReadYAML(pf, &cfg)
 			if cfg.SkipUpsert {
 				fmt.Printf("provision: skipping provider %q (skip_upsert=true)\n", cfg.Name)
+				if cfg.Slug != "" {
+					bySlug[cfg.Slug] = uint(cfg.ID)
+				}
 				continue
 			}
 			id, err := upsertProvider(c, orgID, cfg)
 			if err != nil {
-				return 0, fmt.Errorf("provider %s: %w", e.Name(), err)
+				return 0, nil, fmt.Errorf("provider %s: %w", e.Name(), err)
 			}
 			if !c.dryRun {
 				if err := pinProviderID(pf, cfg.ID, int(id)); err != nil {
-					return 0, fmt.Errorf("pin provider id %s: %w", e.Name(), err)
+					return 0, nil, fmt.Errorf("pin provider id %s: %w", e.Name(), err)
 				}
+			}
+			if cfg.Slug != "" {
+				bySlug[cfg.Slug] = uint(id)
 			}
 		}
 	}
 
-	return primaryID, nil
+	return primaryID, bySlug, nil
 }

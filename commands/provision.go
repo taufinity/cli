@@ -186,7 +186,7 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// 2. Providers
-	providerID, err := applyProviders(c, dir, orgID)
+	providerID, providersBySlug, err := applyProviders(c, dir, orgID)
 	if err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	// 8. Dashboards
-	driftCount, err := applyDashboards(c, dir, orgID, providerID, provisionDraft, provisionPreviewDataset)
+	driftCount, err := applyDashboards(c, dir, orgID, providerID, providersBySlug, provisionDraft, provisionPreviewDataset)
 	if err != nil {
 		return err
 	}
