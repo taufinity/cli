@@ -22,7 +22,7 @@ import (
 const DefaultAPIURL = "https://studio.taufinity.io"
 
 // StagingAPIURL is the staging Studio endpoint.
-const StagingAPIURL = "https://staging.studio.taufinity.io"
+const StagingAPIURL = "https://staging-studio.taufinity.io"
 
 var (
 	// Global flags
