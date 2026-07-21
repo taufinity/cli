@@ -142,14 +142,31 @@ func (r *playbookTriggerResponse) effectiveRunID() int {
 
 // playbookRun represents a single playbook run.
 type playbookRun struct {
-	ID          int                  `json:"id"`
-	PlaybookID  int                  `json:"playbook_id"`
-	Status      string               `json:"status"`
-	Output      string               `json:"output"`
-	Error       string               `json:"error"`
-	CreatedAt   string               `json:"created_at"`
-	CompletedAt string               `json:"completed_at"`
-	Warnings    []playbookRunWarning `json:"warnings"`
+	ID          int    `json:"id"`
+	PlaybookID  int    `json:"playbook_id"`
+	Status      string `json:"status"`
+	Output      string `json:"output"`
+	Error       string `json:"error"`
+	CreatedAt   string `json:"created_at"`
+	CompletedAt string `json:"completed_at"`
+	// Warnings is a JSON-encoded array, same convention as output/step_outputs
+	// (the API serializes these fields as strings, not nested JSON). Use
+	// parsedWarnings() to decode it.
+	Warnings string `json:"warnings"`
+}
+
+// parsedWarnings decodes the raw warnings JSON string into structured
+// entries. Returns nil if empty or malformed rather than erroring, since a
+// warning display is advisory and shouldn't block the rest of the poll loop.
+func (r *playbookRun) parsedWarnings() []playbookRunWarning {
+	if r.Warnings == "" {
+		return nil
+	}
+	var warnings []playbookRunWarning
+	if err := json.Unmarshal([]byte(r.Warnings), &warnings); err != nil {
+		return nil
+	}
+	return warnings
 }
 
 // playbookRunWarning is a non-blocking concern flagged by an llm_verify or
@@ -353,9 +370,10 @@ func pollPlaybookRun(client *api.Client, playbookID string, runID int, timeout t
 			switch run.Status {
 			case "completed":
 				Print("\nRun completed.\n")
-				if len(run.Warnings) > 0 {
-					Print("⚠ %d warning(s):\n", len(run.Warnings))
-					for _, w := range run.Warnings {
+				warnings := run.parsedWarnings()
+				if len(warnings) > 0 {
+					Print("⚠ %d warning(s):\n", len(warnings))
+					for _, w := range warnings {
 						Print("  - %s: %s\n", w.StepName, w.Summary)
 					}
 					Print("If this is wrong, re-run with feedback: taufinity playbook feedback %d --negative --details \"...\"\n", run.ID)
