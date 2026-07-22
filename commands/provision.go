@@ -267,6 +267,14 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// 20. Presentation templates — compiled_template HTML for the
+	// presentations engine's reveal.js renderer. Lives in
+	// <dir>/presentation-templates/*.html, independent of everything above,
+	// placed last simply because it was added last.
+	if err := applyPresentationTemplates(c, dir, orgID); err != nil {
+		return err
+	}
+
 	// Exit codes for --strict mode
 	if provisionStrict {
 		if driftCount > 0 {
