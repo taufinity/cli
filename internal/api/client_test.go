@@ -595,3 +595,102 @@ func TestClient_OrgHeader(t *testing.T) {
 		}
 	})
 }
+
+func TestClient_CFAccessHeaders(t *testing.T) {
+	type capture struct {
+		cfID     string
+		cfSecret string
+	}
+	var got capture
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = capture{
+			cfID:     r.Header.Get("CF-Access-Client-Id"),
+			cfSecret: r.Header.Get("CF-Access-Client-Secret"),
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", tmpDir)
+	defer os.Setenv("HOME", oldHome)
+	creds := &auth.Credentials{
+		AccessToken: "test-token",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}
+	if err := creds.Save(); err != nil {
+		t.Fatalf("Save credentials failed: %v", err)
+	}
+
+	setCFEnv := func(t *testing.T, id, secret string) {
+		t.Helper()
+		oldID, hadID := os.LookupEnv("CF_ACCESS_CLIENT_ID")
+		oldSecret, hadSecret := os.LookupEnv("CF_ACCESS_CLIENT_SECRET")
+		os.Setenv("CF_ACCESS_CLIENT_ID", id)
+		os.Setenv("CF_ACCESS_CLIENT_SECRET", secret)
+		t.Cleanup(func() {
+			if hadID {
+				os.Setenv("CF_ACCESS_CLIENT_ID", oldID)
+			} else {
+				os.Unsetenv("CF_ACCESS_CLIENT_ID")
+			}
+			if hadSecret {
+				os.Setenv("CF_ACCESS_CLIENT_SECRET", oldSecret)
+			} else {
+				os.Unsetenv("CF_ACCESS_CLIENT_SECRET")
+			}
+		})
+	}
+
+	t.Run("both env vars set sends headers on GetWithAuth", func(t *testing.T) {
+		setCFEnv(t, "cf-id-123", "cf-secret-456")
+		got = capture{}
+		client := New(server.URL)
+		if _, err := client.GetWithAuth(context.Background(), "/api/x"); err != nil {
+			t.Fatalf("GetWithAuth failed: %v", err)
+		}
+		if got.cfID != "cf-id-123" || got.cfSecret != "cf-secret-456" {
+			t.Errorf("CF headers = (%q, %q), want (%q, %q)", got.cfID, got.cfSecret, "cf-id-123", "cf-secret-456")
+		}
+	})
+
+	t.Run("both env vars set sends headers on PostJSONWithAuth", func(t *testing.T) {
+		setCFEnv(t, "cf-id-123", "cf-secret-456")
+		got = capture{}
+		client := New(server.URL)
+		if _, err := client.PostJSONWithAuth(context.Background(), "/api/x", map[string]string{"k": "v"}); err != nil {
+			t.Fatalf("PostJSONWithAuth failed: %v", err)
+		}
+		if got.cfID != "cf-id-123" || got.cfSecret != "cf-secret-456" {
+			t.Errorf("CF headers = (%q, %q), want (%q, %q)", got.cfID, got.cfSecret, "cf-id-123", "cf-secret-456")
+		}
+	})
+
+	t.Run("only id set (secret missing) sends no CF headers", func(t *testing.T) {
+		setCFEnv(t, "cf-id-123", "")
+		got = capture{}
+		client := New(server.URL)
+		if _, err := client.GetWithAuth(context.Background(), "/api/x"); err != nil {
+			t.Fatalf("GetWithAuth failed: %v", err)
+		}
+		if got.cfID != "" || got.cfSecret != "" {
+			t.Errorf("CF headers = (%q, %q), want both empty (partial config must not send either header)", got.cfID, got.cfSecret)
+		}
+	})
+
+	t.Run("neither env var set sends no CF headers", func(t *testing.T) {
+		os.Unsetenv("CF_ACCESS_CLIENT_ID")
+		os.Unsetenv("CF_ACCESS_CLIENT_SECRET")
+		got = capture{}
+		client := New(server.URL)
+		if _, err := client.GetWithAuth(context.Background(), "/api/x"); err != nil {
+			t.Fatalf("GetWithAuth failed: %v", err)
+		}
+		if got.cfID != "" || got.cfSecret != "" {
+			t.Errorf("CF headers = (%q, %q), want both empty", got.cfID, got.cfSecret)
+		}
+	})
+}
