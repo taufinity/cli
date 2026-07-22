@@ -416,3 +416,116 @@ func TestPresentationTemplates_PullThenApplyIsNoop(t *testing.T) {
 		t.Fatalf("expected pull->apply round trip to be a NOOP, got updates=%+v creates=%+v", srv.updates, srv.creates)
 	}
 }
+
+// TestPullProvisionPresentationTemplates_RemovesStaleFileOnRename — a
+// server-side rename produces a new slug (new filename) while keeping the
+// same uuid. Without cleanup, the old file survives as an orphan that
+// apply's *.html glob still matches by uuid, silently reverting the rename
+// on next apply. Pull must remove it.
+func TestPullProvisionPresentationTemplates_RemovesStaleFileOnRename(t *testing.T) {
+	srv := &presentationTemplatesTestServer{
+		templates: []provisionPresentationTemplateDef{
+			{UUID: "prtp_a", Name: "Foo", CompiledTemplate: "<html>v1</html>"},
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	dir := t.TempDir()
+	td := filepath.Join(dir, "presentation-templates")
+	c := newProvisionClient(ts.URL, "test-key", false)
+
+	if err := pullProvisionPresentationTemplates(c, 12, td, false); err != nil {
+		t.Fatalf("first pull: %v", err)
+	}
+	if !fileExists(filepath.Join(td, "foo.html")) {
+		t.Fatalf("expected foo.html after first pull")
+	}
+
+	// Rename server-side: same uuid, new name.
+	srv.mu.Lock()
+	srv.templates[0].Name = "Bar"
+	srv.mu.Unlock()
+
+	if err := pullProvisionPresentationTemplates(c, 12, td, false); err != nil {
+		t.Fatalf("second pull: %v", err)
+	}
+
+	if fileExists(filepath.Join(td, "foo.html")) {
+		t.Errorf("expected stale foo.html to be removed after rename, but it still exists")
+	}
+	if !fileExists(filepath.Join(td, "bar.html")) {
+		t.Errorf("expected bar.html to exist after rename")
+	}
+
+	entries, _ := filepath.Glob(filepath.Join(td, "*.html"))
+	if len(entries) != 1 {
+		t.Fatalf("expected exactly 1 file after rename cleanup, got %d: %v", len(entries), entries)
+	}
+
+	// The whole point: apply must now see NOOP, not silently revert the rename.
+	if err := applyPresentationTemplates(c, dir, 12); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(srv.updates) != 0 || len(srv.creates) != 0 {
+		t.Fatalf("expected apply after rename cleanup to be a NOOP, got updates=%+v creates=%+v", srv.updates, srv.creates)
+	}
+}
+
+// TestPullProvisionPresentationTemplates_DryRunDoesNotRemoveStaleFile —
+// dry-run must report what it would remove without touching disk.
+func TestPullProvisionPresentationTemplates_DryRunDoesNotRemoveStaleFile(t *testing.T) {
+	srv := &presentationTemplatesTestServer{
+		templates: []provisionPresentationTemplateDef{
+			{UUID: "prtp_a", Name: "Foo", CompiledTemplate: "<html>v1</html>"},
+		},
+	}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	dir := t.TempDir()
+	td := filepath.Join(dir, "presentation-templates")
+	c := newProvisionClient(ts.URL, "test-key", false)
+
+	if err := pullProvisionPresentationTemplates(c, 12, td, false); err != nil {
+		t.Fatalf("first pull: %v", err)
+	}
+
+	srv.mu.Lock()
+	srv.templates[0].Name = "Bar"
+	srv.mu.Unlock()
+
+	if err := pullProvisionPresentationTemplates(c, 12, td, true); err != nil {
+		t.Fatalf("dry-run pull: %v", err)
+	}
+
+	if !fileExists(filepath.Join(td, "foo.html")) {
+		t.Errorf("dry-run must not remove the stale file")
+	}
+	if fileExists(filepath.Join(td, "bar.html")) {
+		t.Errorf("dry-run must not write the new file")
+	}
+}
+
+// TestRenderPresentationTemplateFile_SanitizesEmbeddedNewlineInName — a
+// crafted Name containing "\n-->\n" would otherwise let a rewritten file's
+// header close early, spilling attacker-controlled content (including a
+// forged uuid: line) into what apply treats as pure compiled_template HTML.
+func TestRenderPresentationTemplateFile_SanitizesEmbeddedNewlineInName(t *testing.T) {
+	evilName := "Evil\n-->\n<script>alert(1)</script>\nuuid: prtp_forged"
+	meta := presentationTemplateMeta{Name: evilName, UUID: "prtp_real", IsDefault: false, Branch: "main"}
+	content := "<html>real content</html>"
+
+	raw := renderPresentationTemplateFile(meta, content)
+
+	gotMeta, gotContent := parsePresentationTemplateFile(raw)
+	if gotMeta.UUID != "prtp_real" {
+		t.Fatalf("expected uuid to remain prtp_real, got %q (header was corrupted)", gotMeta.UUID)
+	}
+	if gotContent != content {
+		t.Fatalf("expected content to remain untouched, got %q", gotContent)
+	}
+	if strings.Contains(gotMeta.Name, "\n") {
+		t.Errorf("expected name to have no embedded newline, got %q", gotMeta.Name)
+	}
+}

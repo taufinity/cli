@@ -105,18 +105,31 @@ func parsePresentationTemplateFile(raw []byte) (presentationTemplateMeta, string
 	return meta, content
 }
 
+// sanitizeHeaderValue collapses embedded newlines to spaces. name/branch are
+// single-line metadata; without this, a value containing "\n-->\n" (however
+// unlikely — pulled from a server-side field, not normally hand-typed) would
+// prematurely close the taufinity-provision comment, splicing whatever
+// follows (including a forged "uuid:" line) into what's meant to be pure
+// compiled_template HTML.
+func sanitizeHeaderValue(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	return s
+}
+
 // renderPresentationTemplateFile assembles the on-disk file: metadata header
 // followed by the compiled_template HTML unchanged.
 func renderPresentationTemplateFile(meta presentationTemplateMeta, content string) []byte {
 	var b strings.Builder
 	b.WriteString("<!-- taufinity-provision\n")
-	fmt.Fprintf(&b, "name: %s\n", meta.Name)
+	fmt.Fprintf(&b, "name: %s\n", sanitizeHeaderValue(meta.Name))
 	if meta.UUID != "" {
-		fmt.Fprintf(&b, "uuid: %s\n", meta.UUID)
+		fmt.Fprintf(&b, "uuid: %s\n", sanitizeHeaderValue(meta.UUID))
 	}
 	fmt.Fprintf(&b, "is_default: %t\n", meta.IsDefault)
 	if meta.Branch != "" {
-		fmt.Fprintf(&b, "branch: %s\n", meta.Branch)
+		fmt.Fprintf(&b, "branch: %s\n", sanitizeHeaderValue(meta.Branch))
 	}
 	b.WriteString("-->\n")
 	b.WriteString(content)
@@ -251,6 +264,9 @@ func applyPresentationTemplates(c *provisionClient, dir string, orgID uint) erro
 			noop++
 			continue
 		}
+		// branch is deliberately omitted here: UpdateTemplateRequest on the
+		// server has no branch field at all, so it's create-only — editing
+		// branch: in an already-pulled file's header has no effect on apply.
 		payload, _ := json.Marshal(map[string]any{
 			"name":              name,
 			"compiled_template": content,

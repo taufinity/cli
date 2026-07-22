@@ -15,8 +15,12 @@ import (
 // produce something to edit.
 //
 // Filenames are slugified from Name for a stable, greppable path, but the
-// header's own name: field is what apply actually reads, so a rename in
-// Studio surfaces as a content diff on next pull, not a silent orphan file.
+// header's own uuid: field is what apply actually matches on. A server-side
+// rename changes the slug (new filename) without changing the uuid, so the
+// old file would otherwise survive as an orphan — apply's *.html glob still
+// picks it up, its uuid still resolves, and its now-stale Name silently
+// reverts the rename on next apply. This function removes that orphan once
+// the rename's new file has been written.
 func pullProvisionPresentationTemplates(c *provisionClient, orgID uint, dir string, dryRun bool) error {
 	existing, err := listPresentationTemplates(c, orgID)
 	if err != nil {
@@ -25,6 +29,21 @@ func pullProvisionPresentationTemplates(c *provisionClient, orgID uint, dir stri
 	if len(existing) == 0 {
 		fmt.Println("provision: no presentation templates found for org")
 		return nil
+	}
+
+	// uuid -> path of whichever pre-existing local file currently carries it,
+	// captured before this pull writes anything.
+	priorPathByUUID := map[string]string{}
+	if prior, err := filepath.Glob(filepath.Join(dir, "*.html")); err == nil {
+		for _, p := range prior {
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			if meta, _ := parsePresentationTemplateFile(raw); meta.UUID != "" {
+				priorPathByUUID[meta.UUID] = p
+			}
+		}
 	}
 
 	if !dryRun {
@@ -47,9 +66,14 @@ func pullProvisionPresentationTemplates(c *provisionClient, orgID uint, dir stri
 			continue
 		}
 		seenPath[path] = d.UUID
+		stalePath, renamed := priorPathByUUID[d.UUID]
+		renamed = renamed && stalePath != path
 
 		if dryRun {
 			fmt.Printf("WOULD PULL %s uuid=%s → %s\n", d.Name, d.UUID, path)
+			if renamed {
+				fmt.Printf("  WOULD REMOVE stale renamed file %s (superseded by %s)\n", stalePath, path)
+			}
 			pulled++
 			continue
 		}
@@ -69,6 +93,14 @@ func pullProvisionPresentationTemplates(c *provisionClient, orgID uint, dir stri
 		}
 		fmt.Printf("PULL   %s uuid=%s → %s\n", d.Name, d.UUID, path)
 		pulled++
+
+		if renamed {
+			if err := os.Remove(stalePath); err != nil {
+				c.Warn("presentation template %q: failed to remove stale renamed file %s: %v", d.Name, stalePath, err)
+			} else {
+				fmt.Printf("REMOVE %s (renamed to %s)\n", stalePath, path)
+			}
+		}
 	}
 
 	verb := "pulled"
