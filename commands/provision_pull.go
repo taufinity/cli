@@ -35,9 +35,22 @@ credential_ref names so the pulled YAML round-trips cleanly through apply.`,
 	RunE: runProvisionPullPlaybooks,
 }
 
+var provisionPullPresentationTemplatesCmd = &cobra.Command{
+	Use:   "presentation-templates",
+	Short: "Snapshot Studio presentation templates to local HTML files",
+	Long: `Fetches every presentation template for the target org and writes one
+<slug>.html per template into <dir>/presentation-templates/. Each file starts
+with a "taufinity-provision" HTML comment header (name, uuid, is_default,
+branch) followed by the raw compiled_template HTML unchanged. Pulls
+unconditionally — unlike dashboards-pull, there's no "only refresh tracked"
+gate, since the common case is bootstrapping a source of truth from scratch.`,
+	RunE: runProvisionPullPresentationTemplates,
+}
+
 func init() {
 	provisionPullCmd.AddCommand(provisionPullDashboardsCmd)
 	provisionPullCmd.AddCommand(provisionPullPlaybooksCmd)
+	provisionPullCmd.AddCommand(provisionPullPresentationTemplatesCmd)
 }
 
 func runProvisionPullDashboards(cmd *cobra.Command, args []string) error {
@@ -71,6 +84,20 @@ func runProvisionPullPlaybooks(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return pullProvisionPlaybooks(c, orgID, outDir, IsDryRun())
+}
+
+func runProvisionPullPresentationTemplates(cmd *cobra.Command, args []string) error {
+	key, err := resolveProvisionAPIKey()
+	if err != nil {
+		return err
+	}
+	c := newProvisionClient(GetAPIURL(), key, IsDryRun())
+	orgID, err := resolveProvisionOrgID(c, provisionOrgSlug)
+	if err != nil {
+		return fmt.Errorf("resolve org %q: %w", provisionOrgSlug, err)
+	}
+	outDir := filepath.Join(provisionDir, "presentation-templates")
+	return pullProvisionPresentationTemplates(c, orgID, outDir, IsDryRun())
 }
 
 // ─── Playbook pull ───────────────────────────────────────────────────────────
