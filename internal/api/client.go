@@ -40,8 +40,8 @@ type Client struct {
 	// as CF-Access-Client-Id / CF-Access-Client-Secret on every request. They
 	// let this client reach a Studio instance that sits behind Cloudflare
 	// Access (e.g. staging). Sourced from the environment only, mirroring
-	// provisionClient's identically-named fields (commands/provision_client.go)
-	// — a service token is a credential and must never land in a flag. Empty
+	// provisionClient's identically-named fields (commands/provision_client.go).
+	// A service token is a credential and must never land in a flag. Empty
 	// when either is unset, in which case no CF-Access headers are sent and
 	// the request goes straight through (correct for any host not behind
 	// Access).
@@ -176,10 +176,19 @@ type Response struct {
 	Body       []byte
 }
 
-// Get performs a GET request (always executed, even in dry-run).
+// Get performs a GET request (always executed, even in dry-run). Unauthenticated
+// (no token), but still needs setCFAccessHeaders. This is what the device-code
+// login flow polls before any token exists, so it must be able to reach a
+// Cloudflare-Access-protected host too.
 func (c *Client) Get(ctx context.Context, path string) (*Response, error) {
 	url := c.baseURL + path
-	resp, err := c.httpClient.Get(ctx, url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setCFAccessHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +264,8 @@ func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, er
 	}, nil
 }
 
-// PostJSON performs a POST request with JSON body.
+// PostJSON performs a POST request with JSON body. Unauthenticated (no
+// token), but still needs setCFAccessHeaders, see Get's doc comment.
 func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -268,7 +278,14 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response
 	}
 
 	url := c.baseURL + path
-	resp, err := c.httpClient.PostJSON(ctx, url, jsonBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setCFAccessHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -669,6 +669,30 @@ func TestClient_CFAccessHeaders(t *testing.T) {
 		}
 	})
 
+	t.Run("both env vars set sends headers on unauthenticated Get", func(t *testing.T) {
+		setCFEnv(t, "cf-id-123", "cf-secret-456")
+		got = capture{}
+		client := New(server.URL)
+		if _, err := client.Get(context.Background(), "/api/x"); err != nil {
+			t.Fatalf("Get failed: %v", err)
+		}
+		if got.cfID != "cf-id-123" || got.cfSecret != "cf-secret-456" {
+			t.Errorf("CF headers = (%q, %q), want (%q, %q)", got.cfID, got.cfSecret, "cf-id-123", "cf-secret-456")
+		}
+	})
+
+	t.Run("both env vars set sends headers on unauthenticated PostJSON", func(t *testing.T) {
+		setCFEnv(t, "cf-id-123", "cf-secret-456")
+		got = capture{}
+		client := New(server.URL)
+		if _, err := client.PostJSON(context.Background(), "/api/x", map[string]string{"k": "v"}); err != nil {
+			t.Fatalf("PostJSON failed: %v", err)
+		}
+		if got.cfID != "cf-id-123" || got.cfSecret != "cf-secret-456" {
+			t.Errorf("CF headers = (%q, %q), want (%q, %q)", got.cfID, got.cfSecret, "cf-id-123", "cf-secret-456")
+		}
+	})
+
 	t.Run("only id set (secret missing) sends no CF headers", func(t *testing.T) {
 		setCFEnv(t, "cf-id-123", "")
 		got = capture{}
