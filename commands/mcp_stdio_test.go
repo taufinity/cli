@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,13 +27,15 @@ import (
 type mockUpstream struct {
 	server *httptest.Server
 
-	mu             sync.Mutex
-	authHeaders    []string
-	userAgents     []string
-	methods        []string
-	requestBodies  [][]byte
-	responseStatus atomic.Int32
-	responseBody   atomic.Value // string
+	mu              sync.Mutex
+	authHeaders     []string
+	userAgents      []string
+	cfIDHeaders     []string
+	cfSecretHeaders []string
+	methods         []string
+	requestBodies   [][]byte
+	responseStatus  atomic.Int32
+	responseBody    atomic.Value // string
 }
 
 func newMockUpstream() *mockUpstream {
@@ -48,6 +51,8 @@ func (m *mockUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	m.mu.Lock()
 	m.authHeaders = append(m.authHeaders, r.Header.Get("Authorization"))
 	m.userAgents = append(m.userAgents, r.Header.Get("User-Agent"))
+	m.cfIDHeaders = append(m.cfIDHeaders, r.Header.Get("CF-Access-Client-Id"))
+	m.cfSecretHeaders = append(m.cfSecretHeaders, r.Header.Get("CF-Access-Client-Secret"))
 	m.requestBodies = append(m.requestBodies, body)
 	var frame struct {
 		Method string `json:"method"`
@@ -230,6 +235,91 @@ func TestStdioBridge_ForwardsToolsList(t *testing.T) {
 
 	_ = in.Close()
 	<-done
+}
+
+func TestStdioBridge_ForwardsCFAccessHeaders(t *testing.T) {
+	setCFEnv := func(t *testing.T, id, secret string) {
+		t.Helper()
+		oldID, hadID := os.LookupEnv("CF_ACCESS_CLIENT_ID")
+		oldSecret, hadSecret := os.LookupEnv("CF_ACCESS_CLIENT_SECRET")
+		os.Setenv("CF_ACCESS_CLIENT_ID", id)
+		os.Setenv("CF_ACCESS_CLIENT_SECRET", secret)
+		t.Cleanup(func() {
+			if hadID {
+				os.Setenv("CF_ACCESS_CLIENT_ID", oldID)
+			} else {
+				os.Unsetenv("CF_ACCESS_CLIENT_ID")
+			}
+			if hadSecret {
+				os.Setenv("CF_ACCESS_CLIENT_SECRET", oldSecret)
+			} else {
+				os.Unsetenv("CF_ACCESS_CLIENT_SECRET")
+			}
+		})
+	}
+
+	t.Run("both env vars set forwards CF headers", func(t *testing.T) {
+		setCFEnv(t, "cf-id-abc", "cf-secret-xyz")
+
+		mu := newMockUpstream()
+		defer mu.close()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		mu.responseBody.Store(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
+
+		in, out, _, done := runBridgeAsync(t, ctx, mu.url())
+		frame := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"
+		if _, err := in.Write([]byte(frame)); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+		readNextFrame(t, out.(*threadSafeBuffer), 5*time.Second)
+		_ = in.Close()
+		<-done
+
+		mu.mu.Lock()
+		gotID := append([]string(nil), mu.cfIDHeaders...)
+		gotSecret := append([]string(nil), mu.cfSecretHeaders...)
+		mu.mu.Unlock()
+
+		if len(gotID) == 0 || gotID[0] != "cf-id-abc" {
+			t.Errorf("upstream CF-Access-Client-Id = %v, want cf-id-abc", gotID)
+		}
+		if len(gotSecret) == 0 || gotSecret[0] != "cf-secret-xyz" {
+			t.Errorf("upstream CF-Access-Client-Secret = %v, want cf-secret-xyz", gotSecret)
+		}
+	})
+
+	t.Run("neither env var set sends no CF headers", func(t *testing.T) {
+		os.Unsetenv("CF_ACCESS_CLIENT_ID")
+		os.Unsetenv("CF_ACCESS_CLIENT_SECRET")
+
+		mu := newMockUpstream()
+		defer mu.close()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		mu.responseBody.Store(`{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`)
+
+		in, out, _, done := runBridgeAsync(t, ctx, mu.url())
+		frame := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}` + "\n"
+		if _, err := in.Write([]byte(frame)); err != nil {
+			t.Fatalf("write stdin: %v", err)
+		}
+		readNextFrame(t, out.(*threadSafeBuffer), 5*time.Second)
+		_ = in.Close()
+		<-done
+
+		mu.mu.Lock()
+		gotID := append([]string(nil), mu.cfIDHeaders...)
+		gotSecret := append([]string(nil), mu.cfSecretHeaders...)
+		mu.mu.Unlock()
+
+		if len(gotID) == 0 || gotID[0] != "" {
+			t.Errorf("upstream CF-Access-Client-Id = %v, want empty", gotID)
+		}
+		if len(gotSecret) == 0 || gotSecret[0] != "" {
+			t.Errorf("upstream CF-Access-Client-Secret = %v, want empty", gotSecret)
+		}
+	})
 }
 
 func TestStdioBridge_AuthFailedMapsTo32001(t *testing.T) {

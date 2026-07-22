@@ -35,6 +35,18 @@ type Client struct {
 	dryRun     bool
 	dryRunOut  io.Writer
 	log        *slog.Logger // nil = no debug logging
+
+	// cfAccessID and cfAccessSecret are a Cloudflare Access service token, sent
+	// as CF-Access-Client-Id / CF-Access-Client-Secret on every request. They
+	// let this client reach a Studio instance that sits behind Cloudflare
+	// Access (e.g. staging). Sourced from the environment only, mirroring
+	// provisionClient's identically-named fields (commands/provision_client.go).
+	// A service token is a credential and must never land in a flag. Empty
+	// when either is unset, in which case no CF-Access headers are sent and
+	// the request goes straight through (correct for any host not behind
+	// Access).
+	cfAccessID     string
+	cfAccessSecret string
 }
 
 // SetOrg sets the organization ID to include in requests.
@@ -49,6 +61,18 @@ func (c *Client) setOrgHeader(req *http.Request) {
 	}
 }
 
+// setCFAccessHeaders attaches the Cloudflare Access service token to a
+// request, but only when both halves are present. Sent on reads and writes
+// alike, since Cloudflare Access gates every request, a GET would 403 before
+// it ever reached the app if the header only rode the write path.
+func (c *Client) setCFAccessHeaders(req *http.Request) {
+	if c.cfAccessID == "" || c.cfAccessSecret == "" {
+		return
+	}
+	req.Header.Set("CF-Access-Client-Id", c.cfAccessID)
+	req.Header.Set("CF-Access-Client-Secret", c.cfAccessSecret)
+}
+
 // New creates a new API client for the given base URL.
 func New(baseURL string) *Client {
 	cfg := httpclient.DefaultConfig()
@@ -60,6 +84,10 @@ func New(baseURL string) *Client {
 		baseURL:    baseURL,
 		httpClient: httpclient.New(cfg),
 		dryRunOut:  os.Stdout,
+		// CF-Access service token from the environment. Same variable names
+		// commands/provision_client.go already reads for its own bypass.
+		cfAccessID:     os.Getenv("CF_ACCESS_CLIENT_ID"),
+		cfAccessSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"),
 	}
 	if os.Getenv("TAUFINITY_DEBUG") == "1" {
 		c.SetDebug(true)
@@ -148,10 +176,19 @@ type Response struct {
 	Body       []byte
 }
 
-// Get performs a GET request (always executed, even in dry-run).
+// Get performs a GET request (always executed, even in dry-run). Unauthenticated
+// (no token), but still needs setCFAccessHeaders. This is what the device-code
+// login flow polls before any token exists, so it must be able to reach a
+// Cloudflare-Access-protected host too.
 func (c *Client) Get(ctx context.Context, path string) (*Response, error) {
 	url := c.baseURL + path
-	resp, err := c.httpClient.Get(ctx, url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setCFAccessHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +215,7 @@ func (c *Client) GetWithAuth(ctx context.Context, path string) (*Response, error
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
+	c.setCFAccessHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -212,6 +250,7 @@ func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, er
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
+	c.setCFAccessHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -225,7 +264,8 @@ func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, er
 	}, nil
 }
 
-// PostJSON performs a POST request with JSON body.
+// PostJSON performs a POST request with JSON body. Unauthenticated (no
+// token), but still needs setCFAccessHeaders, see Get's doc comment.
 func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -238,7 +278,14 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response
 	}
 
 	url := c.baseURL + path
-	resp, err := c.httpClient.PostJSON(ctx, url, jsonBody)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setCFAccessHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -276,6 +323,7 @@ func (c *Client) PostJSONWithAuth(ctx context.Context, path string, body any) (*
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
+	c.setCFAccessHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -340,6 +388,7 @@ func (c *Client) UploadFile(ctx context.Context, path, filePath string) (*Respon
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
+	c.setCFAccessHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -373,6 +422,7 @@ func (c *Client) PostMultipart(ctx context.Context, path string, body io.Reader,
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
+	c.setCFAccessHeaders(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

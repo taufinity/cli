@@ -607,7 +607,7 @@ func (b *bridge) requestHeaders(ctx context.Context) map[string]string {
 // buildHeaders constructs the per-request header map. token may be empty
 // if the source failed and we have no prior cache.
 func (b *bridge) buildHeaders(token string) map[string]string {
-	h := make(map[string]string, 3)
+	h := make(map[string]string, 5)
 	if token != "" {
 		h["Authorization"] = "Bearer " + token
 	}
@@ -616,6 +616,17 @@ func (b *bridge) buildHeaders(token string) map[string]string {
 	}
 	if b.orgID != "" {
 		h["X-Organization-ID"] = b.orgID
+	}
+	// Cloudflare Access service token, lets this bridge reach a Studio
+	// instance behind Cloudflare Access (e.g. staging). Same env vars
+	// internal/api.Client and commands/provision_client.go already read for
+	// their own bypass. Without this, requests never reach the app at all,
+	// Cloudflare serves its own interactive login page (text/html) instead
+	// of proxying to /mcp, which surfaces here as an "unexpected content
+	// type" error rather than a clean 401 from the app.
+	if cfID, cfSecret := os.Getenv("CF_ACCESS_CLIENT_ID"), os.Getenv("CF_ACCESS_CLIENT_SECRET"); cfID != "" && cfSecret != "" {
+		h["CF-Access-Client-Id"] = cfID
+		h["CF-Access-Client-Secret"] = cfSecret
 	}
 	return h
 }
@@ -763,10 +774,10 @@ func (b *bridge) forwardRequest(ctx context.Context, raw []byte, frame jsonRPCFr
 	// Re-marshal: ensure id is preserved and that the original wire shape (jsonrpc/id/result|error)
 	// is what we hand back to stdout.
 	out := struct {
-		JSONRPC string                       `json:"jsonrpc"`
-		ID      mcp.RequestId                `json:"id"`
-		Result  json.RawMessage              `json:"result,omitempty"`
-		Error   *mcp.JSONRPCErrorDetails     `json:"error,omitempty"`
+		JSONRPC string                   `json:"jsonrpc"`
+		ID      mcp.RequestId            `json:"id"`
+		Result  json.RawMessage          `json:"result,omitempty"`
+		Error   *mcp.JSONRPCErrorDetails `json:"error,omitempty"`
 	}{
 		JSONRPC: "2.0",
 		ID:      req.ID,
@@ -856,9 +867,9 @@ func (b *bridge) writeErrorResponse(id mcp.RequestId, args ...any) {
 	}
 
 	frame := struct {
-		JSONRPC string                   `json:"jsonrpc"`
-		ID      mcp.RequestId            `json:"id"`
-		Error   mcp.JSONRPCErrorDetails  `json:"error"`
+		JSONRPC string                  `json:"jsonrpc"`
+		ID      mcp.RequestId           `json:"id"`
+		Error   mcp.JSONRPCErrorDetails `json:"error"`
 	}{
 		JSONRPC: "2.0",
 		ID:      id,
