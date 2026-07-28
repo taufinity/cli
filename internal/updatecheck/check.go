@@ -27,7 +27,7 @@ import (
 
 // Defaults.
 const (
-	DefaultAPIURL     = "https://api.github.com/repos/taufinity/cli/commits/main"
+	DefaultAPIURL      = "https://api.github.com/repos/taufinity/cli/commits/main"
 	DefaultCacheMaxAge = 24 * time.Hour
 	DefaultHTTPTimeout = 2 * time.Second
 
@@ -87,8 +87,8 @@ type Runner struct {
 	Now        func() time.Time // for tests
 	Debug      io.Writer        // non-nil to write debug lines on failure
 
-	wg    sync.WaitGroup
-	done  chan struct{}
+	wg   sync.WaitGroup
+	done chan struct{}
 }
 
 // Start kicks off the network check in a background goroutine. The goroutine
