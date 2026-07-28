@@ -69,43 +69,66 @@ func (r *playbookResource) Configure(_ context.Context, req resource.ConfigureRe
 	r.client = c
 }
 
-func playbookToState(p *studioadmin.Playbook) playbookModel {
-	sched := types.StringNull()
-	if p.Schedule != nil {
-		sched = types.StringValue(*p.Schedule)
+func strPtrToTF(v *string) types.String {
+	if v == nil {
+		return types.StringNull()
 	}
+	return types.StringValue(*v)
+}
+
+func boolPtrToTF(v *bool) types.Bool {
+	if v == nil {
+		return types.BoolNull()
+	}
+	return types.BoolValue(*v)
+}
+
+func playbookToState(p *studioadmin.Playbook) playbookModel {
 	return playbookModel{
 		ID:               types.StringValue(strconv.FormatInt(p.ID, 10)),
 		Name:             types.StringValue(p.Name),
-		Description:      types.StringValue(p.Description),
-		TriggerType:      types.StringValue(p.TriggerType),
-		OutputKey:        types.StringValue(p.OutputKey),
-		Schedule:         sched,
-		ScheduleTimezone: types.StringValue(p.ScheduleTimezone),
-		SchedulePaused:   types.BoolValue(p.SchedulePaused),
-		Enabled:          types.BoolValue(p.Enabled),
-		AgentTriggerable: types.BoolValue(p.AgentTriggerable),
-		AgentInputSchema: types.StringValue(p.AgentInputSchema),
+		Description:      strPtrToTF(p.Description),
+		TriggerType:      strPtrToTF(p.TriggerType),
+		OutputKey:        strPtrToTF(p.OutputKey),
+		Schedule:         strPtrToTF(p.Schedule),
+		ScheduleTimezone: strPtrToTF(p.ScheduleTimezone),
+		SchedulePaused:   boolPtrToTF(p.SchedulePaused),
+		Enabled:          boolPtrToTF(p.Enabled),
+		AgentTriggerable: boolPtrToTF(p.AgentTriggerable),
+		AgentInputSchema: strPtrToTF(p.AgentInputSchema),
 	}
 }
 
-func playbookFromPlan(m playbookModel) *studioadmin.Playbook {
-	var sched *string
-	if !m.Schedule.IsNull() && !m.Schedule.IsUnknown() {
-		v := m.Schedule.ValueString()
-		sched = &v
+// tfStr returns a *string only when the attribute was set by the user (known and
+// non-null), so the write path omits omitted fields.
+func tfStr(v types.String) *string {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
 	}
+	s := v.ValueString()
+	return &s
+}
+
+func tfBool(v types.Bool) *bool {
+	if v.IsNull() || v.IsUnknown() {
+		return nil
+	}
+	b := v.ValueBool()
+	return &b
+}
+
+func playbookFromPlan(m playbookModel) *studioadmin.Playbook {
 	return &studioadmin.Playbook{
 		Name:             m.Name.ValueString(),
-		Description:      m.Description.ValueString(),
-		TriggerType:      m.TriggerType.ValueString(),
-		OutputKey:        m.OutputKey.ValueString(),
-		Schedule:         sched,
-		ScheduleTimezone: m.ScheduleTimezone.ValueString(),
-		SchedulePaused:   m.SchedulePaused.ValueBool(),
-		Enabled:          m.Enabled.ValueBool(),
-		AgentTriggerable: m.AgentTriggerable.ValueBool(),
-		AgentInputSchema: m.AgentInputSchema.ValueString(),
+		Description:      tfStr(m.Description),
+		TriggerType:      tfStr(m.TriggerType),
+		OutputKey:        tfStr(m.OutputKey),
+		Schedule:         tfStr(m.Schedule),
+		ScheduleTimezone: tfStr(m.ScheduleTimezone),
+		SchedulePaused:   tfBool(m.SchedulePaused),
+		Enabled:          tfBool(m.Enabled),
+		AgentTriggerable: tfBool(m.AgentTriggerable),
+		AgentInputSchema: tfStr(m.AgentInputSchema),
 	}
 }
 

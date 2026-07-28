@@ -12,18 +12,22 @@ import (
 //
 // `schedule_paused` is deliberately its own field: the update PUT ignores it (pausing
 // has scheduling side effects), so it is applied via a dedicated endpoint.
+// Optional fields are pointers: nil means "not set by the user", so the write path
+// omits them and the API keeps its own default (avoids clobbering a field the user
+// didn't specify — e.g. omitting `enabled` must not disable the playbook). Read
+// always populates them from the API response.
 type Playbook struct {
 	ID               int64
 	Name             string
-	Description      string
-	TriggerType      string
-	OutputKey        string
-	ScheduleTimezone string
-	AgentInputSchema string
+	Description      *string
+	TriggerType      *string
+	OutputKey        *string
+	ScheduleTimezone *string
+	AgentInputSchema *string
 	Schedule         *string // nullable cron
-	SchedulePaused   bool
-	Enabled          bool
-	AgentTriggerable bool
+	SchedulePaused   *bool
+	Enabled          *bool
+	AgentTriggerable *bool
 }
 
 type playbookAPI struct {
@@ -41,18 +45,19 @@ type playbookAPI struct {
 }
 
 func (a *playbookAPI) toPlaybook() *Playbook {
+	// Read always populates every field (the API returns concrete values).
 	return &Playbook{
 		ID:               a.ID,
 		Name:             a.Name,
-		Description:      a.Description,
-		TriggerType:      a.TriggerType,
-		OutputKey:        a.OutputKey,
-		ScheduleTimezone: a.ScheduleTimezone,
-		AgentInputSchema: a.AgentInputSchema,
+		Description:      &a.Description,
+		TriggerType:      &a.TriggerType,
+		OutputKey:        &a.OutputKey,
+		ScheduleTimezone: &a.ScheduleTimezone,
+		AgentInputSchema: &a.AgentInputSchema,
 		Schedule:         a.Schedule,
-		SchedulePaused:   a.SchedulePaused,
-		Enabled:          a.Enabled,
-		AgentTriggerable: a.AgentTriggerable,
+		SchedulePaused:   &a.SchedulePaused,
+		Enabled:          &a.Enabled,
+		AgentTriggerable: &a.AgentTriggerable,
 	}
 }
 
@@ -65,49 +70,41 @@ func (c *Client) GetPlaybook(ctx context.Context, id int64) (*Playbook, error) {
 	return raw.toPlaybook(), nil
 }
 
-// updatePayload is the PUT /playbooks/{id} body (schedule_paused excluded — applied
-// via the pause endpoint).
+// updatePayload is the PUT /playbooks/{id} body. Only user-set fields are included
+// (nil pointer = omitted, so the API keeps its default). schedule_paused is excluded
+// entirely — it has its own endpoint.
 func (p *Playbook) updatePayload() map[string]any {
-	out := map[string]any{
-		"name":              p.Name,
-		"description":       p.Description,
-		"trigger_type":      defaultStr(p.TriggerType, "manual"),
-		"output_key":        defaultStr(p.OutputKey, "summary"),
-		"schedule_timezone": defaultStr(p.ScheduleTimezone, "UTC"),
-		"enabled":           p.Enabled,
-		"agent_triggerable": p.AgentTriggerable,
+	out := map[string]any{"name": p.Name}
+	putStr(out, "description", p.Description)
+	putStr(out, "trigger_type", p.TriggerType)
+	putStr(out, "output_key", p.OutputKey)
+	putStr(out, "schedule_timezone", p.ScheduleTimezone)
+	putStr(out, "schedule", p.Schedule)
+	putStr(out, "agent_input_schema", p.AgentInputSchema)
+	if p.Enabled != nil {
+		out["enabled"] = *p.Enabled
 	}
-	if p.Schedule != nil {
-		out["schedule"] = *p.Schedule
-	}
-	if p.AgentInputSchema != "" {
-		out["agent_input_schema"] = p.AgentInputSchema
+	if p.AgentTriggerable != nil {
+		out["agent_triggerable"] = *p.AgentTriggerable
 	}
 	return out
 }
 
-func defaultStr(v, def string) string {
-	if v == "" {
-		return def
+func putStr(m map[string]any, key string, v *string) {
+	if v != nil {
+		m[key] = *v
 	}
-	return v
 }
 
 // CreatePlaybook creates a playbook (POST /playbooks/) and applies schedule_paused.
 // Steps are not created here (follow-up). Returns the new id.
 func (c *Client) CreatePlaybook(ctx context.Context, p *Playbook) (int64, error) {
-	create := map[string]any{
-		"name":         p.Name,
-		"description":  p.Description,
-		"trigger_type": defaultStr(p.TriggerType, "manual"),
-		"output_key":   defaultStr(p.OutputKey, "summary"),
-	}
-	if p.Schedule != nil {
-		create["schedule"] = *p.Schedule
-	}
-	if p.AgentInputSchema != "" {
-		create["agent_input_schema"] = p.AgentInputSchema
-	}
+	create := map[string]any{"name": p.Name}
+	putStr(create, "description", p.Description)
+	putStr(create, "trigger_type", p.TriggerType)
+	putStr(create, "output_key", p.OutputKey)
+	putStr(create, "schedule", p.Schedule)
+	putStr(create, "agent_input_schema", p.AgentInputSchema)
 	var created struct {
 		ID int64 `json:"id"`
 	}
@@ -134,7 +131,11 @@ func (c *Client) UpdatePlaybook(ctx context.Context, p *Playbook) error {
 	if err := c.Write(ctx, "PUT", fmt.Sprintf("/playbooks/%d", p.ID), p.updatePayload(), nil, nil); err != nil {
 		return err
 	}
-	return c.SetPlaybookPaused(ctx, p.ID, p.SchedulePaused)
+	// Only touch the pause state when the user set it (nil = leave as-is).
+	if p.SchedulePaused != nil {
+		return c.SetPlaybookPaused(ctx, p.ID, *p.SchedulePaused)
+	}
+	return nil
 }
 
 // SetPlaybookPaused pauses/resumes the schedule (POST /playbooks/{id}/schedule/pause).

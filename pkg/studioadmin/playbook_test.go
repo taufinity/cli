@@ -8,6 +8,9 @@ import (
 	"testing"
 )
 
+func strPtr(s string) *string { return &s }
+func boolPtr(b bool) *bool    { return &b }
+
 // A null schedule from the API must come back as a nil *string (not "").
 func TestGetPlaybook_NullSchedule(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -21,14 +24,14 @@ func TestGetPlaybook_NullSchedule(t *testing.T) {
 	if p.Schedule != nil {
 		t.Fatalf("schedule = %v, want nil", *p.Schedule)
 	}
-	if p.Name != "Auto-Approve" || !p.Enabled {
+	if p.Name != "Auto-Approve" || p.Enabled == nil || !*p.Enabled {
 		t.Fatalf("unexpected: %+v", p)
 	}
 }
 
-// The update PUT must NOT include schedule_paused (it has its own endpoint), and
-// UpdatePlaybook must call the pause endpoint separately.
-func TestUpdatePlaybook_PauseIsSeparateEndpoint(t *testing.T) {
+// Only user-set fields go on the wire; omitted (nil) fields must NOT be sent so the
+// API keeps its default. schedule_paused is never in the PUT (own endpoint).
+func TestUpdatePlaybook_OmitsUnsetFields(t *testing.T) {
 	var putBody map[string]any
 	pausedCalled := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,33 +45,42 @@ func TestUpdatePlaybook_PauseIsSeparateEndpoint(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	// Set only name + enabled + schedule_paused; leave the rest nil.
 	err := New(srv.URL, "tok", "").UpdatePlaybook(context.Background(),
-		&Playbook{ID: 92, Name: "x", SchedulePaused: true})
+		&Playbook{ID: 92, Name: "x", Enabled: boolPtr(false), SchedulePaused: boolPtr(true)})
 	if err != nil {
 		t.Fatalf("UpdatePlaybook: %v", err)
 	}
 	if _, present := putBody["schedule_paused"]; present {
 		t.Fatalf("schedule_paused must NOT be in the update PUT payload")
 	}
+	for _, omitted := range []string{"description", "trigger_type", "output_key", "schedule_timezone"} {
+		if _, present := putBody[omitted]; present {
+			t.Fatalf("unset field %q must be omitted from the PUT, got %v", omitted, putBody[omitted])
+		}
+	}
+	if putBody["enabled"] != false {
+		t.Fatalf("enabled = %v, want false (it was set)", putBody["enabled"])
+	}
 	if !pausedCalled {
 		t.Fatalf("pause endpoint was not called")
 	}
 }
 
-// Defaults are applied for trigger_type/output_key/timezone in the update payload.
-func TestUpdatePlaybook_Defaults(t *testing.T) {
-	var putBody map[string]any
+// When schedule_paused is nil, the pause endpoint must NOT be touched.
+func TestUpdatePlaybook_NilPauseNotCalled(t *testing.T) {
+	pausedCalled := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "PUT" {
-			_ = json.NewDecoder(r.Body).Decode(&putBody)
+		if r.URL.Path == "/api/playbooks/1/schedule/pause" {
+			pausedCalled = true
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
 	_ = New(srv.URL, "tok", "").UpdatePlaybook(context.Background(), &Playbook{ID: 1, Name: "x"})
-	for k, want := range map[string]string{"trigger_type": "manual", "output_key": "summary", "schedule_timezone": "UTC"} {
-		if putBody[k] != want {
-			t.Fatalf("%s = %v, want %q", k, putBody[k], want)
-		}
+	if pausedCalled {
+		t.Fatalf("pause endpoint must not be called when schedule_paused is nil")
 	}
 }
+
+var _ = strPtr // reserved for future tests
