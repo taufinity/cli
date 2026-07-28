@@ -90,6 +90,7 @@ func (p *taufinityProvider) Configure(ctx context.Context, req provider.Configur
 func (p *taufinityProvider) Resources(_ context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewBQProviderResource,
+		NewPlaybookResource,
 	}
 }
 
