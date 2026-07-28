@@ -9,7 +9,9 @@ package studioadmin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,6 +50,13 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("studio admin API %s %s: HTTP %d: %s", e.Method, e.Path, e.Status, e.Body)
 }
 
+// IsNotFound reports whether err is a 404 from the admin API — used by callers to
+// detect a resource deleted outside Terraform and remove it from state.
+func IsNotFound(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound
+}
+
 func isNumeric(s string) bool {
 	if s == "" {
 		return false
@@ -61,13 +70,13 @@ func isNumeric(s string) bool {
 }
 
 // Get performs GET /api<path> and unmarshals the JSON body into out (if non-nil).
-func (c *Client) Get(path string, out any) error {
-	return c.do("GET", path, nil, out, nil)
+func (c *Client) Get(ctx context.Context, path string, out any) error {
+	return c.do(ctx, "GET", path, nil, out, nil)
 }
 
 // Write performs method /api<path> with a JSON body and unmarshals the response into
 // out (if non-nil). extraHeaders is optional (e.g. X-Organization-ID).
-func (c *Client) Write(method, path string, body any, out any, extraHeaders map[string]string) error {
+func (c *Client) Write(ctx context.Context, method, path string, body any, out any, extraHeaders map[string]string) error {
 	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -76,15 +85,15 @@ func (c *Client) Write(method, path string, body any, out any, extraHeaders map[
 		}
 		payload = b
 	}
-	return c.do(method, path, payload, out, extraHeaders)
+	return c.do(ctx, method, path, payload, out, extraHeaders)
 }
 
-func (c *Client) do(method, path string, payload []byte, out any, extra map[string]string) error {
+func (c *Client) do(ctx context.Context, method, path string, payload []byte, out any, extra map[string]string) error {
 	var reader io.Reader
 	if payload != nil {
 		reader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequest(method, c.base+"/api"+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, c.base+"/api"+path, reader)
 	if err != nil {
 		return fmt.Errorf("studioadmin: build request: %w", err)
 	}
@@ -111,7 +120,10 @@ func (c *Client) do(method, path string, payload []byte, out any, extra map[stri
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("studioadmin: read %s %s response body: %w", method, path, readErr)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Body: string(respBody)}
 	}

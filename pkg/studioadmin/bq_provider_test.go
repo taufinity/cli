@@ -1,6 +1,7 @@
 package studioadmin
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -28,7 +29,7 @@ func TestGetBQProvider_AllowedTablesRoundTrip(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "tok", "")
-	p, err := c.GetBQProvider(9)
+	p, err := c.GetBQProvider(context.Background(), 9)
 	if err != nil {
 		t.Fatalf("GetBQProvider: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestGetBQProvider_EmptyAllowedTables(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":1,"allowed_tables":""}`))
 	}))
 	defer srv.Close()
-	p, err := New(srv.URL, "tok", "").GetBQProvider(1)
+	p, err := New(srv.URL, "tok", "").GetBQProvider(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("GetBQProvider: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestUpdateBQProvider_EncodesAllowedTablesAsString(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	err := New(srv.URL, "tok", "").UpdateBQProvider(&BQProvider{ID: 9, AllowedTables: []string{"x", "y"}})
+	err := New(srv.URL, "tok", "").UpdateBQProvider(context.Background(), &BQProvider{ID: 9, AllowedTables: []string{"x", "y"}})
 	if err != nil {
 		t.Fatalf("UpdateBQProvider: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestClient_OrgHeaderSelection(t *testing.T) {
 				_, _ = w.Write([]byte(`{}`))
 			}))
 			defer srv.Close()
-			_ = New(srv.URL, "tok", tc.org).Get("/whatever", nil)
+			_ = New(srv.URL, "tok", tc.org).Get(context.Background(), "/whatever", nil)
 			if tc.wantHeader == "X-Organization-Id" && gotID != tc.wantValue {
 				t.Fatalf("X-Organization-ID = %q, want %q", gotID, tc.wantValue)
 			}
@@ -116,7 +117,7 @@ func TestClient_APIError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"nope"}`))
 	}))
 	defer srv.Close()
-	err := New(srv.URL, "tok", "").Get("/x", nil)
+	err := New(srv.URL, "tok", "").Get(context.Background(), "/x", nil)
 	apiErr, ok := err.(*APIError)
 	if !ok {
 		t.Fatalf("want *APIError, got %T: %v", err, err)

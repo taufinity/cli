@@ -112,6 +112,7 @@ func fromPlan(ctx context.Context, m bqProviderModel) *studioadmin.BQProvider {
 		HTTPMethod:     method,
 		MaxBytesBilled: m.MaxBytesBilled.ValueInt64(),
 		AllowedTables:  tables,
+		Enabled:        m.Enabled.ValueBool(),
 	}
 }
 
@@ -126,8 +127,13 @@ func (r *bqProviderResource) Read(ctx context.Context, req resource.ReadRequest,
 		resp.Diagnostics.AddError("Invalid id", err.Error())
 		return
 	}
-	p, err := r.client.GetBQProvider(id)
+	p, err := r.client.GetBQProvider(ctx, id)
 	if err != nil {
+		if studioadmin.IsNotFound(err) {
+			// Deleted outside Terraform — drop from state so plan recreates it.
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError("Read failed", err.Error())
 		return
 	}
@@ -153,12 +159,12 @@ func (r *bqProviderResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 	p := fromPlan(ctx, plan)
 	p.ID = id
-	if err := r.client.UpdateBQProvider(p); err != nil {
+	if err := r.client.UpdateBQProvider(ctx, p); err != nil {
 		resp.Diagnostics.AddError("Update failed", err.Error())
 		return
 	}
 	// Read back to capture server-normalised state.
-	fresh, err := r.client.GetBQProvider(id)
+	fresh, err := r.client.GetBQProvider(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError("Read-after-update failed", err.Error())
 		return
@@ -178,12 +184,12 @@ func (r *bqProviderResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 	p := fromPlan(ctx, plan)
-	id, err := r.client.CreateBQProvider(p)
+	id, err := r.client.CreateBQProvider(ctx, p)
 	if err != nil {
 		resp.Diagnostics.AddError("Create failed", err.Error())
 		return
 	}
-	fresh, err := r.client.GetBQProvider(id)
+	fresh, err := r.client.GetBQProvider(ctx, id)
 	if err != nil {
 		resp.Diagnostics.AddError("Read-after-create failed", err.Error())
 		return
@@ -207,7 +213,7 @@ func (r *bqProviderResource) Delete(ctx context.Context, req resource.DeleteRequ
 		resp.Diagnostics.AddError("Invalid id", err.Error())
 		return
 	}
-	if err := r.client.DeleteBQProvider(id); err != nil {
+	if err := r.client.DeleteBQProvider(ctx, id); err != nil {
 		resp.Diagnostics.AddError("Delete failed", err.Error())
 		return
 	}
