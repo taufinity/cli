@@ -115,6 +115,9 @@ func TestBackupCodeProofDispatch_ByLength(t *testing.T) {
 	}{
 		{"123456", "totp_code", "123456"},
 		{"aaaaaaaa-bbbbbbbb", "backup_code", "aaaaaaaa-bbbbbbbb"},
+		// Some authenticator apps display a grouped code like "123 456" —
+		// must still dispatch as TOTP, not misfire as a backup code.
+		{"123 456", "totp_code", "123456"},
 	}
 	for _, c := range cases {
 		field, value := backupCodeProofField(c.input)

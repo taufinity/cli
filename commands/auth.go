@@ -597,13 +597,17 @@ func runAuthToken(cmd *cobra.Command, args []string) error {
 // belongs in: a live TOTP code is 6 digits; a backup code is formatted
 // "xxxxxxxx-xxxxxxxx" (17 chars including the dash). Length-based dispatch is
 // good enough to pick the right field without asking the user to specify
-// which kind they're entering. Extracted as a pure function so the dispatch
-// logic is unit-testable without stdin plumbing.
+// which kind they're entering. Strips internal spaces first — some
+// authenticator apps display a TOTP code grouped as "123 456", and passing
+// that through unstripped would misfire the length check. Extracted as a
+// pure function so the dispatch logic is unit-testable without stdin
+// plumbing.
 func backupCodeProofField(input string) (field, value string) {
-	if len(input) > 6 {
-		return "backup_code", input
+	cleaned := strings.ReplaceAll(input, " ", "")
+	if len(cleaned) > 6 {
+		return "backup_code", cleaned
 	}
-	return "totp_code", input
+	return "totp_code", cleaned
 }
 
 // reportAuthFailure reports an auth failure event to telemetry, attaching the
