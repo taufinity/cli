@@ -48,6 +48,18 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("studio admin API %s %s: HTTP %d: %s", e.Method, e.Path, e.Status, e.Body)
 }
 
+func isNumeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // Get performs GET /api<path> and unmarshals the JSON body into out (if non-nil).
 func (c *Client) Get(path string, out any) error {
 	return c.do("GET", path, nil, out, nil)
@@ -80,7 +92,14 @@ func (c *Client) do(method, path string, payload []byte, out any, extra map[stri
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Change-Source", "terraform")
 	if c.org != "" {
-		req.Header.Set("X-Organization-Slug", c.org)
+		// Org-scoped endpoints (e.g. custom-ai-providers) require the numeric
+		// X-Organization-ID; others also accept the slug. Send the id form when the
+		// org looks numeric, the slug form otherwise.
+		if isNumeric(c.org) {
+			req.Header.Set("X-Organization-ID", c.org)
+		} else {
+			req.Header.Set("X-Organization-Slug", c.org)
+		}
 	}
 	for k, v := range extra {
 		req.Header.Set(k, v)
