@@ -201,7 +201,10 @@ func (c *provisionClient) uploadMultipartForOrg(path, fileField, filename string
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, resp.StatusCode, fmt.Errorf("multipart upload: read response body: %w", readErr)
+	}
 	return body, resp.StatusCode, nil
 }
 
