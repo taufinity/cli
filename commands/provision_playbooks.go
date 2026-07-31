@@ -62,10 +62,33 @@ type playbookConfig struct {
 	Enabled          *bool          `yaml:"enabled,omitempty"`
 	AgentTriggerable *bool          `yaml:"agent_triggerable,omitempty"`
 	AgentInputSchema string         `yaml:"agent_input_schema,omitempty"`
-	Steps            []playbookStep `yaml:"steps,omitempty"`
+	// BrandContext configures per-playbook knowledge-base brand context for
+	// image-generation pipelines. Nil means the playbook has none, which is the
+	// zero-change default for playbooks that don't generate images.
+	BrandContext *playbookBrandContext `yaml:"brand_context,omitempty"`
+	Steps        []playbookStep        `yaml:"steps,omitempty"`
 	// Verification is documentation-only (a human handover checklist). Never sent
 	// to the Studio API — declared here so the strict YAML parser doesn't reject it.
 	Verification interface{} `yaml:"verification,omitempty"`
+}
+
+// playbookBrandContext mirrors the server's PlaybookBrandContext. The json tags
+// must match the server's field names exactly — this struct is marshalled
+// straight into the create/update payload.
+//
+// Same sync obligation as playbookStep below: the server has supported
+// brand_context since the playbooks.brand_context column was added, but this
+// struct did not exist, so a YAML file using the field failed the strict decode
+// and took the ENTIRE provision run down with it — not just that one playbook.
+// A directory containing one such file could not be applied at all.
+type playbookBrandContext struct {
+	// KnowledgeTagSlugs names the KB tags to load brand files from.
+	KnowledgeTagSlugs []string `yaml:"knowledge_tag_slugs" json:"knowledge_tag_slugs"`
+	// TextKey is the context key for brand text. Server default: "brand_guidelines".
+	TextKey string `yaml:"text_key,omitempty" json:"text_key"`
+	// ImageKey is the context key for the brand reference image. Server default:
+	// "brand_reference_image".
+	ImageKey string `yaml:"image_key,omitempty" json:"image_key"`
 }
 
 // playbookStep is the YAML form of a playbook step. `config` is arbitrary
@@ -462,6 +485,9 @@ func playbookCreatePayload(cfg playbookConfig) map[string]interface{} {
 	if cfg.AgentInputSchema != "" {
 		out["agent_input_schema"] = cfg.AgentInputSchema
 	}
+	if cfg.BrandContext != nil {
+		out["brand_context"] = cfg.BrandContext
+	}
 	return out
 }
 
@@ -491,6 +517,13 @@ func playbookUpdatePayload(cfg playbookConfig) map[string]interface{} {
 	}
 	if cfg.AgentInputSchema != "" {
 		out["agent_input_schema"] = cfg.AgentInputSchema
+	}
+	// Sent only when the YAML declares it. The server's update handler applies
+	// brand_context only when non-nil, so omitting the key leaves existing live
+	// config alone rather than clearing it — meaning a playbook whose brand
+	// context was set outside provision is not silently wiped by an apply.
+	if cfg.BrandContext != nil {
+		out["brand_context"] = cfg.BrandContext
 	}
 	return out
 }
