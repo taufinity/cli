@@ -106,6 +106,44 @@ func (c *Client) SetDebug(enabled bool) {
 	}
 }
 
+// sensitiveBodyFields lists JSON keys redactBodyForLog blanks out before a
+// request body is written to the debug log. TOTP codes are short-lived (30s)
+// but backup codes are long-lived, reusable-until-consumed recovery
+// credentials — the same 200-byte-snippet debug log that was an acceptable
+// risk for TOTP becomes a real one once backup codes flow through the same
+// path. Keyed as a set so adding a future sensitive field is a one-line diff.
+var sensitiveBodyFields = map[string]bool{
+	"totp_code":   true,
+	"backup_code": true,
+	"password":    true,
+}
+
+// redactBodyForLog returns body with any sensitiveBodyFields values replaced
+// by "[REDACTED]", for safe inclusion in debug logs. Falls back to returning
+// body unchanged if it isn't a JSON object (e.g. an empty or non-JSON body) —
+// there's nothing structured to redact in that case.
+func redactBodyForLog(body []byte) []byte {
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return body
+	}
+	redacted := false
+	for key := range parsed {
+		if sensitiveBodyFields[key] {
+			parsed[key] = "[REDACTED]"
+			redacted = true
+		}
+	}
+	if !redacted {
+		return body
+	}
+	out, err := json.Marshal(parsed)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // logRequest logs a sanitized summary of an outgoing request.
 func (c *Client) logRequest(method, url, token string, body []byte) {
 	if c.log == nil {
@@ -121,7 +159,7 @@ func (c *Client) logRequest(method, url, token string, body []byte) {
 	}
 	args := []any{"method", method, "url", url, "auth", authSummary}
 	if len(body) > 0 {
-		snippet := string(body)
+		snippet := string(redactBodyForLog(body))
 		if len(snippet) > 200 {
 			snippet = snippet[:200] + "..."
 		}
