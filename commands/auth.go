@@ -69,8 +69,33 @@ Output is just the token with no extra formatting, suitable for:
 
 var authElevateCmd = &cobra.Command{
 	Use:   "elevate",
-	Short: "Elevate CLI session via TOTP (grants impersonation for 16h by default)",
+	Short: "Elevate CLI session via TOTP or a backup code (grants impersonation for 16h by default)",
 	RunE:  runAuthElevate,
+}
+
+var authBackupCodesCmd = &cobra.Command{
+	Use:   "backup-codes",
+	Short: "Manage TOTP recovery backup codes",
+	Long: `Backup codes are one-time-use recovery codes for when you can't reach your
+authenticator device. Each was shown to you once, when you first set up TOTP.`,
+}
+
+var authBackupCodesStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show how many backup codes you have left",
+	RunE:  runAuthBackupCodesStatus,
+}
+
+var authBackupCodesRegenerateCmd = &cobra.Command{
+	Use:   "regenerate",
+	Short: "Invalidate all backup codes and issue a fresh set",
+	Long: `Wipes your entire backup-code set (used and unused) and issues 10 new ones,
+printed once — save them somewhere safe, they cannot be shown again.
+
+Requires a live TOTP code OR one of your existing backup codes as proof —
+either works, so you can still regenerate even with no authenticator device
+left, as long as you have at least one saved code.`,
+	RunE: runAuthBackupCodesRegenerate,
 }
 
 var authElevateStatusCmd = &cobra.Command{
@@ -86,6 +111,7 @@ var authRevokeElevationCmd = &cobra.Command{
 }
 
 var elevationTTL string
+var elevationBackupCode string
 
 func init() {
 	rootCmd.AddCommand(authCmd)
@@ -96,9 +122,13 @@ func init() {
 	authCmd.AddCommand(authElevateCmd)
 	authCmd.AddCommand(authElevateStatusCmd)
 	authCmd.AddCommand(authRevokeElevationCmd)
+	authCmd.AddCommand(authBackupCodesCmd)
+	authBackupCodesCmd.AddCommand(authBackupCodesStatusCmd)
+	authBackupCodesCmd.AddCommand(authBackupCodesRegenerateCmd)
 
 	authRevokeCmd.Flags().BoolVar(&authRevokeAll, "all", false, "Revoke all CLI sessions (log out everywhere)")
 	authElevateCmd.Flags().StringVar(&elevationTTL, "ttl", "16h", "Elevation TTL (e.g. 4h, 16h, 24h)")
+	authElevateCmd.Flags().StringVar(&elevationBackupCode, "backup-code", "", "Use a backup code instead of a live TOTP code (skips the prompt)")
 }
 
 func runAuthElevate(cmd *cobra.Command, args []string) error {
@@ -115,10 +145,17 @@ func runAuthElevate(cmd *cobra.Command, args []string) error {
 		ttlMin = 1440
 	}
 
-	fmt.Fprint(os.Stdout, "Verification code: ")
-	reader := bufio.NewReader(os.Stdin)
-	code, _ := reader.ReadString('\n')
-	code = strings.TrimSpace(code)
+	// --backup-code skips the TOTP prompt entirely — for when the
+	// authenticator device isn't available.
+	requestBody := map[string]interface{}{"ttl_minutes": ttlMin}
+	if elevationBackupCode != "" {
+		requestBody["backup_code"] = elevationBackupCode
+	} else {
+		fmt.Fprint(os.Stdout, "Verification code (or run with --backup-code if you don't have it): ")
+		reader := bufio.NewReader(os.Stdin)
+		code, _ := reader.ReadString('\n')
+		requestBody["totp_code"] = strings.TrimSpace(code)
+	}
 
 	if !auth.HasCredentials() {
 		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
@@ -127,10 +164,7 @@ func runAuthElevate(cmd *cobra.Command, args []string) error {
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
 
-	resp, err := client.PostJSONWithAuth(context.Background(), "/api/auth/cli-elevate", map[string]interface{}{
-		"totp_code":   code,
-		"ttl_minutes": ttlMin,
-	})
+	resp, err := client.PostJSONWithAuth(context.Background(), "/api/auth/cli-elevate", requestBody)
 	if err != nil {
 		return fmt.Errorf("cli-elevate: %w", err)
 	}
@@ -139,9 +173,10 @@ func runAuthElevate(cmd *cobra.Command, args []string) error {
 	}
 
 	var result struct {
-		Token     string    `json:"token"`
-		SessionID uint      `json:"session_id"`
-		ExpiresAt time.Time `json:"expires_at"`
+		Token                string    `json:"token"`
+		SessionID            uint      `json:"session_id"`
+		ExpiresAt            time.Time `json:"expires_at"`
+		BackupCodesRemaining int       `json:"backup_codes_remaining"`
 	}
 	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		return fmt.Errorf("parse response: %w", err)
@@ -153,6 +188,80 @@ func runAuthElevate(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Elevated for %s (until %s). Run 'taufinity auth elevate-status' to check.\n",
 		elevationTTL, result.ExpiresAt.Local().Format("15:04"))
+	if result.BackupCodesRemaining <= 2 {
+		fmt.Printf("Warning: only %d backup codes left. Run 'taufinity auth backup-codes regenerate' to get a fresh set.\n",
+			result.BackupCodesRemaining)
+	}
+	return nil
+}
+
+func runAuthBackupCodesStatus(cmd *cobra.Command, args []string) error {
+	if !auth.HasCredentials() {
+		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
+	}
+
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+
+	resp, err := client.GetWithAuth(context.Background(), "/api/auth/backup-codes/status")
+	if err != nil {
+		return fmt.Errorf("backup-codes status: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return fmt.Errorf("backup-codes status failed %d: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	var result struct {
+		Remaining   int `json:"remaining"`
+		TotalIssued int `json:"total_issued"`
+	}
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
+
+	fmt.Printf("%d of %d backup codes remaining.\n", result.Remaining, result.TotalIssued)
+	if result.Remaining <= 2 {
+		fmt.Println("Running low — run 'taufinity auth backup-codes regenerate' to get a fresh set.")
+	}
+	return nil
+}
+
+func runAuthBackupCodesRegenerate(cmd *cobra.Command, args []string) error {
+	if !auth.HasCredentials() {
+		return fmt.Errorf("not authenticated — run 'taufinity auth login' first")
+	}
+
+	fmt.Fprint(os.Stdout, "Verification code (live TOTP, or paste one of your existing backup codes): ")
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+
+	field, value := backupCodeProofField(input)
+	requestBody := map[string]interface{}{field: value}
+
+	client := api.New(GetAPIURL())
+	client.SetDebug(IsDebug())
+
+	resp, err := client.PostJSONWithAuth(context.Background(), "/api/auth/backup-codes/regenerate", requestBody)
+	if err != nil {
+		return fmt.Errorf("backup-codes regenerate: %w", err)
+	}
+	if !resp.IsSuccess() {
+		return fmt.Errorf("regenerate failed %d: %s", resp.StatusCode, string(resp.Body))
+	}
+
+	var result struct {
+		OK          bool     `json:"ok"`
+		BackupCodes []string `json:"backup_codes"`
+	}
+	if err := json.Unmarshal(resp.Body, &result); err != nil {
+		return fmt.Errorf("parse response: %w", err)
+	}
+
+	fmt.Println("New backup codes (save these now — they will not be shown again):")
+	for _, code := range result.BackupCodes {
+		fmt.Println("  " + code)
+	}
 	return nil
 }
 
@@ -482,6 +591,23 @@ func runAuthToken(cmd *cobra.Command, args []string) error {
 
 	fmt.Println(token)
 	return nil
+}
+
+// backupCodeProofField decides which request field a pasted proof code
+// belongs in: a live TOTP code is 6 digits; a backup code is formatted
+// "xxxxxxxx-xxxxxxxx" (17 chars including the dash). Length-based dispatch is
+// good enough to pick the right field without asking the user to specify
+// which kind they're entering. Strips internal spaces first — some
+// authenticator apps display a TOTP code grouped as "123 456", and passing
+// that through unstripped would misfire the length check. Extracted as a
+// pure function so the dispatch logic is unit-testable without stdin
+// plumbing.
+func backupCodeProofField(input string) (field, value string) {
+	cleaned := strings.ReplaceAll(input, " ", "")
+	if len(cleaned) > 6 {
+		return "backup_code", cleaned
+	}
+	return "totp_code", cleaned
 }
 
 // reportAuthFailure reports an auth failure event to telemetry, attaching the
