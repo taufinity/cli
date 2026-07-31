@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/taufinity/cli/pkg/studioadmin"
 )
 
 type provisionClient struct {
@@ -40,18 +43,39 @@ type provisionClient struct {
 	// is harmless.
 	cfAccessID     string
 	cfAccessSecret string
+
+	// admin is the shared transport (pkg/studioadmin) — the single code path for
+	// JSON get/write, the same client the Terraform provider uses. The local http
+	// client above is retained only for the multipart upload path.
+	admin *studioadmin.Client
 }
 
 func newProvisionClient(base, token string, dryRun bool) *provisionClient {
+	// CF-Access service token from the environment. The same variable names
+	// the rest of the codebase uses for its Cloudflare Access bypass.
+	cfID := os.Getenv("CF_ACCESS_CLIENT_ID")
+	cfSecret := os.Getenv("CF_ACCESS_CLIENT_SECRET")
 	return &provisionClient{
-		base:   base,
-		token:  token,
-		dryRun: dryRun,
-		http:   &http.Client{Timeout: 30 * time.Second},
-		// CF-Access service token from the environment. The same variable names
-		// the rest of the codebase uses for its Cloudflare Access bypass.
-		cfAccessID:     os.Getenv("CF_ACCESS_CLIENT_ID"),
-		cfAccessSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"),
+		base:           base,
+		token:          token,
+		dryRun:         dryRun,
+		http:           &http.Client{Timeout: 30 * time.Second},
+		cfAccessID:     cfID,
+		cfAccessSecret: cfSecret,
+		// CF-Access is applied per-call from cfAccessID/cfAccessSecret (below), not
+		// configured on the admin client — some callers (and tests) set the token
+		// on the struct after construction, so the struct fields are the source of
+		// truth.
+		admin: studioadmin.New(base, token, "", studioadmin.WithChangeSource("provision")),
+	}
+}
+
+// cfAccessInto adds the Cloudflare Access service token to h when BOTH id and secret
+// are set (a half-configured pair sends nothing).
+func (c *provisionClient) cfAccessInto(h map[string]string) {
+	if c.cfAccessID != "" && c.cfAccessSecret != "" {
+		h["CF-Access-Client-Id"] = c.cfAccessID
+		h["CF-Access-Client-Secret"] = c.cfAccessSecret
 	}
 }
 
@@ -89,23 +113,15 @@ func (c *provisionClient) getForOrg(path string, orgID uint) ([]byte, int, error
 }
 
 func (c *provisionClient) getWithHeaders(path string, extra map[string]string) ([]byte, int, error) {
-	req, err := http.NewRequest(http.MethodGet, c.base+"/api"+path, nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("X-API-Key", c.token)
-	req.Header.Set("Accept", "application/json")
-	c.setCFAccessHeaders(req)
+	// Delegate the JSON transport to the shared client (single code path). Accept is
+	// GET-specific, so it rides as an extra header; X-API-Key, CF-Access and org are
+	// applied by studioadmin.Do.
+	h := map[string]string{"Accept": "application/json"}
+	c.cfAccessInto(h)
 	for k, v := range extra {
-		req.Header.Set(k, v)
+		h[k] = v
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return body, resp.StatusCode, nil
+	return c.admin.Do(context.Background(), http.MethodGet, path, nil, h)
 }
 
 func (c *provisionClient) post(path string, payload []byte) ([]byte, int, error) {
@@ -141,25 +157,16 @@ func (c *provisionClient) writeWithHeaders(method, path string, payload []byte, 
 		fmt.Printf("[dry-run] %s /api%s  payload=%s\n", method, path, provisionSummarize(payload))
 		return []byte(`{}`), 200, nil
 	}
-	req, err := http.NewRequest(method, c.base+"/api"+path, bytes.NewReader(payload))
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("X-API-Key", c.token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Change-Source", "provision")
-	req.Header.Set("User-Agent", provisionUserAgent())
-	c.setCFAccessHeaders(req)
+	// Delegate to the shared client (single code path). X-API-Key, Content-Type and
+	// X-Change-Source=provision are applied by studioadmin.Do (change-source was
+	// configured on the admin client). User-Agent, CF-Access and any per-call extras
+	// (e.g. X-Organization-ID) ride as extra headers.
+	h := map[string]string{"User-Agent": provisionUserAgent()}
+	c.cfAccessInto(h)
 	for k, v := range extra {
-		req.Header.Set(k, v)
+		h[k] = v
 	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return body, resp.StatusCode, nil
+	return c.admin.Do(context.Background(), method, path, payload, h)
 }
 
 func (c *provisionClient) uploadMultipartForOrg(path, fileField, filename string, data []byte, orgID uint) ([]byte, int, error) {
@@ -194,7 +201,10 @@ func (c *provisionClient) uploadMultipartForOrg(path, fileField, filename string
 		return nil, 0, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return nil, resp.StatusCode, fmt.Errorf("multipart upload: read response body: %w", readErr)
+	}
 	return body, resp.StatusCode, nil
 }
 

@@ -79,4 +79,3 @@ func SaveCache(c Cache) error {
 
 	return nil
 }
-
