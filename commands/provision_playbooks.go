@@ -288,8 +288,27 @@ func updatePlaybook(c *provisionClient, orgID uint, cfg playbookConfig, pbID uin
 
 	detail, remoteSteps, err := fetchPlaybookState(c, orgID, pbID)
 	if err != nil {
-		c.Warn("playbook %q id=%d: could not read live state for drift check (%v) — applying without a diff", cfg.Name, pbID, err)
-		return applyPlaybookUpdate(c, orgID, cfg, pbID, desired, nil, nil)
+		// Refuse rather than degrade to a blind apply.
+		//
+		// The previous behaviour printed one warning line and continued with a
+		// nil diff, which reaches reconcilePlaybookSteps and DELETEs every live
+		// step not present in the local YAML. That is the 2026-07-14 incident:
+		// a stale local file plus a two-second API blip is enough to remove a
+		// customer's live playbook steps, and a version revert does not restore
+		// deleted steps (see applyStepDiff).
+		//
+		// The drift gate exists precisely to stop that, and it cannot classify
+		// anything without a baseline — so a failed read must stop the apply,
+		// not bypass the gate. --allow-drift is deliberately not an escape hatch
+		// here: it means "I have seen the diff and accept it", and there is no
+		// diff to have seen.
+		if c.dryRun {
+			c.Warn("playbook %q id=%d: could not read live state for drift check (%v) — dry-run, nothing written", cfg.Name, pbID, err)
+			return nil
+		}
+		return fmt.Errorf("playbook %q id=%d: could not read live state for drift check: %w — "+
+			"refusing to apply against an unverified baseline, because a blind apply deletes live "+
+			"steps that are absent from the local file. Retry once the API is reachable", cfg.Name, pbID, err)
 	}
 
 	diff := diffPlaybook(cfg, desired, *detail, remoteSteps)
@@ -310,24 +329,24 @@ func updatePlaybook(c *provisionClient, orgID uint, cfg playbookConfig, pbID uin
 	return applyPlaybookUpdate(c, orgID, cfg, pbID, desired, remoteSteps, &diff)
 }
 
-// applyPlaybookUpdate writes the diff. When diff is nil (remote state
-// unreadable) it falls back to writing everything, which is what apply did
-// before drift detection existed.
+// applyPlaybookUpdate writes the diff.
+//
+// diff must be non-nil. It used to accept nil to mean "remote state unreadable,
+// write everything", which routed to reconcilePlaybookSteps and deleted every
+// live step absent from the local file — the 2026-07-14 incident. The caller now
+// refuses on an unreadable baseline instead, so nil should be unreachable; this
+// guard stops a future caller from quietly reintroducing the blind path.
 func applyPlaybookUpdate(c *provisionClient, orgID uint, cfg playbookConfig, pbID uint, desired []desiredStep, remoteSteps []provisionPlaybookStepRemote, diff *playbookDiff) error {
-	if diff == nil || len(diff.Fields) > 0 {
+	if diff == nil {
+		return fmt.Errorf("playbook %q id=%d: internal error — refusing to apply without a diff, "+
+			"because applying against an unverified baseline deletes live steps", cfg.Name, pbID)
+	}
+	if len(diff.Fields) > 0 {
 		payload, _ := json.Marshal(playbookUpdatePayload(cfg))
 		respBody, status, err := c.writeForOrg("PUT", fmt.Sprintf("/playbooks/%d", pbID), payload, orgID)
 		if err != nil || status >= 300 {
 			return provisionAPIErr(fmt.Sprintf("update playbook %q", cfg.Name), status, respBody, err)
 		}
-	}
-	if diff == nil {
-		if cfg.SchedulePaused != nil {
-			if err := applySchedulePaused(c, orgID, pbID, *cfg.SchedulePaused); err != nil {
-				return err
-			}
-		}
-		return reconcilePlaybookSteps(c, orgID, pbID, cfg.Steps)
 	}
 	for _, f := range diff.Fields {
 		if f.Path == "schedule_paused" && cfg.SchedulePaused != nil {

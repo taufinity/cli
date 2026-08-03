@@ -32,6 +32,9 @@ type playbookTestServer struct {
 	steps       []provisionPlaybookStepRemote
 	writes      []playbookWrite
 	failOnWrite bool
+	// failStateRead makes the live-state GETs return 500, simulating the API
+	// blip that turned a stale local file into a step deletion on 2026-07-14.
+	failStateRead bool
 }
 
 const testPlaybookID = 7
@@ -59,8 +62,16 @@ func (s *playbookTestServer) handler() http.Handler {
 				{ID: testPlaybookID, Name: s.detail.Name, Slug: s.detail.Slug},
 			})
 		case "/api/playbooks/7":
+			if s.failStateRead {
+				http.Error(w, `{"error":"upstream unavailable"}`, http.StatusInternalServerError)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(s.detail)
 		case "/api/playbooks/7/steps":
+			if s.failStateRead {
+				http.Error(w, `{"error":"upstream unavailable"}`, http.StatusInternalServerError)
+				return
+			}
 			_ = json.NewEncoder(w).Encode(s.steps)
 		case "/api/playbooks/7/versions":
 			_ = json.NewEncoder(w).Encode([]map[string]int{{"version": 3}})
@@ -478,5 +489,85 @@ func TestStepKeyOf_NamelessOrdinalIsStableAcrossNamedSteps(t *testing.T) {
 	}
 	if b[1] != "unnamed#0" || b[3] != "unnamed#1" {
 		t.Errorf("named steps must not shift the nameless ordinals: got %v", b)
+	}
+}
+
+// TestPlaybookApply_UnreadableStateRefusesInsteadOfBlindApply is the regression
+// test for the remaining root cause of the 2026-07-14 incident.
+//
+// When the live-state read failed, apply printed one warning and continued with
+// a nil diff. That routed to reconcilePlaybookSteps, which DELETEs every live
+// step absent from the local YAML — so a stale local file plus a momentary API
+// failure removed a customer's playbook steps. The HIGH-drift refusal could not
+// help, because with no baseline there is no diff to classify.
+//
+// A version revert does not restore deleted steps, so this had to stop being
+// reachable rather than merely being logged.
+func TestPlaybookApply_UnreadableStateRefusesInsteadOfBlindApply(t *testing.T) {
+	// Local YAML with the Publish step dropped — exactly the shape that would
+	// have deleted it under the old behaviour.
+	yaml := baseYAML[:strings.Index(baseYAML, "  - name: Publish")]
+	srv := &playbookTestServer{
+		detail:        baseDetail(),
+		steps:         baseSteps(),
+		failStateRead: true,
+		failOnWrite:   true, // any write at all is the bug
+	}
+	_, dir, c := newPlaybookFixture(t, srv, yaml)
+
+	err := applyPlaybooks(c, dir, 12, false)
+
+	if err == nil {
+		t.Fatal("an unreadable baseline must refuse the apply, not fall back to a blind write")
+	}
+	if !strings.Contains(err.Error(), "unverified baseline") {
+		t.Errorf("error should explain why it refused, got: %v", err)
+	}
+	if n := srv.writeCount(); n != 0 {
+		t.Errorf("expected zero writes against an unverified baseline, got %d", n)
+	}
+}
+
+// TestPlaybookApply_UnreadableStateWithAllowDriftStillRefuses pins that
+// --allow-drift is not an escape hatch here.
+//
+// It means "I have seen the diff and accept it". With no baseline there is no
+// diff to have seen, so accepting one is meaningless — and the failure mode it
+// would unlock is silent step deletion.
+func TestPlaybookApply_UnreadableStateWithAllowDriftStillRefuses(t *testing.T) {
+	yaml := baseYAML[:strings.Index(baseYAML, "  - name: Publish")]
+	srv := &playbookTestServer{
+		detail:        baseDetail(),
+		steps:         baseSteps(),
+		failStateRead: true,
+		failOnWrite:   true,
+	}
+	_, dir, c := newPlaybookFixture(t, srv, yaml)
+
+	if err := applyPlaybooks(c, dir, 12, true); err == nil {
+		t.Fatal("--allow-drift must not bypass an unreadable baseline")
+	}
+	if n := srv.writeCount(); n != 0 {
+		t.Errorf("expected zero writes, got %d", n)
+	}
+}
+
+// TestPlaybookApply_UnreadableStateInDryRunIsSafe — a dry-run must never fail a
+// deploy on a read blip, and must still write nothing.
+func TestPlaybookApply_UnreadableStateInDryRunIsSafe(t *testing.T) {
+	srv := &playbookTestServer{
+		detail:        baseDetail(),
+		steps:         baseSteps(),
+		failStateRead: true,
+		failOnWrite:   true,
+	}
+	ts, dir, _ := newPlaybookFixture(t, srv, baseYAML)
+	c := newProvisionClient(ts.URL, "test-key", true) // dryRun
+
+	if err := applyPlaybooks(c, dir, 12, false); err != nil {
+		t.Fatalf("a dry-run must not fail on an unreadable baseline, got: %v", err)
+	}
+	if n := srv.writeCount(); n != 0 {
+		t.Errorf("a dry-run must write nothing, got %d writes", n)
 	}
 }
