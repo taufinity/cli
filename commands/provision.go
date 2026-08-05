@@ -274,6 +274,12 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 	if err := applyPresentationTemplates(c, dir, orgID); err != nil {
 		return err
 	}
+	// 21. Agent tools — AgentToolPolicy grants + StudioAPIAllowlist entries.
+	// Security-sensitive (governs what an autonomous agent run may do for
+	// this org); lives in <dir>/agent-tools.yaml.
+	if err := applyAgentTools(c, dir, orgID); err != nil {
+		return err
+	}
 
 	// Exit codes for --strict mode
 	if provisionStrict {
