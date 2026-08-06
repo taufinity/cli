@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -245,11 +246,80 @@ func resolveProvisionOrgID(c *provisionClient, slug string) (uint, error) {
 	return 0, fmt.Errorf("org with slug %q not found", slug)
 }
 
+// provisionSensitiveKeyPattern matches JSON object keys whose values must
+// never appear in dry-run/error output. Real incident 2026-08-06: a
+// credential upsert's payload ({"name":"odoo-taufinity","values_json":
+// "{\"api_key\":\"...\"}"}) put the actual secret value within the first
+// 120 bytes provisionSummarize printed verbatim during a routine `provision
+// diff`. This pattern is shared by every provisioner's payload (not just
+// credentials.go's), so the masking lives here, once, rather than being
+// re-added per call site.
+var provisionSensitiveKeyPattern = regexp.MustCompile(`(?i)(password|secret|token|api[_-]?key|webhook|private[_-]?key|values_json|credential)`)
+
+const provisionRedactedValue = "***REDACTED***"
+
+// provisionSummarize renders b for dry-run/error output: JSON object keys
+// matching provisionSensitiveKeyPattern have their values masked
+// (recursively, including nested objects/arrays), then the result is capped
+// near 120 chars so a single payload can't flood the terminal. Non-JSON or
+// malformed input is returned as-is (nothing structured to mask) — the
+// truncation below still bounds it.
 func provisionSummarize(b []byte) string {
-	if len(b) > 120 {
-		return string(b[:120]) + "..."
+	out := provisionMaskSensitiveJSON(b)
+	// Rune-safe: a byte-index cut can land mid multi-byte UTF-8 sequence
+	// (e.g. a name with an accented character) and corrupt the tail of the
+	// printed line. Truncating runes instead keeps the output valid text
+	// even though it's already just a debug summary, not re-parsed JSON.
+	runes := []rune(out)
+	if len(runes) > 120 {
+		return string(runes[:120]) + "..."
 	}
-	return string(b)
+	return out
+}
+
+// provisionMaskSensitiveJSON best-effort-parses b as JSON and masks
+// sensitive field values. Returns the original string unchanged if b isn't
+// valid JSON (e.g. the multipart-upload dry-run path, or a malformed body
+// worth showing as-is for debugging).
+func provisionMaskSensitiveJSON(b []byte) string {
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return string(b)
+	}
+	masked, err := json.Marshal(provisionMaskValue(v))
+	if err != nil {
+		return string(b)
+	}
+	return string(masked)
+}
+
+// provisionMaskValue walks a decoded JSON value, replacing the value of any
+// object key matching provisionSensitiveKeyPattern with a fixed redaction
+// marker (not silently dropped — dropping would look identical to "this
+// field wasn't set," which is misleading for a diff/dry-run tool). Arrays
+// and nested objects are walked so a sensitive field buried inside a list
+// of items is still caught.
+func provisionMaskValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(x))
+		for k, val := range x {
+			if provisionSensitiveKeyPattern.MatchString(k) {
+				result[k] = provisionRedactedValue
+			} else {
+				result[k] = provisionMaskValue(val)
+			}
+		}
+		return result
+	case []any:
+		result := make([]any, len(x))
+		for i, item := range x {
+			result[i] = provisionMaskValue(item)
+		}
+		return result
+	default:
+		return v
+	}
 }
 
 func provisionAPIErr(prefix string, status int, body []byte, err error) error {
