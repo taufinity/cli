@@ -3,6 +3,7 @@ module github.com/taufinity/cli
 go 1.25.0
 
 require (
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/getsentry/sentry-go v0.43.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
