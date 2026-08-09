@@ -96,6 +96,7 @@ func TestProvisionContentSettings_HappyPath(t *testing.T) {
 	yaml := `category: AI engineering, fractional CTO observations
 format: short-form LinkedIn post
 tone: first-person hands-on engineer
+max_links: 8
 `
 	if err := os.WriteFile(filepath.Join(dir, "content-settings.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
@@ -118,6 +119,11 @@ tone: first-person hands-on engineer
 	}
 	if got.Body["format"] != "short-form LinkedIn post" {
 		t.Errorf("format: %+v", got.Body)
+	}
+	// max_links regression: previously missing from contentSettingsConfig
+	// entirely, so a value here never reached the API at all.
+	if got.Body["max_links"] != float64(8) {
+		t.Errorf("max_links: %+v", got.Body)
 	}
 }
 

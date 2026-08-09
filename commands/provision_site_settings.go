@@ -56,12 +56,21 @@ type generalSettingsConfig struct {
 // faithfully belongs in a follow-up; until then provision leaves
 // `languages` alone — the field stays whatever it was in prod, which
 // is the safe default.
+//
+// `max_links` WAS missing here too, but unlike languages that was a plain
+// oversight, not a type-safety concern — the API's field is a flat int
+// (see api/handlers/sites_settings_content.go's allowlist), same shape as
+// every other field in this struct. Sites needing citation links (max_links
+// > 0) had to set it via a direct PUT after every provision apply, since a
+// re-apply would never touch it. Fixed 2026-08-09 launching
+// griepverschijnselen.nl.
 type contentSettingsConfig struct {
 	Category string   `yaml:"category"   json:"category,omitempty"`
 	Format   string   `yaml:"format"     json:"format,omitempty"`
 	Tone     string   `yaml:"tone"       json:"tone,omitempty"`
 	Length   string   `yaml:"length"     json:"length,omitempty"`
 	Keywords []string `yaml:"keywords"   json:"keywords,omitempty"`
+	MaxLinks int      `yaml:"max_links"  json:"max_links,omitempty"`
 }
 
 // metadataSettingsConfig is intentionally a free-form map. The API handler
