@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,9 +34,10 @@ func (s *orgSettingsTestServer) handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		id := 0
-		for _, c := range parts[2] {
-			id = id*10 + int(c-'0')
+		id, err := strconv.Atoi(parts[2])
+		if err != nil {
+			http.Error(w, "invalid org id", http.StatusBadRequest)
+			return
 		}
 		bodyBytes, _ := io.ReadAll(r.Body)
 		var body map[string]any

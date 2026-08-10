@@ -130,6 +130,12 @@ func applyOrgSettings(c *provisionClient, dir string, orgID uint) error {
 		return fmt.Errorf("org-settings.yaml: marshal payload: %w", err)
 	}
 
+	// c.put -> writeWithHeaders (provision_client.go) short-circuits before
+	// any real HTTP request when c.dryRun is set, printing a "[dry-run]"
+	// line and returning a synthetic 200 — this call never reaches the
+	// server in dry-run mode, matching every other provisioner in this repo
+	// (none of them re-check c.dryRun locally; the short-circuit is
+	// centralized so it can't be forgotten per call site).
 	apiPath := fmt.Sprintf("/organizations/%d/settings", orgID)
 	respBody, status, err := c.put(apiPath, payload)
 	if err != nil || status >= 300 {
