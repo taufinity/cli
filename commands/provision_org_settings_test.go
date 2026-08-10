@@ -88,6 +88,39 @@ func TestProvisionOrgSettings_DefaultKnowledgeTags(t *testing.T) {
 	}
 }
 
+func TestProvisionOrgSettings_EmptyList_ClearsTag(t *testing.T) {
+	srv := &orgSettingsTestServer{}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	dir := t.TempDir()
+	// An explicit empty list is distinct from omitting the key entirely:
+	// yaml.v3 unmarshals `default_knowledge_tags: []` into a non-nil empty
+	// []string, while an absent key leaves the field nil. Only the former
+	// must produce `"default_knowledge_tags":""` in the body (clearing the
+	// server-side value) — the latter must omit the key so the server-side
+	// value is left untouched. A refactor from `!= nil` to a length check
+	// would silently break this distinction with nothing else failing.
+	if err := os.WriteFile(filepath.Join(dir, "org-settings.yaml"), []byte("default_knowledge_tags: []\n"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	c := newProvisionClient(ts.URL, "test-key", false)
+	if err := applyOrgSettings(c, dir, 12); err != nil {
+		t.Fatalf("applyOrgSettings: %v", err)
+	}
+	if len(srv.calls) != 1 {
+		t.Fatalf("want 1 PUT call, got %d", len(srv.calls))
+	}
+	got, present := srv.calls[0].Body["default_knowledge_tags"]
+	if !present {
+		t.Fatal("default_knowledge_tags must be present (clearing), not omitted, for an explicit empty list")
+	}
+	if got != "" {
+		t.Errorf("default_knowledge_tags: got %+v, want empty string (clears server-side)", got)
+	}
+}
+
 func TestProvisionOrgSettings_MultipleTags_CommaJoined(t *testing.T) {
 	srv := &orgSettingsTestServer{}
 	ts := httptest.NewServer(srv.handler())

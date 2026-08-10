@@ -13,7 +13,7 @@
 // default_knowledge_tags is the field this was built for: the org-wide
 // fallback knowledge tags that chat widgets, playbooks, and playbook steps
 // use for RAG context injection when they have no explicit tag
-// configuration of their own (see internal/knowledge's
+// configuration of their own (see pkg/database's
 // ResolveKnowledgeTagsWithOrgDefault). Empty/unset means no fallback
 // injection happens at all.
 package commands
@@ -32,8 +32,8 @@ import (
 // preserved — a field absent from the YAML must never appear in the
 // request body, or it would silently clear a setting nobody asked to touch.
 type orgSettingsConfig struct {
-	PrivacyProtectionEnabled *bool `yaml:"privacy_protection_enabled,omitempty" json:"privacy_protection_enabled,omitempty"`
-	ChatLogEnabled           *bool `yaml:"chat_log_enabled,omitempty"           json:"chat_log_enabled,omitempty"`
+	PrivacyProtectionEnabled *bool   `yaml:"privacy_protection_enabled,omitempty" json:"privacy_protection_enabled,omitempty"`
+	ChatLogEnabled           *bool   `yaml:"chat_log_enabled,omitempty"           json:"chat_log_enabled,omitempty"`
 	DefaultHomepage          *string `yaml:"default_homepage,omitempty" json:"default_homepage,omitempty"`
 	SidebarBg                *string `yaml:"sidebar_bg,omitempty"         json:"sidebar_bg,omitempty"`
 	SidebarHoverBg           *string `yaml:"sidebar_hover_bg,omitempty"   json:"sidebar_hover_bg,omitempty"`
