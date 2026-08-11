@@ -51,17 +51,31 @@ import (
 //     stepKeyOf); new steps are POSTed, removed ones DELETEd. Array order in the
 //     YAML is the source of truth for step ordering.
 type playbookConfig struct {
-	Name             string         `yaml:"name"`
-	Slug             string         `yaml:"slug,omitempty"` // stable provision key; leading over name when set
-	Description      string         `yaml:"description,omitempty"`
-	TriggerType      string         `yaml:"trigger_type,omitempty"`
-	Schedule         *string        `yaml:"schedule,omitempty"`
-	ScheduleTimezone string         `yaml:"schedule_timezone,omitempty"`
-	SchedulePaused   *bool          `yaml:"schedule_paused,omitempty"` // pause the cron without removing the schedule
-	OutputKey        string         `yaml:"output_key,omitempty"`
-	Enabled          *bool          `yaml:"enabled,omitempty"`
-	AgentTriggerable *bool          `yaml:"agent_triggerable,omitempty"`
-	AgentInputSchema string         `yaml:"agent_input_schema,omitempty"`
+	Name             string  `yaml:"name"`
+	Slug             string  `yaml:"slug,omitempty"` // stable provision key; leading over name when set
+	Description      string  `yaml:"description,omitempty"`
+	TriggerType      string  `yaml:"trigger_type,omitempty"`
+	Schedule         *string `yaml:"schedule,omitempty"`
+	ScheduleTimezone string  `yaml:"schedule_timezone,omitempty"`
+	SchedulePaused   *bool   `yaml:"schedule_paused,omitempty"` // pause the cron without removing the schedule
+	OutputKey        string  `yaml:"output_key,omitempty"`
+	Enabled          *bool   `yaml:"enabled,omitempty"`
+	AgentTriggerable *bool   `yaml:"agent_triggerable,omitempty"`
+	AgentInputSchema string  `yaml:"agent_input_schema,omitempty"`
+	// MaxConsecutiveFailures is how many consecutive failed runs the scheduler
+	// tolerates before it auto-pauses the playbook and notifies org admins.
+	// Server default is 3.
+	//
+	// Worth setting explicitly on infrequent schedules, because the field is a
+	// count but what it buys is TIME: count multiplied by the schedule interval.
+	// Three failures on an hourly playbook is three hours; on a weekly one it is
+	// three weeks. A weekly MT deck failed once and nobody was told for seven
+	// days, which is the default working exactly as written and being useless at
+	// that cadence.
+	//
+	// Pointer so "not specified" stays distinguishable from an explicit value and
+	// the server default is left alone.
+	MaxConsecutiveFailures *int `yaml:"max_consecutive_failures,omitempty"`
 	// BrandContext configures per-playbook knowledge-base brand context for
 	// image-generation pipelines. Nil means the playbook has none, which is the
 	// zero-change default for playbooks that don't generate images.
@@ -488,6 +502,11 @@ func playbookCreatePayload(cfg playbookConfig) map[string]interface{} {
 	if cfg.BrandContext != nil {
 		out["brand_context"] = cfg.BrandContext
 	}
+	// Sent only when declared; the server applies it only when > 0, so omitting
+	// leaves its default of 3 in place for every playbook that does not care.
+	if cfg.MaxConsecutiveFailures != nil {
+		out["max_consecutive_failures"] = *cfg.MaxConsecutiveFailures
+	}
 	return out
 }
 
@@ -524,6 +543,9 @@ func playbookUpdatePayload(cfg playbookConfig) map[string]interface{} {
 	// context was set outside provision is not silently wiped by an apply.
 	if cfg.BrandContext != nil {
 		out["brand_context"] = cfg.BrandContext
+	}
+	if cfg.MaxConsecutiveFailures != nil {
+		out["max_consecutive_failures"] = *cfg.MaxConsecutiveFailures
 	}
 	return out
 }
