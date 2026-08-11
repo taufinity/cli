@@ -280,6 +280,13 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 	if err := applyAgentTools(c, dir, orgID); err != nil {
 		return err
 	}
+	// 22. Org settings — privacy/branding/login-restriction flags and
+	// default_knowledge_tags (the org-wide RAG fallback tags widgets,
+	// playbooks, and steps use when they set no explicit tags of their
+	// own). Lives in <dir>/org-settings.yaml.
+	if err := applyOrgSettings(c, dir, orgID); err != nil {
+		return err
+	}
 
 	// Exit codes for --strict mode
 	if provisionStrict {
