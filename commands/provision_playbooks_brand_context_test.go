@@ -85,7 +85,7 @@ func TestPlaybookPayloads_CarryBrandContext(t *testing.T) {
 		payload map[string]interface{}
 	}{
 		{"create", playbookCreatePayload(cfg)},
-		{"update", playbookUpdatePayload(cfg)},
+		{"update", playbookUpdatePayload(cfg, nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(tc.payload)
@@ -119,7 +119,7 @@ func TestPlaybookPayloads_OmitBrandContextWhenAbsent(t *testing.T) {
 		payload map[string]interface{}
 	}{
 		{"create", playbookCreatePayload(cfg)},
-		{"update", playbookUpdatePayload(cfg)},
+		{"update", playbookUpdatePayload(cfg, nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, present := tc.payload["brand_context"]; present {

@@ -54,7 +54,7 @@ func TestPlaybookPayloads_CarryMaxConsecutiveFailures(t *testing.T) {
 		payload map[string]interface{}
 	}{
 		{"create", playbookCreatePayload(cfg)},
-		{"update", playbookUpdatePayload(cfg)},
+		{"update", playbookUpdatePayload(cfg, nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(tc.payload)
@@ -77,7 +77,7 @@ func TestPlaybookPayloads_OmitMaxConsecutiveFailuresWhenAbsent(t *testing.T) {
 		payload map[string]interface{}
 	}{
 		{"create", playbookCreatePayload(cfg)},
-		{"update", playbookUpdatePayload(cfg)},
+		{"update", playbookUpdatePayload(cfg, nil)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, present := tc.payload["max_consecutive_failures"]; present {

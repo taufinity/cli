@@ -316,9 +316,9 @@ func (d playbookDiff) severity() (driftSeverity, []string) {
 // remote state. `desired` is the fully-resolved step payload set (credential
 // refs already substituted) so the comparison is against what actually goes on
 // the wire, not against the raw YAML.
-func diffPlaybook(cfg playbookConfig, desired []desiredStep, remote playbookDetailRemote, remoteSteps []provisionPlaybookStepRemote) playbookDiff {
+func diffPlaybook(cfg playbookConfig, desired []desiredStep, remote playbookDetailRemote, remoteSteps []provisionPlaybookStepRemote, knowledgeTagIDs []uint) playbookDiff {
 	d := playbookDiff{RemoteStepCount: len(remoteSteps)}
-	local := playbookUpdatePayload(cfg)
+	local := playbookUpdatePayload(cfg, knowledgeTagIDs)
 	// schedule_paused isn't part of the PUT body (the update handler has no such
 	// field — see playbookUpdatePayload); it is applied through the dedicated
 	// pause endpoint. It still belongs in the diff: flipping a schedule on or off

@@ -76,6 +76,22 @@ type playbookConfig struct {
 	// Pointer so "not specified" stays distinguishable from an explicit value and
 	// the server default is left alone.
 	MaxConsecutiveFailures *int `yaml:"max_consecutive_failures,omitempty"`
+	// KnowledgeTags names the knowledge tags whose files are injected into every
+	// ai_prompt step of this playbook (runner.go builds ctx.KnowledgeContext from
+	// them, falling back to the org's default_knowledge_tags when empty). It is
+	// therefore the switch that decides what the LLM in this playbook can see —
+	// worth having in version control rather than set by hand in the UI.
+	//
+	// Names, deliberately, not the numeric knowledge_tag_ids the API takes. Tag
+	// IDs differ between environments, so an on-disk ID would apply cleanly to
+	// prod and silently point at a different tag locally. Same reason step
+	// configs take credential_ref rather than credential_id; resolution happens
+	// at apply time (see resolveKnowledgeTagNames).
+	//
+	// Nil means "not specified" and leaves existing associations alone. An empty
+	// list is an explicit instruction to detach all of them, which the server
+	// honours because it deletes and re-inserts the join rows.
+	KnowledgeTags *[]string `yaml:"knowledge_tags,omitempty"`
 	// BrandContext configures per-playbook knowledge-base brand context for
 	// image-generation pipelines. Nil means the playbook has none, which is the
 	// zero-change default for playbooks that don't generate images.
@@ -290,7 +306,11 @@ func createPlaybook(c *provisionClient, orgID uint, cfg playbookConfig, yamlPath
 	// that every field survives CREATE.
 	if cfg.AgentInputSchema != "" && created.AgentInputSchema == "" {
 		fmt.Printf("  WARN: CREATE didn't persist agent_input_schema (older server?), applying via UPDATE\n")
-		updatePayload, _ := json.Marshal(playbookUpdatePayload(cfg))
+		ktIDs, ktErr := resolvePlaybookKnowledgeTags(c, orgID, cfg, cfg.Name)
+		if ktErr != nil {
+			return ktErr
+		}
+		updatePayload, _ := json.Marshal(playbookUpdatePayload(cfg, ktIDs))
 		rb, st, err := c.writeForOrg("PUT", fmt.Sprintf("/playbooks/%d", pbID), updatePayload, orgID)
 		if err != nil || st >= 300 {
 			return provisionAPIErr(fmt.Sprintf("update playbook %q (verify-after-create retry)", cfg.Name), st, rb, err)
@@ -348,7 +368,14 @@ func updatePlaybook(c *provisionClient, orgID uint, cfg playbookConfig, pbID uin
 			"steps that are absent from the local file. Retry once the API is reachable", cfg.Name, pbID, err)
 	}
 
-	diff := diffPlaybook(cfg, desired, *detail, remoteSteps)
+	// Resolved here so a knowledge-tag change shows up in the diff instead of
+	// being applied silently. Same reason step credential_refs are resolved
+	// before diffing: compare what goes on the wire, not the raw YAML.
+	diffKtIDs, ktErr := resolvePlaybookKnowledgeTags(c, orgID, cfg, cfg.Name)
+	if ktErr != nil {
+		return ktErr
+	}
+	diff := diffPlaybook(cfg, desired, *detail, remoteSteps, diffKtIDs)
 	if diff.empty() {
 		fmt.Printf("NOOP   playbook %q id=%d\n", cfg.Name, pbID)
 		return nil
@@ -379,7 +406,11 @@ func applyPlaybookUpdate(c *provisionClient, orgID uint, cfg playbookConfig, pbI
 			"because applying against an unverified baseline deletes live steps", cfg.Name, pbID)
 	}
 	if len(diff.Fields) > 0 {
-		payload, _ := json.Marshal(playbookUpdatePayload(cfg))
+		ktIDs, ktErr := resolvePlaybookKnowledgeTags(c, orgID, cfg, cfg.Name)
+		if ktErr != nil {
+			return ktErr
+		}
+		payload, _ := json.Marshal(playbookUpdatePayload(cfg, ktIDs))
 		respBody, status, err := c.writeForOrg("PUT", fmt.Sprintf("/playbooks/%d", pbID), payload, orgID)
 		if err != nil || status >= 300 {
 			return provisionAPIErr(fmt.Sprintf("update playbook %q", cfg.Name), status, respBody, err)
@@ -531,7 +562,7 @@ func playbookCreatePayload(cfg playbookConfig) map[string]interface{} {
 
 // playbookUpdatePayload maps to PUT /api/playbooks/{id}. A full snapshot is sent
 // so the payload is predictable and the diff can compare like with like.
-func playbookUpdatePayload(cfg playbookConfig) map[string]interface{} {
+func playbookUpdatePayload(cfg playbookConfig, knowledgeTagIDs []uint) map[string]interface{} {
 	out := map[string]interface{}{
 		"name":              cfg.Name,
 		"description":       cfg.Description,
@@ -565,6 +596,9 @@ func playbookUpdatePayload(cfg playbookConfig) map[string]interface{} {
 	}
 	if cfg.MaxConsecutiveFailures != nil {
 		out["max_consecutive_failures"] = *cfg.MaxConsecutiveFailures
+	}
+	if knowledgeTagIDs != nil {
+		out["knowledge_tag_ids"] = knowledgeTagIDs
 	}
 	return out
 }
@@ -802,6 +836,70 @@ func reconcilePlaybookSteps(c *provisionClient, orgID, pbID uint, want []playboo
 		}
 	}
 	return applyStepDiff(c, orgID, pbID, desired, changes)
+}
+
+// resolvePlaybookKnowledgeTags turns cfg.KnowledgeTags (names) into the numeric
+// ids the API expects. Returns nil when the YAML did not specify any, which
+// leaves existing associations untouched.
+//
+// Dry-run degrades to nil rather than aborting: the tag may be created later in
+// the same run, and a diff should not fail on a tag that will exist by apply
+// time.
+func resolvePlaybookKnowledgeTags(c *provisionClient, orgID uint, cfg playbookConfig, label string) ([]uint, error) {
+	if cfg.KnowledgeTags == nil {
+		return nil, nil
+	}
+	ids, err := resolveKnowledgeTagNames(c, orgID, *cfg.KnowledgeTags)
+	if err != nil {
+		if c.dryRun {
+			c.Warn("[dry-run] playbook %s: knowledge tags unresolved (%v) — leaving associations unchanged in the diff", label, err)
+			return nil, nil
+		}
+		return nil, fmt.Errorf("playbook %s: %w", label, err)
+	}
+	return ids, nil
+}
+
+// provisionKnowledgeTagListItem is the minimal shape we need from GET /api/knowledge-tags/.
+type provisionKnowledgeTagListItem struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
+
+// resolveKnowledgeTagNames maps YAML tag names to the org's numeric tag IDs.
+//
+// Unknown names are a hard error rather than a skip: a typo would otherwise
+// silently narrow what the playbook's prompts can see, and an LLM given less
+// context does not fail — it just produces a worse answer, which is the kind of
+// bug nobody notices for weeks.
+func resolveKnowledgeTagNames(c *provisionClient, orgID uint, names []string) ([]uint, error) {
+	body, status, err := c.getForOrg("/knowledge-tags/", orgID)
+	if err != nil || status != 200 {
+		return nil, provisionAPIErr("list knowledge tags", status, body, err)
+	}
+	var tags []provisionKnowledgeTagListItem
+	if err := unmarshalListEnvelope(body, &tags); err != nil {
+		return nil, fmt.Errorf("parse knowledge tags: %w (body=%s)", err, provisionSummarize(body))
+	}
+	byName := make(map[string]uint, len(tags))
+	for _, t := range tags {
+		byName[strings.ToLower(strings.TrimSpace(t.Name))] = t.ID
+	}
+
+	out := make([]uint, 0, len(names))
+	var missing []string
+	for _, n := range names {
+		id, ok := byName[strings.ToLower(strings.TrimSpace(n))]
+		if !ok {
+			missing = append(missing, n)
+			continue
+		}
+		out = append(out, id)
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("unknown knowledge tag(s) %v in org %d — create the tag first, or fix the name", missing, orgID)
+	}
+	return out, nil
 }
 
 // listCredentialsByName fetches the org's credentials and returns a

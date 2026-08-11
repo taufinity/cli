@@ -491,5 +491,3 @@ func runMCPPrint(cmd *cobra.Command, args []string) error {
 	flagMCPInstallClient = "print"
 	return runMCPInstall(cmd, args)
 }
-
-
