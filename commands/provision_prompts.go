@@ -170,8 +170,13 @@ func applyPromptsFrom(c *provisionClient, pd string, orgID uint, siteScope strin
 			return fmt.Errorf("prompt upsert %q: status=%d err=%v body=%s",
 				name, status, err, provisionSummarize(respBody))
 		}
+		// Count the dry-run as a would-push. Reporting "pushed=0" directly
+		// under a list of CREATE/UPDATE lines reads as "nothing will happen",
+		// which is the opposite of what the diff just said. The CREATE/UPDATE
+		// line above already names the prompt, so there is nothing more to
+		// print here.
 		if c.dryRun {
-			fmt.Printf("[dry-run] prompt upsert %q (%d bytes)\n", name, len(body))
+			pushed++
 			continue
 		}
 		var resp promptUpsertResponse
@@ -190,8 +195,12 @@ func applyPromptsFrom(c *provisionClient, pd string, orgID uint, siteScope strin
 	if siteScope != "" {
 		scope = "site " + siteScope
 	}
-	fmt.Printf("provision: prompts summary (%s): pushed=%d unchanged=%d skipped=%d\n",
-		scope, pushed, unchanged, skipped)
+	verb := "pushed"
+	if c.dryRun {
+		verb = "would push"
+	}
+	fmt.Printf("provision: prompts summary (%s): %s=%d unchanged=%d skipped=%d\n",
+		scope, verb, pushed, unchanged, skipped)
 	return nil
 }
 

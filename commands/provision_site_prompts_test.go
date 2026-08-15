@@ -153,3 +153,28 @@ func TestSitePromptSuffix(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A dry-run must not report "pushed=0" under a list of CREATE lines — that
+// reads as "nothing will happen", the opposite of what the diff just said.
+func TestApplyPrompts_DryRunCountsWouldPush(t *testing.T) {
+	srv := &promptsTestServer{}
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	dir := t.TempDir()
+	writePrompt(t, dir, "counted.txt", "body")
+
+	out := captureStdout(t, func() {
+		c := newProvisionClient(ts.URL, "test-key", true) // dryRun
+		if err := applyPrompts(c, dir, 1); err != nil {
+			t.Fatalf("applyPrompts: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "would push=1") {
+		t.Errorf("dry-run summary should report 1 would-push, got:\n%s", out)
+	}
+	if len(srv.calls) != 0 {
+		t.Errorf("dry-run must not write, got %+v", srv.calls)
+	}
+}
