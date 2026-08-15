@@ -19,6 +19,13 @@ import (
 type promptsTestServer struct {
 	mu    sync.Mutex
 	calls []promptTestCall
+	// existing seeds bodies already stored server-side, keyed by prompt name.
+	// A name absent here 404s on GET, which is the create path.
+	existing map[string]string
+	// ifMatch records the If-Match header seen on each PUT, keyed by name.
+	ifMatch map[string]string
+	// conflictOn forces a 412 for this name, simulating a concurrent edit.
+	conflictOn string
 }
 
 type promptTestCall struct {
@@ -27,6 +34,21 @@ type promptTestCall struct {
 	Body  string
 }
 
+// etagFor mirrors the server's strong validator closely enough for these
+// tests: the CLI treats it as an opaque token, it only has to round-trip.
+func etagFor(body string) string {
+	return `"` + strconv.Itoa(len(body)) + "-" + body[:min(4, len(body))] + `"`
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// handler serves reads and writes separately. Only writes land in calls —
+// the GET is a read-before-write for diffing and must not count as a push.
 func (s *promptsTestServer) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Path is /api/organizations/{id}/prompts/{name}
@@ -38,6 +60,30 @@ func (s *promptsTestServer) handler() http.Handler {
 		}
 		orgID := parts[2]
 		name := parts[4]
+
+		s.mu.Lock()
+		body, seeded := s.existing[name]
+		conflict := s.conflictOn == name
+		s.mu.Unlock()
+
+		if r.Method == http.MethodGet {
+			if !seeded {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("ETag", etagFor(body))
+			_ = json.NewEncoder(w).Encode(promptUpsertResponse{
+				ID: 42, OrganizationID: 1, Name: name, Body: body, ETag: etagFor(body),
+			})
+			return
+		}
+
+		if conflict {
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return
+		}
+
 		bodyBytes, _ := io.ReadAll(r.Body)
 		var req struct {
 			Body string `json:"body"`
@@ -47,10 +93,14 @@ func (s *promptsTestServer) handler() http.Handler {
 		id, _ := strconv.Atoi(orgID)
 		s.mu.Lock()
 		s.calls = append(s.calls, promptTestCall{OrgID: id, Name: name, Body: req.Body})
+		if s.ifMatch == nil {
+			s.ifMatch = map[string]string{}
+		}
+		s.ifMatch[name] = r.Header.Get("If-Match")
 		s.mu.Unlock()
 
 		resp := promptUpsertResponse{
-			ID: 42, OrganizationID: 1, Name: name, Body: req.Body,
+			ID: 42, OrganizationID: 1, Name: name, Body: req.Body, ETag: etagFor(req.Body),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(resp)

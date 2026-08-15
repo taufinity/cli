@@ -565,6 +565,7 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 	hasContentSettings := fileExists(filepath.Join(siteDir, "content-settings.yaml"))
 	hasMetadataSettings := fileExists(filepath.Join(siteDir, "metadata-settings.yaml"))
 	hasTracker := fileExists(filepath.Join(siteDir, "tracker.yaml"))
+	hasPrompts := fileExists(filepath.Join(siteDir, "prompts"))
 
 	sy, err := loadSiteYAML(filepath.Join(siteDir, "site.yaml"))
 	if err != nil {
@@ -574,7 +575,7 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 
 	if !hasPipeline && !hasSecureRender && !hasAISettings &&
 		!hasGeneralSettings && !hasContentSettings && !hasMetadataSettings &&
-		!hasCategoryPages && !hasTracker {
+		!hasCategoryPages && !hasTracker && !hasPrompts {
 		return nil
 	}
 
@@ -640,6 +641,15 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 	if hasTracker {
 		if err := provisionTracker(c, siteID, siteDir); err != nil {
 			return fmt.Errorf("tracker: %w", err)
+		}
+	}
+
+	// Site-scoped prompt overrides. Keyed by the directory name, which is the
+	// site_id the server's "<name>__<site_id>" lookup expects — not the numeric
+	// siteID resolved above.
+	if hasPrompts {
+		if err := applySitePrompts(c, siteDir, orgID, dirName); err != nil {
+			return fmt.Errorf("prompts: %w", err)
 		}
 	}
 
