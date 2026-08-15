@@ -84,7 +84,7 @@ func writeE2EHome(t *testing.T, apiURL string) string {
 	// Access token valid until year 2099 — no refresh needed.
 	expiry := time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
 	creds := map[string]any{
-		"access_token":           "e2e-test-token",
+		"access_token":            "e2e-test-token",
 		"access_token_expires_at": expiry.Format(time.RFC3339),
 		"expires_at":              expiry.Format(time.RFC3339),
 	}
