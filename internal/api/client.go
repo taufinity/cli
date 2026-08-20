@@ -54,6 +54,12 @@ func (c *Client) SetOrg(orgID string) {
 	c.orgID = orgID
 }
 
+// Org returns the organization ID that will be sent as X-Organization-ID,
+// empty when the client is not scoped to a specific organization.
+func (c *Client) Org() string {
+	return c.orgID
+}
+
 // setOrgHeader adds X-Organization-ID header if orgID is set.
 func (c *Client) setOrgHeader(req *http.Request) {
 	if c.orgID != "" {

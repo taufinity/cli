@@ -113,7 +113,16 @@ func newDeliverableClient() *api.Client {
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
 	client.SetDryRun(IsDryRun())
-	if org := GetOrg(); org != "" {
+	// The upload subcommand declares its own --org, which shadows the persistent
+	// flag, so GetOrg() is empty even when the user typed --org. Left unhandled
+	// the organization travels in the multipart body while the request itself
+	// stays scoped to whatever organization the session was last switched into,
+	// and the server authorizes against that one rather than the one named.
+	org := GetOrg()
+	if deliverableOrg != "" {
+		org = deliverableOrg
+	}
+	if org != "" {
 		client.SetOrg(org)
 	}
 	return client
