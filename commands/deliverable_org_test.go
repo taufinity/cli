@@ -1,13 +1,6 @@
 package commands
 
-import (
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"testing"
-
-	"github.com/taufinity/cli/internal/api"
-)
+import "testing"
 
 // TestDeliverableClientUsesLocalOrgFlag pins the flag-shadowing fix.
 //
@@ -32,31 +25,27 @@ func TestDeliverableClientUsesLocalOrgFlag(t *testing.T) {
 	}
 }
 
-// TestDeliverableURLUsesPortalDomain covers the link printed after an upload.
-// It must be the portal SPA route on the organization's own domain: the
-// /api/deliverables path serves the file directly and resolves against the
-// viewer's currently selected organization, so anyone whose session sits in a
-// different organization sees a bare 404.
-func TestDeliverableURLUsesPortalDomain(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/organizations" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		_, _ = w.Write([]byte(`[{"id":7,"portal_domain":"portal.example.com"},{"id":9}]`))
-	}))
-	defer srv.Close()
-
-	client := api.New(srv.URL)
-
-	if got := deliverableURL(client, "7", "abc"); got != "https://portal.example.com/deliverables/abc" {
-		t.Errorf("expected the portal domain link, got %q", got)
+// TestPortalBaseFor covers the origin used in the link printed after an upload.
+// It must be the organization's own portal domain, because the fallback host
+// resolves a deliverable against whichever organization the viewer's session is
+// currently switched into, and anyone sitting elsewhere gets a bare 404.
+func TestPortalBaseFor(t *testing.T) {
+	orgs := []portalOrgEntry{
+		{ID: 7, PortalDomain: "portal.example.com"},
+		{ID: 9},
 	}
+	const fallback = "https://canonical.example.com"
 
-	// Organization 9 has no portal domain, so the canonical host is used. That
-	// still lands on the SPA route rather than the raw API path.
-	want := strings.TrimSuffix(GetAPIURL(), "/") + "/deliverables/abc"
-	if got := deliverableURL(client, "9", "abc"); got != want {
-		t.Errorf("expected the fallback link %q, got %q", want, got)
+	if got := portalBaseFor(orgs, "7", fallback); got != "https://portal.example.com" {
+		t.Errorf("expected the portal domain, got %q", got)
+	}
+	// No portal domain configured, and an organization that is not listed at
+	// all: both fall back to the canonical host, which still lands on the SPA
+	// route rather than the raw API path.
+	if got := portalBaseFor(orgs, "9", fallback); got != fallback {
+		t.Errorf("expected the fallback host for an org without a portal domain, got %q", got)
+	}
+	if got := portalBaseFor(orgs, "404", fallback); got != fallback {
+		t.Errorf("expected the fallback host for an unknown org, got %q", got)
 	}
 }

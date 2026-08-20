@@ -157,21 +157,27 @@ type portalOrgEntry struct {
 // Falls back to the API base URL when the organization has no portal domain,
 // which still yields a working SPA link, just on the canonical host.
 func deliverableURL(client *api.Client, orgID, uuid string) string {
-	base := strings.TrimSuffix(GetAPIURL(), "/")
+	fallback := strings.TrimSuffix(GetAPIURL(), "/")
+	var orgs []portalOrgEntry
 	if orgID != "" {
 		if resp, err := client.GetWithAuth(context.Background(), "/api/organizations"); err == nil && resp.IsSuccess() {
-			var orgs []portalOrgEntry
-			if json.Unmarshal(resp.Body, &orgs) == nil {
-				for _, o := range orgs {
-					if strconv.Itoa(o.ID) == orgID && o.PortalDomain != "" {
-						base = "https://" + o.PortalDomain
-						break
-					}
-				}
-			}
+			_ = json.Unmarshal(resp.Body, &orgs)
 		}
 	}
-	return base + "/deliverables/" + uuid
+	return portalBaseFor(orgs, orgID, fallback) + "/deliverables/" + uuid
+}
+
+// portalBaseFor picks the origin for a deliverable link: the organization's own
+// portal domain when it has one, otherwise the canonical host. Split out from
+// deliverableURL so the choice is testable without a network call or a signed-in
+// session.
+func portalBaseFor(orgs []portalOrgEntry, orgID, fallback string) string {
+	for _, o := range orgs {
+		if strconv.Itoa(o.ID) == orgID && o.PortalDomain != "" {
+			return "https://" + o.PortalDomain
+		}
+	}
+	return fallback
 }
 
 func runDeliverableUpload(cmd *cobra.Command, args []string) error {
