@@ -9,6 +9,8 @@ import (
 	"mime/multipart"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -43,6 +45,13 @@ Examples:
   # With description and custom entry file
   taufinity deliverable upload --file ./dist --name "Frontend v2" --slug frontend-v2 --org 12 \
       --description "Production build" --entry-file index.html
+
+On success the command prints the link to share: the portal route on the
+organization's own domain. Someone who is not signed in is sent to the login
+page and returns to the document afterwards.
+
+Re-uploading with the same --slug replaces the deliverable in place and keeps
+its UUID, so links that are already out there keep working.
 `,
 	RunE: runDeliverableUpload,
 }
@@ -113,10 +122,62 @@ func newDeliverableClient() *api.Client {
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
 	client.SetDryRun(IsDryRun())
-	if org := GetOrg(); org != "" {
+	// The upload subcommand declares its own --org, which shadows the persistent
+	// flag, so GetOrg() is empty even when the user typed --org. Left unhandled
+	// the organization travels in the multipart body while the request itself
+	// stays scoped to whatever organization the session was last switched into,
+	// and the server authorizes against that one rather than the one named.
+	org := GetOrg()
+	if deliverableOrg != "" {
+		org = deliverableOrg
+	}
+	if org != "" {
 		client.SetOrg(org)
 	}
 	return client
+}
+
+// portalOrgEntry is the slice of /api/organizations this command needs: the id
+// to match on and the portal domain a customer actually visits.
+type portalOrgEntry struct {
+	ID           int    `json:"id"`
+	PortalDomain string `json:"portal_domain"`
+}
+
+// deliverableURL builds the link a human should open: the portal SPA route on
+// the organization's own domain.
+//
+// Not the /api/deliverables/... path. That one serves the file directly, and it
+// resolves the deliverable against whatever organization the viewer's session
+// is currently switched into, so anyone whose active organization differs gets
+// a bare 404 that reads like the document does not exist. The SPA route sets
+// the organization from the portal domain, and an unauthenticated visitor is
+// sent to /login?redirect=... and lands back on the document afterwards.
+//
+// Falls back to the API base URL when the organization has no portal domain,
+// which still yields a working SPA link, just on the canonical host.
+func deliverableURL(client *api.Client, orgID, uuid string) string {
+	fallback := strings.TrimSuffix(GetAPIURL(), "/")
+	var orgs []portalOrgEntry
+	if orgID != "" {
+		if resp, err := client.GetWithAuth(context.Background(), "/api/organizations"); err == nil && resp.IsSuccess() {
+			_ = json.Unmarshal(resp.Body, &orgs)
+		}
+	}
+	return portalBaseFor(orgs, orgID, fallback) + "/deliverables/" + uuid
+}
+
+// portalBaseFor picks the origin for a deliverable link: the organization's own
+// portal domain when it has one, otherwise the canonical host. Split out from
+// deliverableURL so the choice is testable without a network call or a signed-in
+// session.
+func portalBaseFor(orgs []portalOrgEntry, orgID, fallback string) string {
+	for _, o := range orgs {
+		if strconv.Itoa(o.ID) == orgID && o.PortalDomain != "" {
+			return "https://" + o.PortalDomain
+		}
+	}
+	return fallback
 }
 
 func runDeliverableUpload(cmd *cobra.Command, args []string) error {
@@ -206,6 +267,7 @@ func runDeliverableUpload(cmd *cobra.Command, args []string) error {
 		if err := json.Unmarshal(resp.Body, &result); err == nil && result.UUID != "" {
 			Print("  UUID: %s\n", result.UUID)
 			Print("  Slug: %s\n", result.Slug)
+			Print("  Link: %s\n", deliverableURL(client, deliverableOrg, result.UUID))
 		}
 	}
 
