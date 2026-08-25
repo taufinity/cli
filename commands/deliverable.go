@@ -36,8 +36,9 @@ zipped on the fly, honoring .gitignore / .dockerignore / .taufinityignore
 plus hardcoded security excludes (.env, *.key, node_modules, .git, etc).
 
 Examples:
-  # Upload a folder (zipped in-memory before upload)
-  taufinity deliverable upload --file ./dist --name "Frontend v2" --slug frontend-v2 --org 12
+  # Upload a folder (zipped in-memory before upload); the slug is generated
+  # from the name, here "frontend-v2"
+  taufinity deliverable upload --file ./dist --name "Frontend v2" --org 12
 
   # Upload a pre-built ZIP
   taufinity deliverable upload --file ./build.zip --name "Frontend v2" --slug frontend-v2 --org 12
@@ -47,11 +48,13 @@ Examples:
       --description "Production build" --entry-file index.html
 
 On success the command prints the link to share: the portal route on the
-organization's own domain. Someone who is not signed in is sent to the login
-page and returns to the document afterwards.
+organization's own domain, addressed by slug. Someone who is not signed in is
+sent to the login page and returns to the document afterwards.
 
-Re-uploading with the same --slug replaces the deliverable in place and keeps
-its UUID, so links that are already out there keep working.
+Without --slug the server derives one from the name and adds a suffix if that
+slug is already taken. Re-uploading with an explicit --slug replaces that
+deliverable in place and keeps its UUID, so links that are already out there
+keep working.
 `,
 	RunE: runDeliverableUpload,
 }
@@ -101,7 +104,7 @@ func init() {
 	deliverableUploadCmd.Flags().StringVar(&deliverableName, "name", "", "Deliverable name (required)")
 	deliverableUploadCmd.Flags().StringVar(&deliverableOrg, "org", "", "Organization ID (numeric)")
 	deliverableUploadCmd.Flags().StringVar(&deliverableDescription, "description", "", "Deliverable description")
-	deliverableUploadCmd.Flags().StringVar(&deliverableSlug, "slug", "", "URL slug for the deliverable")
+	deliverableUploadCmd.Flags().StringVar(&deliverableSlug, "slug", "", "URL slug; generated from the name when omitted. Pass an existing slug to update that deliverable in place")
 	deliverableUploadCmd.Flags().StringVar(&deliverableEntryFile, "entry-file", "", "Entry file within the archive (e.g. index.html)")
 
 	_ = deliverableUploadCmd.MarkFlagRequired("file")
@@ -145,7 +148,8 @@ type portalOrgEntry struct {
 }
 
 // deliverableURL builds the link a human should open: the portal SPA route on
-// the organization's own domain.
+// the organization's own domain, addressed by slug (the UUID works too, but
+// the slug is the one people can read back over the phone).
 //
 // Not the /api/deliverables/... path. That one serves the file directly, and it
 // resolves the deliverable against whatever organization the viewer's session
@@ -156,7 +160,7 @@ type portalOrgEntry struct {
 //
 // Falls back to the API base URL when the organization has no portal domain,
 // which still yields a working SPA link, just on the canonical host.
-func deliverableURL(client *api.Client, orgID, uuid string) string {
+func deliverableURL(client *api.Client, orgID, ref string) string {
 	fallback := strings.TrimSuffix(GetAPIURL(), "/")
 	var orgs []portalOrgEntry
 	if orgID != "" {
@@ -164,7 +168,7 @@ func deliverableURL(client *api.Client, orgID, uuid string) string {
 			_ = json.Unmarshal(resp.Body, &orgs)
 		}
 	}
-	return portalBaseFor(orgs, orgID, fallback) + "/deliverables/" + uuid
+	return portalBaseFor(orgs, orgID, fallback) + "/deliverables/" + ref
 }
 
 // portalBaseFor picks the origin for a deliverable link: the organization's own
@@ -267,7 +271,11 @@ func runDeliverableUpload(cmd *cobra.Command, args []string) error {
 		if err := json.Unmarshal(resp.Body, &result); err == nil && result.UUID != "" {
 			Print("  UUID: %s\n", result.UUID)
 			Print("  Slug: %s\n", result.Slug)
-			Print("  Link: %s\n", deliverableURL(client, deliverableOrg, result.UUID))
+			ref := result.Slug
+			if ref == "" {
+				ref = result.UUID
+			}
+			Print("  Link: %s\n", deliverableURL(client, deliverableOrg, ref))
 		}
 	}
 
