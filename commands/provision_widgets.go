@@ -38,6 +38,7 @@ type widgetConfig struct {
 	AgentEnabled              *bool    `yaml:"agent_enabled,omitempty"`
 	AgentMCPServer            string   `yaml:"agent_mcp_server,omitempty"`
 	AgentMCPTools             []string `yaml:"agent_mcp_tools,omitempty"`
+	AgentEnabledTools         []string `yaml:"agent_enabled_tools,omitempty"`
 	// RouterName links the widget to an existing router (matched by name).
 	RouterName string `yaml:"router_name,omitempty"`
 	// Slug is a stable, human-readable identifier for the widget within the org.
@@ -274,6 +275,14 @@ func applyWidgetAgentFields(out map[string]interface{}, cfg widgetConfig) {
 	}
 	if len(cfg.AgentMCPTools) > 0 {
 		out["agent_mcp_tools"] = cfg.AgentMCPTools
+	}
+	// Sent as a JSON array, same wire shape as agent_mcp_tools above (a
+	// []string marshals to an array; only allowed_mime_types uses the
+	// joined-string form). Nil check, not len: key absent from the YAML
+	// leaves the server value untouched, an explicit empty list clears it —
+	// the same nil-vs-empty contract as applyAgentTools.
+	if cfg.AgentEnabledTools != nil {
+		out["agent_enabled_tools"] = cfg.AgentEnabledTools
 	}
 }
 
