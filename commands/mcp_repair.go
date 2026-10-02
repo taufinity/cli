@@ -117,6 +117,21 @@ func (s switchedOff) keys() []string {
 	return keys
 }
 
+// keepReadOnly narrows tools to the read-only ones in readOnly. A nil
+// readOnly means no catalog is known, and tools come back unchanged.
+func keepReadOnly(tools []string, readOnly map[string]bool) []string {
+	if readOnly == nil {
+		return tools
+	}
+	kept := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if readOnly[t] {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
 func findSwitchedOff(cfgPath string) (switchedOff, error) {
 	readOnly := loadReadOnlyTools()
 	out := switchedOff{tools: map[string][]string{}, readOnlyOnly: readOnly != nil}
@@ -129,15 +144,7 @@ func findSwitchedOff(cfgPath string) (switchedOff, error) {
 		if err != nil {
 			return out, err
 		}
-		if readOnly != nil {
-			kept := tools[:0]
-			for _, t := range tools {
-				if readOnly[t] {
-					kept = append(kept, t)
-				}
-			}
-			tools = kept
-		}
+		tools = keepReadOnly(tools, readOnly)
 		if len(tools) > 0 {
 			out.servers = append(out.servers, srv)
 			out.tools[srv] = tools

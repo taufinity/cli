@@ -219,11 +219,16 @@ func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string
 }
 
 // warnSwitchedOffTools tells the user when Claude Desktop has switched off
-// tools of label. Reinstalling does not switch them back on: that setting
+// tools of label. It counts what `mcp repair` counts: only read tools once a
+// catalog is known, so the two never contradict each other. Reinstalling does not switch them back on: that setting
 // lives in Claude Desktop and only Customize → Connectors changes it.
 func warnSwitchedOffTools(cmd *cobra.Command, path, label string) {
 	tools, err := desktopconfig.SwitchedOffTools(path, label)
-	if err != nil || len(tools) == 0 {
+	if err != nil {
+		return
+	}
+	tools = keepReadOnly(tools, loadReadOnlyTools())
+	if len(tools) == 0 {
 		return
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Note: %d feature(s) of your Taufinity connection %q are switched off in Claude Desktop. "+

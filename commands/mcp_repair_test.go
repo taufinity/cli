@@ -314,3 +314,24 @@ func TestIsUserCancel(t *testing.T) {
 		t.Error("a permission error must not count as Later")
 	}
 }
+
+func TestRecordToolCatalog_ConcurrentWritersLeaveAValidCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	done := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() {
+			recordToolCatalog(json.RawMessage(`{"tools":[{"name":"query_insights","annotations":{"readOnlyHint":true}}]}`))
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		<-done
+	}
+	if got := loadReadOnlyTools(); !got["query_insights"] {
+		t.Fatalf("read-only = %v, want query_insights after concurrent writes", got)
+	}
+	leftovers, _ := filepath.Glob(filepath.Join(filepath.Dir(toolCatalogPath()), "mcp-tools.*.tmp"))
+	if len(leftovers) != 0 {
+		t.Errorf("temp files left behind: %v", leftovers)
+	}
+}

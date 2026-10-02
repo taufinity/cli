@@ -585,3 +585,33 @@ func TestMCPInstall_ClaudeDesktopNotesSwitchedOffToolsWithoutTouchingThem(t *tes
 		t.Errorf("output = %q, want a note pointing to 'taufinity mcp repair'", out.String())
 	}
 }
+
+func TestMCPInstall_NoteIgnoresWriteToolsLeftOff(t *testing.T) {
+	resetGlobals(t)
+	t.Setenv("HOME", t.TempDir())
+	seedCredentials(t, "toggles-filter-token")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/opt/taufinity/bin/taufinity")
+
+	cfgDir := t.TempDir()
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", filepath.Join(cfgDir, "claude_desktop_config.json"))
+	body := `{"v":3,"owners":{"acct":["local:taufinity-test:delete_article"]}}`
+	if err := os.WriteFile(filepath.Join(cfgDir, "mcp-user-tool-toggles.json"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recordToolCatalog(json.RawMessage(`{"tools":[{"name":"delete_article","annotations":{"readOnlyHint":false}}]}`))
+
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	t.Cleanup(func() { rootCmd.SetOut(nil) })
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"--org", "3",
+		"mcp", "install", "--label", "taufinity-test",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if strings.Contains(out.String(), "switched off") {
+		t.Errorf("output = %q, want no note: only a write tool is off, and repair would say nothing to fix", out.String())
+	}
+}

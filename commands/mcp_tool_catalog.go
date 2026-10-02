@@ -50,11 +50,21 @@ func recordToolCatalog(result json.RawMessage) {
 	if err := os.MkdirAll(config.Dir(), 0o700); err != nil {
 		return
 	}
-	tmp := toolCatalogPath() + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	// A temp file of its own per writer: Claude Desktop starts several
+	// bridges at once, and a shared temp name lets them clobber each other.
+	tmp, err := os.CreateTemp(config.Dir(), "mcp-tools.*.tmp")
+	if err != nil {
 		return
 	}
-	_ = os.Rename(tmp, toolCatalogPath())
+	_, werr := tmp.Write(raw)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil {
+		os.Remove(tmp.Name())
+		return
+	}
+	if err := os.Rename(tmp.Name(), toolCatalogPath()); err != nil {
+		os.Remove(tmp.Name())
+	}
 }
 
 // loadReadOnlyTools returns the recorded read-only tool names, or nil when
