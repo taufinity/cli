@@ -26,79 +26,145 @@ const (
 	// unanswered. Nobody said "Later"; they were probably away from the Mac.
 	repairSnoozeUnanswered = 4 * time.Hour
 
-	// repairLoopGuard: tools still switched off this soon after a repair mean
-	// Claude Desktop restored them itself. Asking again would loop, so we
-	// report it and stay quiet instead.
-	repairLoopGuard = 15 * time.Minute
+	// repairAckWindow: when the user switched tools on within this time after
+	// opening Connectors, the ones still off are what they chose to leave off.
+	// Those are remembered and not asked about again. If nothing changed they
+	// probably did not find the switch, so the dialog comes back later.
+	repairAckWindow = time.Hour
 
 	// repairLockStale: a lock older than this belongs to a dialog that died.
+	// Above the longest a live prompt can hold it: one dialog of 15 minutes.
 	repairLockStale = 20 * time.Minute
+
+	// connectorsSettingsURL opens Claude Desktop on Customize → Connectors.
+	// The older /settings/connectors only says connectors moved to Customize.
+	// It lands on the Discover tab (so does ?directory=false); there is no
+	// link to Yours, so the dialog text names that tab.
+	connectorsSettingsURL = "claude://claude.ai/customize/connectors"
 )
 
 var (
-	// repairQuitTimeout caps how long we wait for Claude Desktop to exit
-	// before giving up without touching its files. A var so tests can shorten it.
-	repairQuitTimeout = 30 * time.Second
-
-	// desktopRepairSupported gates the dialog and the restart, which use macOS
-	// tooling. A var so tests run the same paths on Linux CI.
+	// desktopRepairSupported gates the dialog and the settings link, which use
+	// macOS tooling. A var so tests run the same paths on Linux CI.
 	desktopRepairSupported = runtime.GOOS == "darwin"
 
-	flagMCPRepairPrompt    bool
-	flagMCPRepairNoRestart bool
+	flagMCPRepairPrompt bool
+	flagMCPRepairWait   time.Duration
 )
 
 var mcpRepairCmd = &cobra.Command{
 	Use:   "repair",
-	Short: "Re-enable Taufinity tools that Claude Desktop switched off",
-	Long: `Repair finds the Taufinity servers in Claude Desktop's config and
-re-enables every tool Claude Desktop has recorded as switched off for them.
+	Short: "Help switch on Taufinity tools that Claude Desktop has switched off",
+	Long: `Repair checks whether Claude Desktop has switched off tools of your
+Taufinity connection. Those can only be switched on in Claude Desktop itself,
+under Customize → Connectors → Yours, and take effect after a restart.
 
-Claude Desktop keeps that list across reinstalls and renames, and only reads
-it at startup. Repair therefore quits Claude Desktop first, changes the file
-while it is closed (so the app cannot write the old list back), and reopens it.
+Repair shows what is switched off and opens the Connectors settings for you.
+Restarting Claude Desktop afterwards is up to you; the dialog says so.
 
 Flags:
-  --prompt      Ask first in a dialog, and do nothing when there is nothing to
-                repair. Used by the bridge at startup and by the daily check.
-                "Later" keeps the dialog away for seven days, an unanswered
-                dialog for four hours.
-  --no-restart  Change the file only. Refused while Claude Desktop is running,
-                because the app would write the old list back when it quits.`,
+  --prompt  Run unattended: silent when nothing is switched off, one dialog at
+            a time, "Later" keeps it away for seven days (four hours when the
+            dialog went unanswered). Tools still off within an hour of opening
+            the settings count as a deliberate choice and are not asked about
+            again. Used by the bridge at startup and by the daily check.`,
 	RunE: runMCPRepair,
 }
 
 func init() {
 	mcpCmd.AddCommand(mcpRepairCmd)
-	mcpRepairCmd.Flags().BoolVar(&flagMCPRepairPrompt, "prompt", false, "Ask in a dialog first; silent when nothing needs repair")
-	mcpRepairCmd.Flags().BoolVar(&flagMCPRepairNoRestart, "no-restart", false, "Do not quit and reopen Claude Desktop")
+	mcpRepairCmd.Flags().BoolVar(&flagMCPRepairPrompt, "prompt", false, "Run unattended: silent when nothing is switched off, snoozable")
+	mcpRepairCmd.Flags().DurationVar(&flagMCPRepairWait, "wait", 0, "Wait this long before checking")
+	_ = mcpRepairCmd.Flags().MarkHidden("wait")
 }
 
 // desktopApp is the part of Claude Desktop repair talks to. Swapped in tests.
 type desktopApp interface {
-	Running() bool
-	Quit() error
-	Open() error
-	// Ask shows message with a "Later" and a "Fix now" button.
-	Ask(message string) (dialogAnswer, error)
+	OpenSettings() error
+	// Ask shows message with a "Later" button and an okLabel button.
+	Ask(message, okLabel string) (dialogAnswer, error)
 }
 
-// dialogAnswer is what came back from the repair dialog.
+// dialogAnswer is what came back from a dialog.
 type dialogAnswer int
 
 const (
 	answerLater dialogAnswer = iota
-	answerFixNow
+	answerOK
 	answerUnanswered // the dialog timed out
 )
 
-// errDesktopRunning is returned when the toggles would be changed while Claude
-// Desktop runs: the app keeps the list in memory and writes it back on quit,
-// so the change would silently be undone.
-var errDesktopRunning = errors.New("Claude Desktop is running, so nothing was changed; " +
-	"run 'taufinity mcp repair' to close it, switch the features on, and reopen it")
-
 var claudeDesktop desktopApp = macClaudeDesktop{}
+
+// switchedOff is what Claude Desktop has switched off, per Taufinity server.
+// When a tool catalog is known it holds only read-only tools: write and admin
+// tools left off are a choice, not a problem, and are not asked about.
+type switchedOff struct {
+	readOnlyOnly bool                // filtered on the recorded read-only tools
+	servers      []string            // Taufinity servers with tools switched off
+	tools        map[string][]string // server → switched-off tool names
+	total        int
+}
+
+// keys returns "server:tool" for every switched-off tool.
+func (s switchedOff) keys() []string {
+	var keys []string
+	for _, srv := range s.servers {
+		for _, t := range s.tools[srv] {
+			keys = append(keys, srv+":"+t)
+		}
+	}
+	return keys
+}
+
+// keepReadOnly narrows tools to the read-only ones in readOnly. A nil
+// readOnly means no catalog is known, and tools come back unchanged.
+func keepReadOnly(tools []string, readOnly map[string]bool) []string {
+	if readOnly == nil {
+		return tools
+	}
+	kept := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if readOnly[t] {
+			kept = append(kept, t)
+		}
+	}
+	return kept
+}
+
+func findSwitchedOff(cfgPath string) (switchedOff, error) {
+	readOnly := loadReadOnlyTools()
+	out := switchedOff{tools: map[string][]string{}, readOnlyOnly: readOnly != nil}
+	servers, err := desktopconfig.BridgeServers(cfgPath)
+	if err != nil {
+		return out, err
+	}
+	for _, srv := range servers {
+		tools, err := desktopconfig.SwitchedOffTools(cfgPath, srv)
+		if err != nil {
+			return out, err
+		}
+		tools = keepReadOnly(tools, readOnly)
+		if len(tools) > 0 {
+			out.servers = append(out.servers, srv)
+			out.tools[srv] = tools
+			out.total += len(tools)
+		}
+	}
+	return out, nil
+}
+
+// repairMessage is the text of the first dialog, and of the terminal output.
+func repairMessage(off switchedOff) string {
+	quoted := make([]string, len(off.servers))
+	for i, s := range off.servers {
+		quoted[i] = fmt.Sprintf("%q", s)
+	}
+	return fmt.Sprintf("Some Taufinity connections are turned off\n"+
+		"To restore connections open Customize → Connectors → Yours →\n"+
+		"%s → allow the tools → restart Claude Desktop.",
+		strings.Join(quoted, " and "))
+}
 
 func runMCPRepair(cmd *cobra.Command, _ []string) error {
 	cfgPath, err := claudeDesktopPath()
@@ -106,149 +172,157 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
-	restart := !flagMCPRepairNoRestart && desktopRepairSupported
+	if flagMCPRepairWait > 0 {
+		time.Sleep(flagMCPRepairWait)
+	}
 
 	if !flagMCPRepairPrompt {
-		n, err := repairDesktopTools(out, cfgPath, restart)
+		off, err := findSwitchedOff(cfgPath)
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			fmt.Fprintln(out, "Nothing to fix: all features of your Taufinity connection are switched on in Claude Desktop.")
+		if off.total == 0 {
+			if off.readOnlyOnly {
+				fmt.Fprintln(out, "Nothing to fix: every Taufinity tool that reads your data is switched on in Claude Desktop.")
+			} else {
+				fmt.Fprintln(out, "Nothing to fix: all features of your Taufinity connection are switched on in Claude Desktop.")
+			}
+			return nil
 		}
-		return nil
+		fmt.Fprintln(out, repairMessage(off))
+		if !desktopRepairSupported {
+			return nil
+		}
+		// The lock guards the dialogs and the state file alike, so a manual
+		// run cannot interleave with a prompt the bridge started.
+		release, ok := acquireRepairLock()
+		if !ok {
+			fmt.Fprintln(out, "A Taufinity dialog about this is already open; use that one.")
+			return nil
+		}
+		defer release()
+		_, err = guideRepair(out, off)
+		return err
 	}
 
 	// --prompt runs unattended (bridge startup, daily agent). Several bridges
-	// start in the same second, so only the first one may show a dialog.
+	// start in the same second, so only the first one may show a dialog. The
+	// lock is held for the whole run: it also serialises the state file.
 	release, ok := acquireRepairLock()
 	if !ok {
 		return nil
 	}
 	defer release()
 
-	off, err := switchedOffTools(cfgPath)
-	if err != nil || off == 0 {
+	off, err := findSwitchedOff(cfgPath)
+	// Without a recorded catalog there is no telling a switched-off read tool
+	// from a write tool left off on purpose, so stay quiet rather than nag.
+	if err != nil || off.total == 0 || !off.readOnlyOnly || !desktopRepairSupported {
 		return err
 	}
+
 	state := loadRepairState()
 	now := time.Now()
-	if now.Sub(state.LastRepairAt) < repairLoopGuard {
-		telemetry.Report(telemetry.Event{
-			EventType:    "mcp.tool_toggles_restored",
-			ErrorCode:    "switched_off_after_repair",
-			ErrorMessage: fmt.Sprintf("%d tools switched off again within %s of a repair", off, repairLoopGuard),
-		})
-		return nil
+	if !state.SettingsOpenedAt.IsZero() && now.Sub(state.SettingsOpenedAt) < repairAckWindow {
+		// The user was just in Connectors.
+		opened := state.OffWhenOpened
+		state.SettingsOpenedAt, state.OffWhenOpened = time.Time{}, 0
+		if off.total < opened {
+			// They switched some on; what is still off is their choice.
+			state.Acknowledged = off.keys()
+			telemetry.Report(telemetry.Event{
+				EventType:    "mcp.tool_toggles_acknowledged",
+				ErrorCode:    "left_off_after_settings",
+				ErrorMessage: fmt.Sprintf("%d of %d tools left switched off after opening Connectors", off.total, opened),
+			})
+		} else {
+			// Nothing changed: probably did not find the switch. Ask again later.
+			state.SnoozedUntil = now.Add(repairSnoozeUnanswered)
+			telemetry.Report(telemetry.Event{
+				EventType:    "mcp.tool_toggles_unchanged",
+				ErrorCode:    "unchanged_after_settings",
+				ErrorMessage: fmt.Sprintf("%d tools still switched off after opening Connectors", off.total),
+			})
+		}
+		return saveRepairState(state)
 	}
-	if now.Before(state.SnoozedUntil) || !desktopRepairSupported {
+	if !hasUnacknowledged(off.keys(), state.Acknowledged) || now.Before(state.SnoozedUntil) {
 		return nil
 	}
 
-	answer, err := claudeDesktop.Ask(fmt.Sprintf(
-		"Claude can't fully use your Taufinity connection,\n"+
-			"because %d of its features are switched off.\n\n"+
-			"Fix it now? Claude Desktop will close and reopen.", off))
+	answer, err := guideRepair(out, off)
 	if err != nil {
 		return err
 	}
+	state = loadRepairState() // guideRepair may have recorded SettingsOpenedAt
 	switch answer {
 	case answerLater:
 		state.SnoozedUntil = now.Add(repairSnooze)
-		return saveRepairState(state)
 	case answerUnanswered:
 		state.SnoozedUntil = now.Add(repairSnoozeUnanswered)
-		return saveRepairState(state)
+	default:
+		return nil
 	}
-	_, err = repairDesktopTools(out, cfgPath, restart)
-	return err
+	return saveRepairState(state)
 }
 
-// switchedOffTools sums the switched-off tools over every Taufinity bridge
-// server in the Claude Desktop config.
-func switchedOffTools(cfgPath string) (int, error) {
-	servers, err := desktopconfig.BridgeServers(cfgPath)
+// guideRepair shows the switched-off dialog and, on "Open settings", opens
+// Connectors. It returns the answer to the dialog.
+func guideRepair(out io.Writer, off switchedOff) (dialogAnswer, error) {
+	telemetry.Report(telemetry.Event{
+		EventType:    "mcp.tool_toggles_switched_off",
+		ErrorCode:    "repair_prompt_shown",
+		ErrorMessage: fmt.Sprintf("%d tools switched off across %d server(s)", off.total, len(off.servers)),
+	})
+	answer, err := claudeDesktop.Ask(repairMessage(off), "Open settings")
 	if err != nil {
-		return 0, err
+		reportRepairFailure("dialog_failed", err)
+		return answer, err
 	}
-	total := 0
-	for _, s := range servers {
-		n, err := desktopconfig.CountToolToggles(cfgPath, s)
-		if err != nil {
-			return 0, err
-		}
-		total += n
-	}
-	return total, nil
-}
-
-// repairDesktopTools quits Claude Desktop when restart is set, clears the
-// switched-off tools of every Taufinity server, and reopens the app. Whenever
-// the app is still running at the moment of writing (it did not quit in time,
-// or restart is off) nothing is changed, because a running app writes its
-// in-memory list back over ours.
-func repairDesktopTools(out io.Writer, cfgPath string, restart bool) (int, error) {
-	servers, err := desktopconfig.BridgeServers(cfgPath)
-	if err != nil {
-		return 0, err
-	}
-	off, err := switchedOffTools(cfgPath)
-	if err != nil || off == 0 {
-		return 0, err
+	if answer != answerOK {
+		return answer, nil
 	}
 
-	running := desktopRepairSupported && claudeDesktop.Running()
-	if running && !restart {
-		return 0, errDesktopRunning
-	}
-	wasRunning := running
-	if wasRunning {
-		fmt.Fprintln(out, "Claude Desktop will close and reopen to load the change.")
-		if err := claudeDesktop.Quit(); err != nil {
-			return 0, fmt.Errorf("quit Claude Desktop: %w", err)
-		}
-		deadline := time.Now().Add(repairQuitTimeout)
-		for claudeDesktop.Running() {
-			if time.Now().After(deadline) {
-				return 0, errors.New("Claude Desktop did not quit in time; nothing was changed")
-			}
-			time.Sleep(250 * time.Millisecond)
-		}
-	}
-
-	total := 0
-	for _, s := range servers {
-		n, err := desktopconfig.ClearToolToggles(cfgPath, s)
-		if err != nil {
-			return total, err
-		}
-		total += n
+	if err := claudeDesktop.OpenSettings(); err != nil {
+		reportRepairFailure("open_settings_failed", err)
+		fmt.Fprintf(out, "Could not open the settings (%v); open them yourself as described above.\n", err)
 	}
 	state := loadRepairState()
-	state.LastRepairAt = time.Now()
+	state.SettingsOpenedAt, state.OffWhenOpened = time.Now(), off.total
 	_ = saveRepairState(state)
-	telemetry.Report(telemetry.Event{
-		EventType:    "mcp.tool_toggles_cleared",
-		ErrorCode:    "tools_reenabled",
-		ErrorMessage: fmt.Sprintf("re-enabled %d tools across %d server(s)", total, len(servers)),
-	})
-	fmt.Fprintf(out, "Switched on %d feature(s) of your Taufinity connection in Claude Desktop.\n", total)
-
-	if wasRunning {
-		if err := claudeDesktop.Open(); err != nil {
-			return total, fmt.Errorf("reopen Claude Desktop: %w", err)
-		}
-	} else if !restart {
-		fmt.Fprintln(out, "Quit and reopen Claude Desktop to load them.")
-	}
-	return total, nil
+	return answerOK, nil
 }
 
-// repairState persists the dialog's snooze and the last repair, so the
-// prompt neither nags nor loops across bridge restarts.
+// reportRepairFailure records why the guided repair could not complete, so a
+// broken dialog or deep link shows up in telemetry instead of only on screen.
+func reportRepairFailure(code string, err error) {
+	telemetry.Report(telemetry.Event{
+		EventType:    "mcp.repair_failed",
+		ErrorCode:    code,
+		ErrorMessage: err.Error(),
+	})
+}
+
+func hasUnacknowledged(keys, acknowledged []string) bool {
+	ack := make(map[string]bool, len(acknowledged))
+	for _, k := range acknowledged {
+		ack[k] = true
+	}
+	for _, k := range keys {
+		if !ack[k] {
+			return true
+		}
+	}
+	return false
+}
+
+// repairState persists the dialog's snooze and what the user chose to leave
+// off, so the prompt neither nags nor loops across bridge restarts.
 type repairState struct {
-	SnoozedUntil time.Time `json:"snoozed_until"`
-	LastRepairAt time.Time `json:"last_repair_at"`
+	SnoozedUntil     time.Time `json:"snoozed_until"`
+	SettingsOpenedAt time.Time `json:"settings_opened_at"`
+	OffWhenOpened    int       `json:"off_when_opened,omitempty"`
+	Acknowledged     []string  `json:"acknowledged,omitempty"`
 }
 
 func repairStatePath() string { return filepath.Join(config.Dir(), "mcp-repair.json") }
@@ -295,43 +369,46 @@ func acquireRepairLock() (release func(), ok bool) {
 // macClaudeDesktop drives the Claude Desktop app through macOS tooling.
 type macClaudeDesktop struct{}
 
-func (macClaudeDesktop) Running() bool {
-	return exec.Command("pgrep", "-x", "Claude").Run() == nil
+func (macClaudeDesktop) OpenSettings() error {
+	return exec.Command("open", connectorsSettingsURL).Run()
 }
 
-func (macClaudeDesktop) Quit() error {
-	return exec.Command("osascript", "-e", `tell application "Claude" to quit`).Run()
-}
+// dialogScript takes the message and the button label as arguments, so no
+// text ever has to be escaped into AppleScript source.
+const dialogScript = `on run argv
+	display dialog (item 1 of argv) with title "Taufinity" buttons {"Later", (item 2 of argv)} default button (item 2 of argv) cancel button "Later" with icon caution giving up after 900
+end run`
 
-func (macClaudeDesktop) Open() error {
-	return exec.Command("open", "-a", "Claude").Run()
-}
-
-func (macClaudeDesktop) Ask(message string) (dialogAnswer, error) {
-	script := fmt.Sprintf(`display dialog %q with title "Taufinity" `+
-		`buttons {"Later", "Fix now"} default button "Fix now" cancel button "Later" `+
-		`with icon caution giving up after 900`, message)
-	raw, err := exec.Command("osascript", "-e", script).Output()
-	// "Later" is the cancel button, so osascript exits non-zero for it; that
-	// is an answer, not a failure.
+func (macClaudeDesktop) Ask(message, okLabel string) (dialogAnswer, error) {
+	raw, err := exec.Command("osascript", "-e", dialogScript, message, okLabel).Output()
 	if err != nil {
+		// "Later" is the cancel button: osascript then fails with "User
+		// canceled. (-128)", which is an answer. Anything else (no display,
+		// no permission) is a failure, and must not snooze the dialog.
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(err, &exitErr) && isUserCancel(string(exitErr.Stderr)) {
 			return answerLater, nil
 		}
-		return answerLater, err
+		return answerLater, fmt.Errorf("show dialog: %w", err)
 	}
-	return parseDialogAnswer(string(raw)), nil
+	return parseDialogAnswer(string(raw), okLabel), nil
+}
+
+// isUserCancel reports whether osascript's stderr is AppleScript's
+// "User canceled" error (-128), raised by the cancel button.
+func isUserCancel(stderr string) bool {
+	return strings.Contains(stderr, "(-128)")
 }
 
 // parseDialogAnswer reads osascript's record output, e.g.
-// "button returned:Fix now, gave up:false" or "button returned:, gave up:true".
-func parseDialogAnswer(out string) dialogAnswer {
+// "button returned:Open settings, gave up:false" or "button returned:, gave up:true".
+func parseDialogAnswer(out, okLabel string) dialogAnswer {
 	switch {
 	case strings.Contains(out, "gave up:true"):
 		return answerUnanswered
-	case strings.Contains(out, "button returned:Fix now"):
-		return answerFixNow
+	case strings.Contains(out, "button returned:"+okLabel+","),
+		strings.TrimSpace(out) == "button returned:"+okLabel:
+		return answerOK
 	default:
 		return answerLater
 	}

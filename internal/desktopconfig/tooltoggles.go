@@ -12,12 +12,17 @@ import (
 )
 
 // ToolTogglesFile is the file, next to claude_desktop_config.json, in which
-// Claude Desktop records the tools a user switched off per MCP server.
+// Claude Desktop mirrors the tools a user switched off per MCP server.
+//
+// It is read-only for us. Desktop derives it from the claude.ai app's own
+// storage and rewrites it on every start, so editing it changes nothing: the
+// tools can only be switched on in Customize → Connectors. Reading it is
+// reliable, because it follows that setting.
 const ToolTogglesFile = "mcp-user-tool-toggles.json"
 
 // toolTogglesVersion is the only layout of ToolTogglesFile this package
 // understands: {"v": 3, "owners": {"<account>": ["local:<server>:<tool>", ...]}}.
-// Any other version is left untouched rather than guessed at.
+// Any other version reads as "nothing switched off" rather than a guess.
 const toolTogglesVersion = 3
 
 // ToolTogglesPath returns the toggles file that belongs to the Claude Desktop
@@ -26,64 +31,45 @@ func ToolTogglesPath(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), ToolTogglesFile)
 }
 
-// ClearToolToggles re-enables every tool of the named local server that
-// Claude Desktop has recorded as switched off, for every account in the file.
-// It returns how many entries were removed.
-//
-// Why this exists: the list is keyed by server name and tool name, and it
-// survives reinstalls and renames. A server that was once installed with most
-// tools switched off keeps that state, so Studio later appears to be missing
-// tools such as query_insights while the server itself serves all of them.
-// Only tools added after the switch-off show up, which makes the cause hard
-// to spot from inside a chat.
-//
-// A missing file, an empty file, or a layout other than v3 is not an error:
-// nothing is changed and 0 is returned. Unknown top-level keys are preserved.
-func ClearToolToggles(configPath, server string) (int, error) {
-	t, err := loadToolToggles(configPath)
-	if err != nil || t == nil {
-		return 0, err
+// SwitchedOffTools returns the sorted, de-duplicated names of the tools of
+// the named local server that Claude Desktop has switched off, over all
+// accounts in the file. A missing file, an empty file, or a layout other than
+// v3 yields no tools and no error.
+func SwitchedOffTools(configPath, server string) ([]string, error) {
+	path := ToolTogglesPath(configPath)
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) || (err == nil && len(raw) == 0) {
+		return nil, nil
 	}
-	prefix := toggleKeyPrefix(server)
-	removed := 0
-	for owner, tools := range t.owners {
-		kept := tools[:0:0]
-		for _, name := range tools {
-			if strings.HasPrefix(name, prefix) {
-				removed++
-				continue
-			}
-			kept = append(kept, name)
-		}
-		t.owners[owner] = kept
+	if err != nil {
+		return nil, err
 	}
-	if removed == 0 {
-		return 0, nil
+	var doc struct {
+		V      json.RawMessage     `json:"v"`
+		Owners map[string][]string `json:"owners"`
 	}
-	if err := t.save(); err != nil {
-		return 0, err
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	return removed, nil
-}
+	var version int
+	if err := json.Unmarshal(doc.V, &version); err != nil || version != toolTogglesVersion {
+		return nil, nil
+	}
 
-// CountToolToggles reports how many tools of the named local server Claude
-// Desktop has recorded as switched off, summed over all accounts. It reads
-// the same layouts ClearToolToggles changes, so the two cannot disagree.
-func CountToolToggles(configPath, server string) (int, error) {
-	t, err := loadToolToggles(configPath)
-	if err != nil || t == nil {
-		return 0, err
-	}
-	prefix := toggleKeyPrefix(server)
-	n := 0
-	for _, tools := range t.owners {
-		for _, name := range tools {
-			if strings.HasPrefix(name, prefix) {
-				n++
+	prefix := "local:" + server + ":"
+	seen := map[string]bool{}
+	var tools []string
+	for _, keys := range doc.Owners {
+		for _, k := range keys {
+			name, ok := strings.CutPrefix(k, prefix)
+			if ok && !seen[name] {
+				seen[name] = true
+				tools = append(tools, name)
 			}
 		}
 	}
-	return n, nil
+	sort.Strings(tools)
+	return tools, nil
 }
 
 // BridgeServers returns the names of the servers in the Claude Desktop config
@@ -100,8 +86,7 @@ func BridgeServers(configPath string) ([]string, error) {
 	for name, raw := range servers {
 		entry, _ := raw.(map[string]any)
 		command, _ := entry["command"].(string)
-		base := strings.TrimSuffix(filepath.Base(command), ".exe")
-		if base != "taufinity" {
+		if strings.TrimSuffix(filepath.Base(command), ".exe") != "taufinity" {
 			continue
 		}
 		args, _ := entry["args"].([]any)
@@ -114,56 +99,4 @@ func BridgeServers(configPath string) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
-}
-
-func toggleKeyPrefix(server string) string { return "local:" + server + ":" }
-
-// toolToggles is a parsed v3 toggles file. Unknown top-level keys are kept in
-// doc so save writes them back unchanged.
-type toolToggles struct {
-	path   string
-	doc    map[string]json.RawMessage
-	owners map[string][]string
-}
-
-// loadToolToggles returns nil without an error when there is nothing this
-// package should touch: no file, an empty file, or a layout other than v3.
-func loadToolToggles(configPath string) (*toolToggles, error) {
-	path := ToolTogglesPath(configPath)
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	var version int
-	if err := json.Unmarshal(doc["v"], &version); err != nil || version != toolTogglesVersion {
-		return nil, nil
-	}
-	var owners map[string][]string
-	if err := json.Unmarshal(doc["owners"], &owners); err != nil {
-		return nil, nil
-	}
-	return &toolToggles{path: path, doc: doc, owners: owners}, nil
-}
-
-func (t *toolToggles) save() error {
-	encoded, err := json.Marshal(t.owners)
-	if err != nil {
-		return err
-	}
-	t.doc["owners"] = encoded
-	out := make(map[string]any, len(t.doc))
-	for k, v := range t.doc {
-		out[k] = v
-	}
-	return writeDocAtomic(t.path, out)
 }

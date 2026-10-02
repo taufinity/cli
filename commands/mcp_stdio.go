@@ -795,6 +795,12 @@ func (b *bridge) forwardRequest(ctx context.Context, raw []byte, frame jsonRPCFr
 		b.logf("write response: %v", err)
 	}
 
+	// Remember which tools only read data, for `mcp repair --prompt`. A paged
+	// request (with a cursor) holds only part of the list, so it is skipped.
+	if frame.Method == "tools/list" && resp.Error == nil && !bytes.Contains(frame.Params, []byte(`"cursor"`)) {
+		recordToolCatalog(resp.Result)
+	}
+
 	_ = raw // raw is intentionally not echoed; we use the structured response.
 }
 
