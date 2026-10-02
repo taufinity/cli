@@ -33,8 +33,8 @@ const (
 	repairAckWindow = time.Hour
 
 	// repairLockStale: a lock older than this belongs to a dialog that died.
-	// Above the longest a live prompt can hold it: two dialogs of 15 minutes.
-	repairLockStale = 35 * time.Minute
+	// Above the longest a live prompt can hold it: one dialog of 15 minutes.
+	repairLockStale = 20 * time.Minute
 
 	// connectorsSettingsURL opens Claude Desktop on Customize → Connectors.
 	// The older /settings/connectors only says connectors moved to Customize.
@@ -44,15 +44,7 @@ const (
 )
 
 var (
-	// repairQuitTimeout caps how long we wait for Claude Desktop to exit, and
-	// to be running again after reopening. A var so tests can shorten it.
-	repairQuitTimeout = 30 * time.Second
-
-	// repairReopenGrace is a pause between the app exiting and reopening it,
-	// so macOS has finished with the old instance. A var so tests skip it.
-	repairReopenGrace = 2 * time.Second
-
-	// desktopRepairSupported gates the dialogs and the restart, which use
+	// desktopRepairSupported gates the dialog and the settings link, which use
 	// macOS tooling. A var so tests run the same paths on Linux CI.
 	desktopRepairSupported = runtime.GOOS == "darwin"
 
@@ -67,8 +59,8 @@ var mcpRepairCmd = &cobra.Command{
 Taufinity connection. Those can only be switched on in Claude Desktop itself,
 under Customize → Connectors → Yours, and take effect after a restart.
 
-Repair shows what is switched off, opens the Connectors settings for you, and
-then offers to restart Claude Desktop.
+Repair shows what is switched off and opens the Connectors settings for you.
+Restarting Claude Desktop afterwards is up to you; the dialog says so.
 
 Flags:
   --prompt  Run unattended: silent when nothing is switched off, one dialog at
@@ -88,9 +80,6 @@ func init() {
 
 // desktopApp is the part of Claude Desktop repair talks to. Swapped in tests.
 type desktopApp interface {
-	Running() bool
-	Quit() error
-	Open() error
 	OpenSettings() error
 	// Ask shows message with a "Later" button and an okLabel button.
 	Ask(message, okLabel string) (dialogAnswer, error)
@@ -163,8 +152,6 @@ func repairMessage(off switchedOff) string {
 		"%s → allow the tools → restart Claude Desktop.",
 		strings.Join(quoted, " and "))
 }
-
-const restartMessage = "After allowing the tools, restart Claude Desktop to load them.\n\nRestart Claude Desktop now?"
 
 func runMCPRepair(cmd *cobra.Command, _ []string) error {
 	cfgPath, err := claudeDesktopPath()
@@ -260,9 +247,8 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 	return saveRepairState(state)
 }
 
-// guideRepair shows the switched-off dialog. On "Open settings" it opens
-// Connectors and then offers a restart, so the change takes effect. It
-// returns the answer to the first dialog.
+// guideRepair shows the switched-off dialog and, on "Open settings", opens
+// Connectors. It returns the answer to the dialog.
 func guideRepair(out io.Writer, off switchedOff) (dialogAnswer, error) {
 	telemetry.Report(telemetry.Event{
 		EventType:    "mcp.tool_toggles_switched_off",
@@ -285,68 +271,17 @@ func guideRepair(out io.Writer, off switchedOff) (dialogAnswer, error) {
 	state := loadRepairState()
 	state.SettingsOpenedAt, state.OffWhenOpened = time.Now(), off.total
 	_ = saveRepairState(state)
-
-	restart, err := claudeDesktop.Ask(restartMessage, "Restart")
-	if err != nil {
-		reportRepairFailure("dialog_failed", err)
-		return answerOK, err
-	}
-	if restart != answerOK {
-		return answerOK, nil
-	}
-	if err := restartClaudeDesktop(out); err != nil {
-		reportRepairFailure("restart_failed", err)
-		return answerOK, err
-	}
 	return answerOK, nil
 }
 
 // reportRepairFailure records why the guided repair could not complete, so a
-// broken deep link or dialog shows up in telemetry instead of only on screen.
+// broken dialog or deep link shows up in telemetry instead of only on screen.
 func reportRepairFailure(code string, err error) {
 	telemetry.Report(telemetry.Event{
 		EventType:    "mcp.repair_failed",
 		ErrorCode:    code,
 		ErrorMessage: err.Error(),
 	})
-}
-
-// restartClaudeDesktop quits Claude Desktop, waits for it to exit, and opens
-// it again. If it does not quit in time it is left as it is. After opening it
-// checks that the app really runs again, and tries once more if it does not:
-// right after quitting, macOS can still be tearing the old instance down.
-func restartClaudeDesktop(out io.Writer) error {
-	if claudeDesktop.Running() {
-		fmt.Fprintln(out, "Restarting Claude Desktop.")
-		if err := claudeDesktop.Quit(); err != nil {
-			return fmt.Errorf("quit Claude Desktop: %w", err)
-		}
-		if !waitFor(func() bool { return !claudeDesktop.Running() }, repairQuitTimeout) {
-			return errors.New("Claude Desktop did not quit in time; restart it yourself")
-		}
-		time.Sleep(repairReopenGrace)
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		if err := claudeDesktop.Open(); err != nil {
-			return fmt.Errorf("open Claude Desktop: %w", err)
-		}
-		if waitFor(claudeDesktop.Running, repairQuitTimeout) {
-			return nil
-		}
-	}
-	return errors.New("Claude Desktop did not start again; open it yourself")
-}
-
-// waitFor polls cond until it holds or timeout passes, and reports which.
-func waitFor(cond func() bool, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for !cond() {
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	return true
 }
 
 func hasUnacknowledged(keys, acknowledged []string) bool {
@@ -412,32 +347,8 @@ func acquireRepairLock() (release func(), ok bool) {
 	return nil, false
 }
 
-// claudeDesktopBundleID identifies Claude Desktop to macOS. Names are not
-// enough: Claude Desktop ships Claude Code as another app called "claude",
-// so `open -a Claude` can start the wrong one.
-const claudeDesktopBundleID = "com.anthropic.claudefordesktop"
-
-// macClaudeDesktop drives the Claude Desktop app through macOS tooling,
-// always by bundle ID.
+// macClaudeDesktop drives the Claude Desktop app through macOS tooling.
 type macClaudeDesktop struct{}
-
-// Running asks LaunchServices rather than pgrep: pgrep leaves out its own
-// ancestors, and a prompt started by the bridge descends from Claude Desktop,
-// so pgrep would never see the app running. "is running" does not launch it.
-func (macClaudeDesktop) Running() bool {
-	out, err := exec.Command("osascript", "-e",
-		`application id "`+claudeDesktopBundleID+`" is running`).Output()
-	return err == nil && strings.TrimSpace(string(out)) == "true"
-}
-
-func (macClaudeDesktop) Quit() error {
-	return exec.Command("osascript", "-e",
-		`tell application id "`+claudeDesktopBundleID+`" to quit`).Run()
-}
-
-func (macClaudeDesktop) Open() error {
-	return exec.Command("open", "-b", claudeDesktopBundleID).Run()
-}
 
 func (macClaudeDesktop) OpenSettings() error {
 	return exec.Command("open", connectorsSettingsURL).Run()

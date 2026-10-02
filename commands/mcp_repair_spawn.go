@@ -15,8 +15,8 @@ const repairPromptDelay = 90 * time.Second
 
 // maybeStartRepairPrompt runs at bridge startup and starts
 // `taufinity mcp repair --prompt` as a detached process: the bridge is a
-// child of Claude Desktop, and the prompt has to outlive it because it can
-// restart the app.
+// child of Claude Desktop, and the prompt has to outlive it: its dialog may
+// still be open when the user quits Claude Desktop to restart it.
 //
 // It deliberately does not look at the toggles itself. At this moment Claude
 // Desktop has not rewritten them yet, so a stale "nothing switched off" would

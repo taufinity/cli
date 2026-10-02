@@ -12,34 +12,11 @@ import (
 // fakeDesktop records what repair asked of Claude Desktop. answers are
 // returned in order, one per dialog.
 type fakeDesktop struct {
-	running   bool
-	quitWorks bool
-	answers   []dialogAnswer
-	messages  []string
-	quits     int
-	opens     int
-	settings  int
-	// failedStarts is how many Open calls do not actually start the app.
-	failedStarts int
+	answers  []dialogAnswer
+	messages []string
+	settings int
 }
 
-func (f *fakeDesktop) Running() bool { return f.running }
-func (f *fakeDesktop) Quit() error {
-	f.quits++
-	if f.quitWorks {
-		f.running = false
-	}
-	return nil
-}
-func (f *fakeDesktop) Open() error {
-	f.opens++
-	if f.failedStarts > 0 {
-		f.failedStarts-- // macOS ignored the launch
-		return nil
-	}
-	f.running = true
-	return nil
-}
 func (f *fakeDesktop) OpenSettings() error { f.settings++; return nil }
 func (f *fakeDesktop) Ask(message, _ string) (dialogAnswer, error) {
 	f.messages = append(f.messages, message)
@@ -70,12 +47,12 @@ func setupRepair(t *testing.T, toggles string, answers ...dialogAnswer) (*fakeDe
 	togglesPath := filepath.Join(dir, "mcp-user-tool-toggles.json")
 	writeTogglesFile(t, togglesPath, toggles)
 
-	fake := &fakeDesktop{running: true, quitWorks: true, answers: answers}
-	prevDesktop, prevSupported, prevTimeout, prevGrace := claudeDesktop, desktopRepairSupported, repairQuitTimeout, repairReopenGrace
-	claudeDesktop, desktopRepairSupported, repairQuitTimeout, repairReopenGrace = fake, true, 300*time.Millisecond, 0
+	fake := &fakeDesktop{answers: answers}
+	prevDesktop, prevSupported := claudeDesktop, desktopRepairSupported
+	claudeDesktop, desktopRepairSupported = fake, true
 	flagMCPRepairPrompt, flagMCPRepairWait = false, 0
 	t.Cleanup(func() {
-		claudeDesktop, desktopRepairSupported, repairQuitTimeout, repairReopenGrace = prevDesktop, prevSupported, prevTimeout, prevGrace
+		claudeDesktop, desktopRepairSupported = prevDesktop, prevSupported
 		flagMCPRepairPrompt, flagMCPRepairWait = false, 0
 	})
 	return fake, togglesPath
@@ -112,16 +89,16 @@ func TestRepairMessage_IsTheAgreedText(t *testing.T) {
 	}
 }
 
-func TestMCPRepair_OpenSettingsThenRestart(t *testing.T) {
-	fake, togglesPath := setupRepair(t, repairTestToggles, answerOK, answerOK)
+func TestMCPRepair_OpenSettings(t *testing.T) {
+	fake, togglesPath := setupRepair(t, repairTestToggles, answerOK)
 
 	out := runRepair(t)
 
-	if fake.settings != 1 || fake.quits != 1 || fake.opens != 1 {
-		t.Errorf("settings=%d quits=%d opens=%d, want 1/1/1", fake.settings, fake.quits, fake.opens)
+	if fake.settings != 1 {
+		t.Errorf("settings = %d, want the Connectors settings opened once", fake.settings)
 	}
-	if len(fake.messages) != 2 || !strings.Contains(fake.messages[0], `"studio"`) || fake.messages[1] != restartMessage {
-		t.Errorf("dialogs = %q", fake.messages)
+	if len(fake.messages) != 1 || !strings.Contains(fake.messages[0], `"studio"`) {
+		t.Errorf("dialogs = %q, want one dialog naming the server", fake.messages)
 	}
 	if !strings.Contains(out, "To restore connections") {
 		t.Errorf("output = %q, want the instructions in the terminal too", out)
@@ -131,38 +108,13 @@ func TestMCPRepair_OpenSettingsThenRestart(t *testing.T) {
 	}
 }
 
-func TestMCPRepair_OpenSettingsWithoutRestart(t *testing.T) {
-	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerLater)
-
-	runRepair(t)
-
-	if fake.settings != 1 || fake.quits != 0 || fake.opens != 0 {
-		t.Errorf("settings=%d quits=%d opens=%d, want settings only", fake.settings, fake.quits, fake.opens)
-	}
-}
-
 func TestMCPRepair_LaterDoesNothing(t *testing.T) {
 	fake, _ := setupRepair(t, repairTestToggles, answerLater)
 
 	runRepair(t)
 
-	if fake.settings != 0 || fake.quits != 0 || len(fake.messages) != 1 {
-		t.Errorf("settings=%d quits=%d dialogs=%d, want one dialog and nothing else", fake.settings, fake.quits, len(fake.messages))
-	}
-}
-
-func TestMCPRepair_RestartGivesUpWhenDesktopWontQuit(t *testing.T) {
-	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
-	fake.quitWorks = false
-
-	rootCmd.SetArgs([]string{"mcp", "repair"})
-	rootCmd.SetOut(&bytes.Buffer{})
-	rootCmd.SetErr(&bytes.Buffer{})
-	if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "did not quit") {
-		t.Fatalf("err = %v, want a did-not-quit error", err)
-	}
-	if fake.opens != 0 {
-		t.Errorf("opens = %d, want 0 while the old instance still runs", fake.opens)
+	if fake.settings != 0 || len(fake.messages) != 1 {
+		t.Errorf("settings=%d dialogs=%d, want one dialog and nothing else", fake.settings, len(fake.messages))
 	}
 }
 
@@ -201,24 +153,24 @@ func TestMCPRepair_PromptUnansweredSnoozesShort(t *testing.T) {
 }
 
 func TestMCPRepair_PromptRespectsToolsLeftOffOnPurpose(t *testing.T) {
-	fake, togglesPath := setupRepair(t, repairTestToggles, answerOK, answerOK)
+	fake, togglesPath := setupRepair(t, repairTestToggles, answerOK)
 
-	runRepair(t, "--prompt") // opens settings, restarts
+	runRepair(t, "--prompt") // opens settings; the user restarts Desktop
 
 	// After the restart the user left list_articles off on purpose.
 	writeTogglesFile(t, togglesPath, `{"v":3,"owners":{"acct":["local:studio:list_articles"]}}`)
 	runRepair(t, "--prompt") // within the acknowledgement window: remembered
 	runRepair(t, "--prompt") // later start: nothing new, so no dialog
 
-	if len(fake.messages) != 2 {
-		t.Fatalf("dialogs = %d, want only the first run's two", len(fake.messages))
+	if len(fake.messages) != 1 {
+		t.Fatalf("dialogs = %d, want only the first run's", len(fake.messages))
 	}
 
 	// A tool switched off later is new, so the dialog comes back.
 	writeTogglesFile(t, togglesPath, `{"v":3,"owners":{"acct":["local:studio:list_articles","local:studio:query_insights"]}}`)
 	fake.answers = []dialogAnswer{answerLater}
 	runRepair(t, "--prompt")
-	if len(fake.messages) != 3 {
+	if len(fake.messages) != 2 {
 		t.Errorf("dialogs = %d, want the dialog back for a newly switched-off tool", len(fake.messages))
 	}
 }
@@ -254,9 +206,9 @@ func TestParseDialogAnswer(t *testing.T) {
 }
 
 func TestMCPRepair_PromptUnchangedAfterSettingsAsksAgainLater(t *testing.T) {
-	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
+	fake, _ := setupRepair(t, repairTestToggles, answerOK)
 
-	runRepair(t, "--prompt") // opens settings, restarts
+	runRepair(t, "--prompt") // opens settings; the user restarts Desktop
 	runRepair(t, "--prompt") // nothing was switched on: not a choice
 
 	st := loadRepairState()
@@ -266,13 +218,13 @@ func TestMCPRepair_PromptUnchangedAfterSettingsAsksAgainLater(t *testing.T) {
 	if left := time.Until(st.SnoozedUntil); left <= 0 || left > repairSnoozeUnanswered {
 		t.Errorf("snoozed for %s, want a short pause of at most %s", left, repairSnoozeUnanswered)
 	}
-	if len(fake.messages) != 2 {
+	if len(fake.messages) != 1 {
 		t.Errorf("dialogs = %d, want no new dialog during the pause", len(fake.messages))
 	}
 }
 
 func TestMCPRepair_ManualRunDefersToAnOpenDialog(t *testing.T) {
-	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
+	fake, _ := setupRepair(t, repairTestToggles, answerOK)
 	release, ok := acquireRepairLock()
 	if !ok {
 		t.Fatal("could not take the lock")
@@ -286,28 +238,5 @@ func TestMCPRepair_ManualRunDefersToAnOpenDialog(t *testing.T) {
 	}
 	if !strings.Contains(out, "already open") || !strings.Contains(out, "To restore connections") {
 		t.Errorf("output = %q, want the instructions plus a note about the open dialog", out)
-	}
-}
-
-func TestMCPRepair_RestartRetriesWhenTheFirstLaunchIsIgnored(t *testing.T) {
-	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
-	fake.failedStarts = 1
-
-	runRepair(t)
-
-	if fake.opens != 2 || !fake.running {
-		t.Errorf("opens=%d running=%v, want a second launch that starts the app", fake.opens, fake.running)
-	}
-}
-
-func TestMCPRepair_RestartReportsWhenDesktopNeverComesBack(t *testing.T) {
-	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
-	fake.failedStarts = 2
-
-	rootCmd.SetArgs([]string{"mcp", "repair"})
-	rootCmd.SetOut(&bytes.Buffer{})
-	rootCmd.SetErr(&bytes.Buffer{})
-	if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "did not start again") {
-		t.Fatalf("err = %v, want a did-not-start error", err)
 	}
 }
