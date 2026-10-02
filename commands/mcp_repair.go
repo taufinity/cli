@@ -36,8 +36,9 @@ const (
 	// Above the longest a live prompt can hold it: two dialogs of 15 minutes.
 	repairLockStale = 35 * time.Minute
 
-	// connectorsSettingsURL opens Claude Desktop on its Connectors settings.
-	connectorsSettingsURL = "claude://claude.ai/settings/connectors"
+	// connectorsSettingsURL opens Claude Desktop on Customize → Connectors.
+	// The older /settings/connectors only says connectors moved to Customize.
+	connectorsSettingsURL = "claude://claude.ai/customize/connectors"
 )
 
 var (
@@ -58,7 +59,7 @@ var mcpRepairCmd = &cobra.Command{
 	Short: "Help switch on Taufinity tools that Claude Desktop has switched off",
 	Long: `Repair checks whether Claude Desktop has switched off tools of your
 Taufinity connection. Those can only be switched on in Claude Desktop itself,
-under Settings → Connectors, and take effect after a restart.
+under Customize → Connectors, and take effect after a restart.
 
 Repair shows what is switched off, opens the Connectors settings for you, and
 then offers to restart Claude Desktop.
@@ -153,7 +154,7 @@ func repairMessage(off switchedOff) string {
 	}
 	return fmt.Sprintf("Claude can't fully use your Taufinity connection,\n"+
 		"because %d of its features are switched off.\n"+
-		"To fix it: open Claude Desktop Settings → Connectors →\n"+
+		"To fix it: open Claude Desktop Customize → Connectors →\n"+
 		"%s, allow the tools, then restart Claude Desktop.",
 		off.total, strings.Join(quoted, " and "))
 }

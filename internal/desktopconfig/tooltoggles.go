@@ -16,7 +16,7 @@ import (
 //
 // It is read-only for us. Desktop derives it from the claude.ai app's own
 // storage and rewrites it on every start, so editing it changes nothing: the
-// tools can only be switched on in Settings → Connectors. Reading it is
+// tools can only be switched on in Customize → Connectors. Reading it is
 // reliable, because it follows that setting.
 const ToolTogglesFile = "mcp-user-tool-toggles.json"
 

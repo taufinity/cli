@@ -220,7 +220,7 @@ func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string
 
 // warnSwitchedOffTools tells the user when Claude Desktop has switched off
 // tools of label. Reinstalling does not switch them back on: that setting
-// lives in Claude Desktop and only Settings → Connectors changes it.
+// lives in Claude Desktop and only Customize → Connectors changes it.
 func warnSwitchedOffTools(cmd *cobra.Command, path, label string) {
 	tools, err := desktopconfig.SwitchedOffTools(path, label)
 	if err != nil || len(tools) == 0 {
