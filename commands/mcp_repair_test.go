@@ -19,6 +19,8 @@ type fakeDesktop struct {
 	quits     int
 	opens     int
 	settings  int
+	// failedStarts is how many Open calls do not actually start the app.
+	failedStarts int
 }
 
 func (f *fakeDesktop) Running() bool { return f.running }
@@ -29,7 +31,15 @@ func (f *fakeDesktop) Quit() error {
 	}
 	return nil
 }
-func (f *fakeDesktop) Open() error         { f.opens++; f.running = true; return nil }
+func (f *fakeDesktop) Open() error {
+	f.opens++
+	if f.failedStarts > 0 {
+		f.failedStarts-- // macOS ignored the launch
+		return nil
+	}
+	f.running = true
+	return nil
+}
 func (f *fakeDesktop) OpenSettings() error { f.settings++; return nil }
 func (f *fakeDesktop) Ask(message, _ string) (dialogAnswer, error) {
 	f.messages = append(f.messages, message)
@@ -61,11 +71,11 @@ func setupRepair(t *testing.T, toggles string, answers ...dialogAnswer) (*fakeDe
 	writeTogglesFile(t, togglesPath, toggles)
 
 	fake := &fakeDesktop{running: true, quitWorks: true, answers: answers}
-	prevDesktop, prevSupported, prevTimeout := claudeDesktop, desktopRepairSupported, repairQuitTimeout
-	claudeDesktop, desktopRepairSupported, repairQuitTimeout = fake, true, 300*time.Millisecond
+	prevDesktop, prevSupported, prevTimeout, prevGrace := claudeDesktop, desktopRepairSupported, repairQuitTimeout, repairReopenGrace
+	claudeDesktop, desktopRepairSupported, repairQuitTimeout, repairReopenGrace = fake, true, 300*time.Millisecond, 0
 	flagMCPRepairPrompt, flagMCPRepairWait = false, 0
 	t.Cleanup(func() {
-		claudeDesktop, desktopRepairSupported, repairQuitTimeout = prevDesktop, prevSupported, prevTimeout
+		claudeDesktop, desktopRepairSupported, repairQuitTimeout, repairReopenGrace = prevDesktop, prevSupported, prevTimeout, prevGrace
 		flagMCPRepairPrompt, flagMCPRepairWait = false, 0
 	})
 	return fake, togglesPath
@@ -278,5 +288,28 @@ func TestMCPRepair_ManualRunDefersToAnOpenDialog(t *testing.T) {
 	}
 	if !strings.Contains(out, "already open") || !strings.Contains(out, "To fix it") {
 		t.Errorf("output = %q, want the instructions plus a note about the open dialog", out)
+	}
+}
+
+func TestMCPRepair_RestartRetriesWhenTheFirstLaunchIsIgnored(t *testing.T) {
+	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
+	fake.failedStarts = 1
+
+	runRepair(t)
+
+	if fake.opens != 2 || !fake.running {
+		t.Errorf("opens=%d running=%v, want a second launch that starts the app", fake.opens, fake.running)
+	}
+}
+
+func TestMCPRepair_RestartReportsWhenDesktopNeverComesBack(t *testing.T) {
+	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
+	fake.failedStarts = 2
+
+	rootCmd.SetArgs([]string{"mcp", "repair"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "did not start again") {
+		t.Fatalf("err = %v, want a did-not-start error", err)
 	}
 }
