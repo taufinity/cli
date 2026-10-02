@@ -35,6 +35,13 @@ type siteYAML struct {
 	// CategoryIndexPage is SSG-only; accepted here so site.yaml files that
 	// include it are not rejected by the strict decoder.
 	CategoryIndexPage any `yaml:"category_index_page,omitempty"`
+	// Content is the same section content-settings.yaml carries, typed the same way,
+	// so an unknown key still fails the strict decoder. Setting it in both places is
+	// refused: one source per setting.
+	Content *contentSettingsConfig `yaml:"content,omitempty"`
+	// UITranslations are the site's chrome strings, by language then key. Pushed
+	// whole (the endpoint replaces), so site.yaml is the source of truth.
+	UITranslations map[string]map[string]string `yaml:"ui_translations,omitempty"`
 }
 
 // siteRecord is the trimmed payload returned by GET /api/sites/by-site-id/{site_id}.
@@ -572,10 +579,22 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 		return fmt.Errorf("read site.yaml: %w", err)
 	}
 	hasCategoryPages := sy.CategoryPages != nil
+	hasSiteContent := sy.Content != nil
+	hasUITranslations := sy.UITranslations != nil
+
+	if hasSiteContent && hasContentSettings {
+		return fmt.Errorf("site %q sets content in both site.yaml and content-settings.yaml; keep one", dirName)
+	}
+	if hasUITranslations {
+		if err := validateUITranslations(sy.UITranslations); err != nil {
+			return fmt.Errorf("site.yaml ui_translations: %w", err)
+		}
+	}
 
 	if !hasPipeline && !hasSecureRender && !hasAISettings &&
 		!hasGeneralSettings && !hasContentSettings && !hasMetadataSettings &&
-		!hasCategoryPages && !hasTracker && !hasPrompts {
+		!hasCategoryPages && !hasTracker && !hasPrompts &&
+		!hasSiteContent && !hasUITranslations {
 		return nil
 	}
 
@@ -629,6 +648,19 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 	if hasMetadataSettings {
 		if err := provisionMetadataSettings(c, siteID, siteDir); err != nil {
 			return fmt.Errorf("metadata-settings: %w", err)
+		}
+	}
+
+	if hasSiteContent {
+		if err := putSiteSettingsJSON(c, siteID, "content", sy.Content); err != nil {
+			return fmt.Errorf("site.yaml content: %w", err)
+		}
+	}
+
+	// Before any render reads t.<key>: a template that looks up a missing key renders empty.
+	if hasUITranslations {
+		if err := putSiteSettingsJSON(c, siteID, "ui-translations", sy.UITranslations); err != nil {
+			return fmt.Errorf("site.yaml ui_translations: %w", err)
 		}
 	}
 

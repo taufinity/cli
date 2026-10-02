@@ -71,6 +71,16 @@ type contentSettingsConfig struct {
 	Length   string   `yaml:"length"     json:"length,omitempty"`
 	Keywords []string `yaml:"keywords"   json:"keywords,omitempty"`
 	MaxLinks int      `yaml:"max_links"  json:"max_links,omitempty"`
+	// Languages the site publishes in; the entry flagged default keeps unprefixed URLs.
+	// Same shape as the renderer's LanguageConfig, so it round-trips unchanged.
+	Languages []siteLanguage `yaml:"languages" json:"languages,omitempty"`
+}
+
+type siteLanguage struct {
+	Code    string   `yaml:"code"              json:"code"`
+	Name    string   `yaml:"name"              json:"name"`
+	Default bool     `yaml:"default,omitempty" json:"default,omitempty"`
+	Authors []string `yaml:"authors,omitempty" json:"authors,omitempty"`
 }
 
 // metadataSettingsConfig is intentionally a free-form map. The API handler
