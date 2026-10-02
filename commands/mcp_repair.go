@@ -158,11 +158,10 @@ func repairMessage(off switchedOff) string {
 	for i, s := range off.servers {
 		quoted[i] = fmt.Sprintf("%q", s)
 	}
-	return fmt.Sprintf("Claude can't fully use your Taufinity connection,\n"+
-		"because %d of its features are switched off.\n"+
-		"To fix it: in Claude Desktop, open Customize → Connectors → Yours →\n"+
-		"%s, allow the tools, then restart Claude Desktop.",
-		off.total, strings.Join(quoted, " and "))
+	return fmt.Sprintf("Some Taufinity connections are turned off\n"+
+		"To restore connections open Customize → Connectors → Yours →\n"+
+		"%s → allow the tools → restart Claude Desktop.",
+		strings.Join(quoted, " and "))
 }
 
 const restartMessage = "After allowing the tools, restart Claude Desktop to load them.\n\nRestart Claude Desktop now?"

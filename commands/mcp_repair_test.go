@@ -104,10 +104,9 @@ func runRepair(t *testing.T, args ...string) string {
 
 func TestRepairMessage_IsTheAgreedText(t *testing.T) {
 	got := repairMessage(switchedOff{servers: []string{"voorpositiviteit"}, total: 217})
-	want := "Claude can't fully use your Taufinity connection,\n" +
-		"because 217 of its features are switched off.\n" +
-		"To fix it: in Claude Desktop, open Customize → Connectors → Yours →\n" +
-		"\"voorpositiviteit\", allow the tools, then restart Claude Desktop."
+	want := "Some Taufinity connections are turned off\n" +
+		"To restore connections open Customize → Connectors → Yours →\n" +
+		"\"voorpositiviteit\" → allow the tools → restart Claude Desktop."
 	if got != want {
 		t.Fatalf("message =\n%s\nwant\n%s", got, want)
 	}
@@ -121,11 +120,10 @@ func TestMCPRepair_OpenSettingsThenRestart(t *testing.T) {
 	if fake.settings != 1 || fake.quits != 1 || fake.opens != 1 {
 		t.Errorf("settings=%d quits=%d opens=%d, want 1/1/1", fake.settings, fake.quits, fake.opens)
 	}
-	if len(fake.messages) != 2 || !strings.Contains(fake.messages[0], "2 of its features") ||
-		!strings.Contains(fake.messages[0], `"studio"`) || fake.messages[1] != restartMessage {
+	if len(fake.messages) != 2 || !strings.Contains(fake.messages[0], `"studio"`) || fake.messages[1] != restartMessage {
 		t.Errorf("dialogs = %q", fake.messages)
 	}
-	if !strings.Contains(out, "To fix it") {
+	if !strings.Contains(out, "To restore connections") {
 		t.Errorf("output = %q, want the instructions in the terminal too", out)
 	}
 	if got, _ := os.ReadFile(togglesPath); string(got) != repairTestToggles {
@@ -286,7 +284,7 @@ func TestMCPRepair_ManualRunDefersToAnOpenDialog(t *testing.T) {
 	if len(fake.messages) != 0 || fake.settings != 0 {
 		t.Errorf("dialogs=%d settings=%d, want none while another dialog is open", len(fake.messages), fake.settings)
 	}
-	if !strings.Contains(out, "already open") || !strings.Contains(out, "To fix it") {
+	if !strings.Contains(out, "already open") || !strings.Contains(out, "To restore connections") {
 		t.Errorf("output = %q, want the instructions plus a note about the open dialog", out)
 	}
 }
