@@ -96,7 +96,7 @@ func TestRepairMessage_IsTheAgreedText(t *testing.T) {
 	got := repairMessage(switchedOff{servers: []string{"voorpositiviteit"}, total: 217})
 	want := "Claude can't fully use your Taufinity connection,\n" +
 		"because 217 of its features are switched off.\n" +
-		"To fix it: open Claude Desktop Customize → Connectors →\n" +
+		"To fix it: in Claude Desktop, open Customize → Connectors → Yours →\n" +
 		"\"voorpositiviteit\", allow the tools, then restart Claude Desktop."
 	if got != want {
 		t.Fatalf("message =\n%s\nwant\n%s", got, want)
