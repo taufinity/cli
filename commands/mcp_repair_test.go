@@ -244,3 +244,21 @@ func TestParseDialogAnswer(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPRepair_PromptUnchangedAfterSettingsAsksAgainLater(t *testing.T) {
+	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
+
+	runRepair(t, "--prompt") // opens settings, restarts
+	runRepair(t, "--prompt") // nothing was switched on: not a choice
+
+	st := loadRepairState()
+	if len(st.Acknowledged) != 0 {
+		t.Errorf("acknowledged %v although nothing changed in Connectors", st.Acknowledged)
+	}
+	if left := time.Until(st.SnoozedUntil); left <= 0 || left > repairSnoozeUnanswered {
+		t.Errorf("snoozed for %s, want a short pause of at most %s", left, repairSnoozeUnanswered)
+	}
+	if len(fake.messages) != 2 {
+		t.Errorf("dialogs = %d, want no new dialog during the pause", len(fake.messages))
+	}
+}

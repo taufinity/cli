@@ -26,13 +26,15 @@ const (
 	// unanswered. Nobody said "Later"; they were probably away from the Mac.
 	repairSnoozeUnanswered = 4 * time.Hour
 
-	// repairAckWindow: tools still switched off this soon after the user
-	// opened Connectors are the ones they chose to leave off. They are
-	// remembered and not asked about again.
+	// repairAckWindow: when the user switched tools on within this time after
+	// opening Connectors, the ones still off are what they chose to leave off.
+	// Those are remembered and not asked about again. If nothing changed they
+	// probably did not find the switch, so the dialog comes back later.
 	repairAckWindow = time.Hour
 
 	// repairLockStale: a lock older than this belongs to a dialog that died.
-	repairLockStale = 20 * time.Minute
+	// Above the longest a live prompt can hold it: two dialogs of 15 minutes.
+	repairLockStale = 35 * time.Minute
 
 	// connectorsSettingsURL opens Claude Desktop on its Connectors settings.
 	connectorsSettingsURL = "claude://claude.ai/settings/connectors"
@@ -201,14 +203,26 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 	state := loadRepairState()
 	now := time.Now()
 	if !state.SettingsOpenedAt.IsZero() && now.Sub(state.SettingsOpenedAt) < repairAckWindow {
-		// The user was just in Connectors. What is still off is their choice.
-		state.Acknowledged = off.keys()
-		state.SettingsOpenedAt = time.Time{}
-		telemetry.Report(telemetry.Event{
-			EventType:    "mcp.tool_toggles_acknowledged",
-			ErrorCode:    "left_off_after_settings",
-			ErrorMessage: fmt.Sprintf("%d tools left switched off after opening Connectors", off.total),
-		})
+		// The user was just in Connectors.
+		opened := state.OffWhenOpened
+		state.SettingsOpenedAt, state.OffWhenOpened = time.Time{}, 0
+		if off.total < opened {
+			// They switched some on; what is still off is their choice.
+			state.Acknowledged = off.keys()
+			telemetry.Report(telemetry.Event{
+				EventType:    "mcp.tool_toggles_acknowledged",
+				ErrorCode:    "left_off_after_settings",
+				ErrorMessage: fmt.Sprintf("%d of %d tools left switched off after opening Connectors", off.total, opened),
+			})
+		} else {
+			// Nothing changed: probably did not find the switch. Ask again later.
+			state.SnoozedUntil = now.Add(repairSnoozeUnanswered)
+			telemetry.Report(telemetry.Event{
+				EventType:    "mcp.tool_toggles_unchanged",
+				ErrorCode:    "unchanged_after_settings",
+				ErrorMessage: fmt.Sprintf("%d tools still switched off after opening Connectors", off.total),
+			})
+		}
 		return saveRepairState(state)
 	}
 	if !hasUnacknowledged(off.keys(), state.Acknowledged) || now.Before(state.SnoozedUntil) {
@@ -249,7 +263,7 @@ func guideRepair(out io.Writer, off switchedOff) (dialogAnswer, error) {
 		fmt.Fprintf(out, "Could not open the settings (%v); open them yourself as described above.\n", err)
 	}
 	state := loadRepairState()
-	state.SettingsOpenedAt = time.Now()
+	state.SettingsOpenedAt, state.OffWhenOpened = time.Now(), off.total
 	_ = saveRepairState(state)
 
 	restart, err := claudeDesktop.Ask(restartMessage, "Restart")
@@ -299,6 +313,7 @@ func hasUnacknowledged(keys, acknowledged []string) bool {
 type repairState struct {
 	SnoozedUntil     time.Time `json:"snoozed_until"`
 	SettingsOpenedAt time.Time `json:"settings_opened_at"`
+	OffWhenOpened    int       `json:"off_when_opened,omitempty"`
 	Acknowledged     []string  `json:"acknowledged,omitempty"`
 }
 
