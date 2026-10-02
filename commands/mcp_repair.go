@@ -97,10 +97,13 @@ const (
 var claudeDesktop desktopApp = macClaudeDesktop{}
 
 // switchedOff is what Claude Desktop has switched off, per Taufinity server.
+// When a tool catalog is known it holds only read-only tools: write and admin
+// tools left off are a choice, not a problem, and are not asked about.
 type switchedOff struct {
-	servers []string            // Taufinity servers with tools switched off
-	tools   map[string][]string // server → switched-off tool names
-	total   int
+	readOnlyOnly bool                // filtered on the recorded read-only tools
+	servers      []string            // Taufinity servers with tools switched off
+	tools        map[string][]string // server → switched-off tool names
+	total        int
 }
 
 // keys returns "server:tool" for every switched-off tool.
@@ -115,7 +118,8 @@ func (s switchedOff) keys() []string {
 }
 
 func findSwitchedOff(cfgPath string) (switchedOff, error) {
-	out := switchedOff{tools: map[string][]string{}}
+	readOnly := loadReadOnlyTools()
+	out := switchedOff{tools: map[string][]string{}, readOnlyOnly: readOnly != nil}
 	servers, err := desktopconfig.BridgeServers(cfgPath)
 	if err != nil {
 		return out, err
@@ -125,6 +129,15 @@ func findSwitchedOff(cfgPath string) (switchedOff, error) {
 		if err != nil {
 			return out, err
 		}
+		if readOnly != nil {
+			kept := tools[:0]
+			for _, t := range tools {
+				if readOnly[t] {
+					kept = append(kept, t)
+				}
+			}
+			tools = kept
+		}
 		if len(tools) > 0 {
 			out.servers = append(out.servers, srv)
 			out.tools[srv] = tools
@@ -132,13 +145,6 @@ func findSwitchedOff(cfgPath string) (switchedOff, error) {
 		}
 	}
 	return out, nil
-}
-
-// switchedOffTools is the total, for callers that only need to know whether
-// anything is switched off.
-func switchedOffTools(cfgPath string) (int, error) {
-	off, err := findSwitchedOff(cfgPath)
-	return off.total, err
 }
 
 // repairMessage is the text of the first dialog, and of the terminal output.
@@ -169,7 +175,11 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		if off.total == 0 {
-			fmt.Fprintln(out, "Nothing to fix: all features of your Taufinity connection are switched on in Claude Desktop.")
+			if off.readOnlyOnly {
+				fmt.Fprintln(out, "Nothing to fix: every Taufinity tool that reads your data is switched on in Claude Desktop.")
+			} else {
+				fmt.Fprintln(out, "Nothing to fix: all features of your Taufinity connection are switched on in Claude Desktop.")
+			}
 			return nil
 		}
 		fmt.Fprintln(out, repairMessage(off))
@@ -198,7 +208,9 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 	defer release()
 
 	off, err := findSwitchedOff(cfgPath)
-	if err != nil || off.total == 0 || !desktopRepairSupported {
+	// Without a recorded catalog there is no telling a switched-off read tool
+	// from a write tool left off on purpose, so stay quiet rather than nag.
+	if err != nil || off.total == 0 || !off.readOnlyOnly || !desktopRepairSupported {
 		return err
 	}
 
@@ -362,16 +374,23 @@ end run`
 
 func (macClaudeDesktop) Ask(message, okLabel string) (dialogAnswer, error) {
 	raw, err := exec.Command("osascript", "-e", dialogScript, message, okLabel).Output()
-	// "Later" is the cancel button, so osascript exits non-zero for it; that
-	// is an answer, not a failure.
 	if err != nil {
+		// "Later" is the cancel button: osascript then fails with "User
+		// canceled. (-128)", which is an answer. Anything else (no display,
+		// no permission) is a failure, and must not snooze the dialog.
 		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if errors.As(err, &exitErr) && isUserCancel(string(exitErr.Stderr)) {
 			return answerLater, nil
 		}
-		return answerLater, err
+		return answerLater, fmt.Errorf("show dialog: %w", err)
 	}
 	return parseDialogAnswer(string(raw), okLabel), nil
+}
+
+// isUserCancel reports whether osascript's stderr is AppleScript's
+// "User canceled" error (-128), raised by the cancel button.
+func isUserCancel(stderr string) bool {
+	return strings.Contains(stderr, "(-128)")
 }
 
 // parseDialogAnswer reads osascript's record output, e.g.

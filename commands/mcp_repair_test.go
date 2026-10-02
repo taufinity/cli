@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,13 @@ func (f *fakeDesktop) Ask(message, _ string) (dialogAnswer, error) {
 	return a, nil
 }
 
+// repairTestCatalog marks query_insights and list_articles read-only and
+// delete_article not.
+const repairTestCatalog = `{"tools":[
+	{"name":"query_insights","annotations":{"readOnlyHint":true}},
+	{"name":"list_articles","annotations":{"readOnlyHint":true}},
+	{"name":"delete_article","annotations":{"readOnlyHint":false}}]}`
+
 const repairTestToggles = `{"v":3,"owners":{"acct":["local:studio:query_insights","local:studio:list_articles","local:other:foo"]}}`
 
 // setupRepair writes a Claude Desktop config with one Taufinity bridge under a
@@ -46,6 +54,8 @@ func setupRepair(t *testing.T, toggles string, answers ...dialogAnswer) (*fakeDe
 	}
 	togglesPath := filepath.Join(dir, "mcp-user-tool-toggles.json")
 	writeTogglesFile(t, togglesPath, toggles)
+	// The bridge would have recorded this from Studio's tools/list.
+	recordToolCatalog(json.RawMessage(repairTestCatalog))
 
 	fake := &fakeDesktop{answers: answers}
 	prevDesktop, prevSupported := claudeDesktop, desktopRepairSupported
@@ -238,5 +248,69 @@ func TestMCPRepair_ManualRunDefersToAnOpenDialog(t *testing.T) {
 	}
 	if !strings.Contains(out, "already open") || !strings.Contains(out, "To restore connections") {
 		t.Errorf("output = %q, want the instructions plus a note about the open dialog", out)
+	}
+}
+
+func TestMCPRepair_PromptIgnoresWriteToolsLeftOff(t *testing.T) {
+	fake, _ := setupRepair(t, `{"v":3,"owners":{"acct":["local:studio:delete_article"]}}`)
+
+	runRepair(t, "--prompt")
+
+	if len(fake.messages) != 0 {
+		t.Errorf("dialogs = %d, want none: a write tool left off is a choice", len(fake.messages))
+	}
+}
+
+func TestMCPRepair_PromptStaysQuietWithoutCatalog(t *testing.T) {
+	fake, _ := setupRepair(t, repairTestToggles)
+	if err := os.Remove(toolCatalogPath()); err != nil {
+		t.Fatal(err)
+	}
+
+	runRepair(t, "--prompt")
+
+	if len(fake.messages) != 0 {
+		t.Errorf("dialogs = %d, want none without a catalog to tell read from write tools", len(fake.messages))
+	}
+}
+
+func TestMCPRepair_ManualWithoutCatalogShowsEverything(t *testing.T) {
+	fake, _ := setupRepair(t, `{"v":3,"owners":{"acct":["local:studio:delete_article"]}}`, answerLater)
+	if err := os.Remove(toolCatalogPath()); err != nil {
+		t.Fatal(err)
+	}
+
+	runRepair(t)
+
+	if len(fake.messages) != 1 {
+		t.Errorf("dialogs = %d, want the dialog when asked by hand", len(fake.messages))
+	}
+}
+
+func TestRecordToolCatalog(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	recordToolCatalog(json.RawMessage(`{"tools":[
+		{"name":"query_insights","annotations":{"readOnlyHint":true}},
+		{"name":"update_article","annotations":{"readOnlyHint":false}},
+		{"name":"no_annotations"}]}`))
+	got := loadReadOnlyTools()
+	if len(got) != 1 || !got["query_insights"] {
+		t.Fatalf("read-only = %v, want only query_insights", got)
+	}
+
+	// A partial page must not replace the full list.
+	recordToolCatalog(json.RawMessage(`{"tools":[{"name":"x","annotations":{"readOnlyHint":true}}],"nextCursor":"2"}`))
+	if got := loadReadOnlyTools(); !got["query_insights"] || got["x"] {
+		t.Fatalf("read-only after a paged result = %v, want unchanged", got)
+	}
+}
+
+func TestIsUserCancel(t *testing.T) {
+	if !isUserCancel("0:182: execution error: User canceled. (-128)\n") {
+		t.Error("cancel button not recognised")
+	}
+	if isUserCancel("execution error: Not authorized to send Apple events to System Events. (-1743)") {
+		t.Error("a permission error must not count as Later")
 	}
 }
