@@ -212,7 +212,27 @@ func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string
 		return fmt.Errorf("%s: write %s: %w", client.name, path, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s (%s)\n", label, path, client.name)
+	if client.name == "claude-desktop" {
+		reenableDesktopTools(cmd, path, label)
+	}
 	return nil
+}
+
+// reenableDesktopTools clears the tools Claude Desktop recorded as switched
+// off for label, so a (re)install always exposes Studio's full tool list.
+// That list outlives reinstalls and renames, and once left most of Studio's
+// tools hidden while the server served them all. A failure here is reported
+// but does not fail the install: the server entry itself was written.
+func reenableDesktopTools(cmd *cobra.Command, path, label string) {
+	n, err := desktopconfig.ClearToolToggles(path, label)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not re-enable tools switched off in %s: %v\n",
+			desktopconfig.ToolTogglesPath(path), err)
+		return
+	}
+	if n > 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Re-enabled %d tool(s) that Claude Desktop had switched off for %q. Quit and reopen Claude Desktop to load them.\n", n, label)
+	}
 }
 
 // runMCPInstallAll iterates every registered client, skipping ones not

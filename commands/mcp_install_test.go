@@ -150,6 +150,45 @@ func TestMCPInstall_WritesStdioEntryByDefaultForClaudeDesktop(t *testing.T) {
 	}
 }
 
+func TestMCPInstall_ClaudeDesktopReenablesSwitchedOffTools(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	seedCredentials(t, "toggles-test-token")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/opt/taufinity/bin/taufinity")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+	togglesPath := filepath.Join(cfgDir, "mcp-user-tool-toggles.json")
+	if err := os.WriteFile(togglesPath, []byte(`{"v":3,"owners":{"acct":["local:taufinity-test:query_insights","local:other:foo"]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	t.Cleanup(func() { rootCmd.SetOut(nil) })
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"--org", "3",
+		"mcp", "install", "--label", "taufinity-test",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, err := os.ReadFile(togglesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "taufinity-test") || !strings.Contains(string(raw), "local:other:foo") {
+		t.Errorf("toggles after install = %s, want only local:other:foo left", raw)
+	}
+	if !strings.Contains(out.String(), "Re-enabled 1 tool(s)") {
+		t.Errorf("output = %q, want a re-enabled notice", out.String())
+	}
+}
+
 func TestMCPInstall_HTTPTransportOverrideEmbedsBearer(t *testing.T) {
 	resetGlobals(t)
 	home := t.TempDir()
