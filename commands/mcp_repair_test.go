@@ -115,7 +115,7 @@ func TestMCPRepair_QuitsClearsAndReopens(t *testing.T) {
 	if strings.Contains(got, "local:studio:") || !strings.Contains(got, "local:other:foo") {
 		t.Errorf("toggles = %s, want only the other server's entry left", got)
 	}
-	if !strings.Contains(out, "Re-enabled 2") {
+	if !strings.Contains(out, "Switched on 2 feature(s)") {
 		t.Errorf("output = %q", out)
 	}
 }

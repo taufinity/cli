@@ -231,7 +231,7 @@ func reenableDesktopTools(cmd *cobra.Command, path, label string) {
 		return
 	}
 	if n > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "Re-enabled %d tool(s) that Claude Desktop had switched off for %q. Quit and reopen Claude Desktop to load them.\n", n, label)
+		fmt.Fprintf(cmd.OutOrStdout(), "Switched on %d feature(s) of your Taufinity connection %q in Claude Desktop. Quit and reopen Claude Desktop to load them.\n", n, label)
 	}
 }
 

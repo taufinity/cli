@@ -73,8 +73,8 @@ type desktopApp interface {
 	Running() bool
 	Quit() error
 	Open() error
-	// Ask shows message with a "Later" and a "Repair now" button and
-	// reports whether "Repair now" was chosen.
+	// Ask shows message with a "Later" and a "Fix now" button and
+	// reports whether "Fix now" was chosen.
 	Ask(message string) (bool, error)
 }
 
@@ -94,7 +94,7 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 		if n == 0 {
-			fmt.Fprintln(out, "Nothing to repair: no Taufinity tools are switched off in Claude Desktop.")
+			fmt.Fprintln(out, "Nothing to fix: all features of your Taufinity connection are switched on in Claude Desktop.")
 		}
 		return nil
 	}
@@ -126,8 +126,9 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 	}
 
 	yes, err := claudeDesktop.Ask(fmt.Sprintf(
-		"Claude Desktop has switched off %d Taufinity tools, so Claude cannot use them.\n\n"+
-			"Repair now? Claude Desktop will close and reopen.", off))
+		"Claude can't fully use your Taufinity connection,\n"+
+			"because %d of its features are switched off.\n\n"+
+			"Fix it now? Claude Desktop will close and reopen.", off))
 	if err != nil {
 		return err
 	}
@@ -201,7 +202,7 @@ func repairDesktopTools(out io.Writer, cfgPath string, restart bool) (int, error
 		ErrorCode:    "tools_reenabled",
 		ErrorMessage: fmt.Sprintf("re-enabled %d tools across %d server(s)", total, len(servers)),
 	})
-	fmt.Fprintf(out, "Re-enabled %d Taufinity tool(s) in Claude Desktop.\n", total)
+	fmt.Fprintf(out, "Switched on %d feature(s) of your Taufinity connection in Claude Desktop.\n", total)
 
 	if wasRunning {
 		if err := claudeDesktop.Open(); err != nil {
@@ -278,7 +279,7 @@ func (macClaudeDesktop) Open() error {
 
 func (macClaudeDesktop) Ask(message string) (bool, error) {
 	script := fmt.Sprintf(`display dialog %q with title "Taufinity" `+
-		`buttons {"Later", "Repair now"} default button "Repair now" cancel button "Later" `+
+		`buttons {"Later", "Fix now"} default button "Fix now" cancel button "Later" `+
 		`with icon caution giving up after 900`, message)
 	raw, err := exec.Command("osascript", "-e", script).Output()
 	// "Later" is the cancel button, so osascript exits non-zero for it; that
@@ -290,5 +291,5 @@ func (macClaudeDesktop) Ask(message string) (bool, error) {
 		}
 		return false, err
 	}
-	return strings.Contains(string(raw), "button returned:Repair now"), nil
+	return strings.Contains(string(raw), "button returned:Fix now"), nil
 }

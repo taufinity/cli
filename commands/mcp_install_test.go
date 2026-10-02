@@ -184,7 +184,7 @@ func TestMCPInstall_ClaudeDesktopReenablesSwitchedOffTools(t *testing.T) {
 	if strings.Contains(string(raw), "taufinity-test") || !strings.Contains(string(raw), "local:other:foo") {
 		t.Errorf("toggles after install = %s, want only local:other:foo left", raw)
 	}
-	if !strings.Contains(out.String(), "Re-enabled 1 tool(s)") {
+	if !strings.Contains(out.String(), "Switched on 1 feature(s)") {
 		t.Errorf("output = %q, want a re-enabled notice", out.String())
 	}
 }
