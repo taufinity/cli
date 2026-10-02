@@ -22,6 +22,10 @@ const (
 	// repairSnooze is how long "Later" keeps the dialog away.
 	repairSnooze = 7 * 24 * time.Hour
 
+	// repairSnoozeUnanswered is the shorter pause after the dialog timed out
+	// unanswered. Nobody said "Later"; they were probably away from the Mac.
+	repairSnoozeUnanswered = 4 * time.Hour
+
 	// repairLoopGuard: tools still switched off this soon after a repair mean
 	// Claude Desktop restored them itself. Asking again would loop, so we
 	// report it and stay quiet instead.
@@ -57,8 +61,10 @@ while it is closed (so the app cannot write the old list back), and reopens it.
 Flags:
   --prompt      Ask first in a dialog, and do nothing when there is nothing to
                 repair. Used by the bridge at startup and by the daily check.
-                "Later" keeps the dialog away for seven days.
-  --no-restart  Change the file only; restart Claude Desktop yourself.`,
+                "Later" keeps the dialog away for seven days, an unanswered
+                dialog for four hours.
+  --no-restart  Change the file only. Refused while Claude Desktop is running,
+                because the app would write the old list back when it quits.`,
 	RunE: runMCPRepair,
 }
 
@@ -73,10 +79,24 @@ type desktopApp interface {
 	Running() bool
 	Quit() error
 	Open() error
-	// Ask shows message with a "Later" and a "Fix now" button and
-	// reports whether "Fix now" was chosen.
-	Ask(message string) (bool, error)
+	// Ask shows message with a "Later" and a "Fix now" button.
+	Ask(message string) (dialogAnswer, error)
 }
+
+// dialogAnswer is what came back from the repair dialog.
+type dialogAnswer int
+
+const (
+	answerLater dialogAnswer = iota
+	answerFixNow
+	answerUnanswered // the dialog timed out
+)
+
+// errDesktopRunning is returned when the toggles would be changed while Claude
+// Desktop runs: the app keeps the list in memory and writes it back on quit,
+// so the change would silently be undone.
+var errDesktopRunning = errors.New("Claude Desktop is running, so nothing was changed; " +
+	"run 'taufinity mcp repair' to close it, switch the features on, and reopen it")
 
 var claudeDesktop desktopApp = macClaudeDesktop{}
 
@@ -125,15 +145,19 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	yes, err := claudeDesktop.Ask(fmt.Sprintf(
+	answer, err := claudeDesktop.Ask(fmt.Sprintf(
 		"Claude can't fully use your Taufinity connection,\n"+
 			"because %d of its features are switched off.\n\n"+
 			"Fix it now? Claude Desktop will close and reopen.", off))
 	if err != nil {
 		return err
 	}
-	if !yes {
+	switch answer {
+	case answerLater:
 		state.SnoozedUntil = now.Add(repairSnooze)
+		return saveRepairState(state)
+	case answerUnanswered:
+		state.SnoozedUntil = now.Add(repairSnoozeUnanswered)
 		return saveRepairState(state)
 	}
 	_, err = repairDesktopTools(out, cfgPath, restart)
@@ -159,9 +183,10 @@ func switchedOffTools(cfgPath string) (int, error) {
 }
 
 // repairDesktopTools quits Claude Desktop when restart is set, clears the
-// switched-off tools of every Taufinity server, and reopens the app. If the
-// app does not quit in time nothing is changed, because a running app would
-// write its in-memory list back over ours.
+// switched-off tools of every Taufinity server, and reopens the app. Whenever
+// the app is still running at the moment of writing (it did not quit in time,
+// or restart is off) nothing is changed, because a running app writes its
+// in-memory list back over ours.
 func repairDesktopTools(out io.Writer, cfgPath string, restart bool) (int, error) {
 	servers, err := desktopconfig.BridgeServers(cfgPath)
 	if err != nil {
@@ -172,8 +197,13 @@ func repairDesktopTools(out io.Writer, cfgPath string, restart bool) (int, error
 		return 0, err
 	}
 
-	wasRunning := restart && claudeDesktop.Running()
+	running := desktopRepairSupported && claudeDesktop.Running()
+	if running && !restart {
+		return 0, errDesktopRunning
+	}
+	wasRunning := running
 	if wasRunning {
+		fmt.Fprintln(out, "Claude Desktop will close and reopen to load the change.")
 		if err := claudeDesktop.Quit(); err != nil {
 			return 0, fmt.Errorf("quit Claude Desktop: %w", err)
 		}
@@ -277,7 +307,7 @@ func (macClaudeDesktop) Open() error {
 	return exec.Command("open", "-a", "Claude").Run()
 }
 
-func (macClaudeDesktop) Ask(message string) (bool, error) {
+func (macClaudeDesktop) Ask(message string) (dialogAnswer, error) {
 	script := fmt.Sprintf(`display dialog %q with title "Taufinity" `+
 		`buttons {"Later", "Fix now"} default button "Fix now" cancel button "Later" `+
 		`with icon caution giving up after 900`, message)
@@ -287,9 +317,22 @@ func (macClaudeDesktop) Ask(message string) (bool, error) {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return false, nil
+			return answerLater, nil
 		}
-		return false, err
+		return answerLater, err
 	}
-	return strings.Contains(string(raw), "button returned:Fix now"), nil
+	return parseDialogAnswer(string(raw)), nil
+}
+
+// parseDialogAnswer reads osascript's record output, e.g.
+// "button returned:Fix now, gave up:false" or "button returned:, gave up:true".
+func parseDialogAnswer(out string) dialogAnswer {
+	switch {
+	case strings.Contains(out, "gave up:true"):
+		return answerUnanswered
+	case strings.Contains(out, "button returned:Fix now"):
+		return answerFixNow
+	default:
+		return answerLater
+	}
 }

@@ -16,7 +16,7 @@ type fakeDesktop struct {
 	togglesPath  string
 	running      bool
 	quitWorks    bool
-	answer       bool
+	answer       dialogAnswer
 	asked        int
 	quits, opens int
 }
@@ -44,7 +44,7 @@ func (f *fakeDesktop) Open() error {
 	return nil
 }
 
-func (f *fakeDesktop) Ask(string) (bool, error) {
+func (f *fakeDesktop) Ask(string) (dialogAnswer, error) {
 	f.asked++
 	return f.answer, nil
 }
@@ -118,6 +118,9 @@ func TestMCPRepair_QuitsClearsAndReopens(t *testing.T) {
 	if !strings.Contains(out, "Switched on 2 feature(s)") {
 		t.Errorf("output = %q", out)
 	}
+	if !strings.Contains(out, "Claude Desktop will close and reopen") {
+		t.Errorf("output = %q, want a warning before Claude Desktop is closed", out)
+	}
 }
 
 func TestMCPRepair_LeavesFileAloneWhenDesktopWontQuit(t *testing.T) {
@@ -141,7 +144,7 @@ func TestMCPRepair_LeavesFileAloneWhenDesktopWontQuit(t *testing.T) {
 
 func TestMCPRepair_PromptLaterSnoozes(t *testing.T) {
 	fake, togglesPath := setupRepair(t, repairTestToggles)
-	fake.answer = false
+	fake.answer = answerLater
 
 	runRepair(t, "--prompt")
 	runRepair(t, "--prompt")
@@ -159,7 +162,7 @@ func TestMCPRepair_PromptLaterSnoozes(t *testing.T) {
 
 func TestMCPRepair_PromptRepairNow(t *testing.T) {
 	fake, togglesPath := setupRepair(t, repairTestToggles)
-	fake.answer = true
+	fake.answer = answerFixNow
 
 	runRepair(t, "--prompt")
 
@@ -206,5 +209,62 @@ func TestMCPRepair_PromptOnlyOneDialogAtATime(t *testing.T) {
 
 	if fake.asked != 0 {
 		t.Errorf("asked = %d, want 0 while another prompt holds the lock", fake.asked)
+	}
+}
+
+func TestMCPRepair_NoRestartRefusedWhileDesktopRuns(t *testing.T) {
+	fake, togglesPath := setupRepair(t, repairTestToggles)
+
+	rootCmd.SetArgs([]string{"mcp", "repair", "--no-restart"})
+	rootCmd.SetOut(&bytes.Buffer{})
+	rootCmd.SetErr(&bytes.Buffer{})
+	if err := rootCmd.Execute(); err == nil || !strings.Contains(err.Error(), "Claude Desktop is running") {
+		t.Fatalf("err = %v, want the Desktop-is-running refusal", err)
+	}
+	if got := readFile(t, togglesPath); got != repairTestToggles {
+		t.Errorf("toggles changed while Claude Desktop runs: %s", got)
+	}
+	if fake.quits != 0 {
+		t.Errorf("quits = %d, want 0 with --no-restart", fake.quits)
+	}
+}
+
+func TestMCPRepair_NoRestartWorksWhenDesktopClosed(t *testing.T) {
+	fake, togglesPath := setupRepair(t, repairTestToggles)
+	fake.running = false
+
+	runRepair(t, "--no-restart")
+
+	if strings.Contains(readFile(t, togglesPath), "local:studio:") {
+		t.Error("toggles not cleared although Claude Desktop is closed")
+	}
+}
+
+func TestMCPRepair_PromptUnansweredSnoozesShort(t *testing.T) {
+	fake, _ := setupRepair(t, repairTestToggles)
+	fake.answer = answerUnanswered
+
+	runRepair(t, "--prompt")
+
+	until := loadRepairState().SnoozedUntil
+	if left := time.Until(until); left <= 0 || left > repairSnoozeUnanswered {
+		t.Errorf("snoozed for %s, want at most %s", left, repairSnoozeUnanswered)
+	}
+	if fake.quits != 0 {
+		t.Errorf("quits = %d, want 0 for an unanswered dialog", fake.quits)
+	}
+}
+
+func TestParseDialogAnswer(t *testing.T) {
+	cases := map[string]dialogAnswer{
+		"button returned:Fix now, gave up:false\n": answerFixNow,
+		"button returned:, gave up:true\n":         answerUnanswered,
+		"button returned:Later, gave up:false\n":   answerLater,
+		"":                                         answerLater,
+	}
+	for in, want := range cases {
+		if got := parseDialogAnswer(in); got != want {
+			t.Errorf("parseDialogAnswer(%q) = %d, want %d", in, got, want)
+		}
 	}
 }
