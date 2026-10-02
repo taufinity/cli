@@ -212,44 +212,7 @@ func installToClient(cmd *cobra.Command, client *mcpClient, apiURL, label string
 		return fmt.Errorf("%s: write %s: %w", client.name, path, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Installed %q in %s (%s)\n", label, path, client.name)
-	if client.name == "claude-desktop" {
-		reenableDesktopTools(cmd, path, label)
-	}
 	return nil
-}
-
-// reenableDesktopTools clears the tools Claude Desktop recorded as switched
-// off for label, so a (re)install always exposes Studio's full tool list.
-// That list outlives reinstalls and renames, and once left most of Studio's
-// tools hidden while the server served them all.
-//
-// A running Claude Desktop keeps the list in memory and writes it back when it
-// quits, so clearing it then would report a fix that is undone a moment later.
-// In that case install leaves the file alone and points to `mcp repair`, which
-// closes the app first. A failure here does not fail the install: the server
-// entry itself was written.
-func reenableDesktopTools(cmd *cobra.Command, path, label string) {
-	if desktopRepairSupported && claudeDesktop.Running() {
-		n, err := desktopconfig.CountToolToggles(path, label)
-		if err == nil && n > 0 {
-			fmt.Fprintf(cmd.OutOrStdout(), "%d feature(s) of your Taufinity connection %q are switched off in Claude Desktop. "+
-				"Run 'taufinity mcp repair' to switch them on (Claude Desktop will close and reopen).\n", n, label)
-		}
-		return
-	}
-	n, err := desktopconfig.ClearToolToggles(path, label)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not re-enable tools switched off in %s: %v\n",
-			desktopconfig.ToolTogglesPath(path), err)
-		return
-	}
-	if n > 0 {
-		fmt.Fprintf(cmd.OutOrStdout(), "Switched on %d feature(s) of your Taufinity connection %q in Claude Desktop.\n", n, label)
-		if !desktopRepairSupported {
-			// Without macOS tooling we cannot tell whether the app runs.
-			fmt.Fprintln(cmd.OutOrStdout(), "If Claude Desktop is open, quit and reopen it to load them.")
-		}
-	}
 }
 
 // runMCPInstallAll iterates every registered client, skipping ones not

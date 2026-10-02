@@ -150,47 +150,6 @@ func TestMCPInstall_WritesStdioEntryByDefaultForClaudeDesktop(t *testing.T) {
 	}
 }
 
-func TestMCPInstall_ClaudeDesktopReenablesSwitchedOffTools(t *testing.T) {
-	resetGlobals(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	seedCredentials(t, "toggles-test-token")
-	t.Setenv("TAUFINITY_BINARY_PATH", "/opt/taufinity/bin/taufinity")
-
-	cfgDir := t.TempDir()
-	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
-	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
-	togglesPath := filepath.Join(cfgDir, "mcp-user-tool-toggles.json")
-	if err := os.WriteFile(togglesPath, []byte(`{"v":3,"owners":{"acct":["local:taufinity-test:query_insights","local:other:foo"]}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	useFakeDesktop(t, &fakeDesktop{t: t, togglesPath: togglesPath, running: false})
-
-	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	t.Cleanup(func() { rootCmd.SetOut(nil) })
-	rootCmd.SetArgs([]string{
-		"--api-url", "https://studio.taufinity.io",
-		"--org", "3",
-		"mcp", "install", "--label", "taufinity-test",
-	})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	raw, err := os.ReadFile(togglesPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(raw), "taufinity-test") || !strings.Contains(string(raw), "local:other:foo") {
-		t.Errorf("toggles after install = %s, want only local:other:foo left", raw)
-	}
-	if !strings.Contains(out.String(), "Switched on 1 feature(s)") {
-		t.Errorf("output = %q, want a re-enabled notice", out.String())
-	}
-}
-
 func TestMCPInstall_HTTPTransportOverrideEmbedsBearer(t *testing.T) {
 	resetGlobals(t)
 	home := t.TempDir()
@@ -589,54 +548,5 @@ func TestMCPInstall_RefusesOverwriteWithoutForce(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--force") {
 		t.Errorf("error should mention --force, got: %v", err)
-	}
-}
-
-// useFakeDesktop stands in for the real Claude Desktop, which may well be
-// running on the machine the tests run on.
-func useFakeDesktop(t *testing.T, fake *fakeDesktop) {
-	t.Helper()
-	prevDesktop, prevSupported := claudeDesktop, desktopRepairSupported
-	claudeDesktop, desktopRepairSupported = fake, true
-	t.Cleanup(func() { claudeDesktop, desktopRepairSupported = prevDesktop, prevSupported })
-}
-
-func TestMCPInstall_LeavesTogglesAloneWhileDesktopRuns(t *testing.T) {
-	resetGlobals(t)
-	t.Setenv("HOME", t.TempDir())
-	seedCredentials(t, "toggles-running-token")
-	t.Setenv("TAUFINITY_BINARY_PATH", "/opt/taufinity/bin/taufinity")
-
-	cfgDir := t.TempDir()
-	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
-	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
-	togglesPath := filepath.Join(cfgDir, "mcp-user-tool-toggles.json")
-	body := `{"v":3,"owners":{"acct":["local:taufinity-test:query_insights"]}}`
-	if err := os.WriteFile(togglesPath, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeDesktop{t: t, togglesPath: togglesPath, running: true}
-	useFakeDesktop(t, fake)
-
-	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	t.Cleanup(func() { rootCmd.SetOut(nil) })
-	rootCmd.SetArgs([]string{
-		"--api-url", "https://studio.taufinity.io",
-		"--org", "3",
-		"mcp", "install", "--label", "taufinity-test",
-	})
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	if got, _ := os.ReadFile(togglesPath); string(got) != body {
-		t.Errorf("toggles changed while Claude Desktop runs: %s", got)
-	}
-	if !strings.Contains(out.String(), "taufinity mcp repair") {
-		t.Errorf("output = %q, want a pointer to 'taufinity mcp repair'", out.String())
-	}
-	if fake.quits != 0 {
-		t.Errorf("install quit Claude Desktop (%d times); only repair may", fake.quits)
 	}
 }
