@@ -141,6 +141,8 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 		slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 
+	maybeStartRepairPrompt(stderr)
+
 	// One client for the whole bridge lifetime; its renewing Token() is the
 	// single source of fresh access tokens (proactive refresh + rotation).
 	client := api.New(GetAPIURL())

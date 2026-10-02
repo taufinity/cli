@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -39,59 +40,130 @@ func ToolTogglesPath(configPath string) string {
 // A missing file, an empty file, or a layout other than v3 is not an error:
 // nothing is changed and 0 is returned. Unknown top-level keys are preserved.
 func ClearToolToggles(configPath, server string) (int, error) {
-	path := ToolTogglesPath(configPath)
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return 0, nil
-	}
-	if err != nil {
+	t, err := loadToolToggles(configPath)
+	if err != nil || t == nil {
 		return 0, err
 	}
-	if len(raw) == 0 {
-		return 0, nil
-	}
-
-	var doc map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return 0, fmt.Errorf("parse %s: %w", path, err)
-	}
-	var version int
-	if err := json.Unmarshal(doc["v"], &version); err != nil || version != toolTogglesVersion {
-		return 0, nil
-	}
-	var owners map[string][]string
-	if err := json.Unmarshal(doc["owners"], &owners); err != nil {
-		return 0, nil
-	}
-
-	prefix := "local:" + server + ":"
+	prefix := toggleKeyPrefix(server)
 	removed := 0
-	for owner, tools := range owners {
+	for owner, tools := range t.owners {
 		kept := tools[:0:0]
-		for _, t := range tools {
-			if strings.HasPrefix(t, prefix) {
+		for _, name := range tools {
+			if strings.HasPrefix(name, prefix) {
 				removed++
 				continue
 			}
-			kept = append(kept, t)
+			kept = append(kept, name)
 		}
-		owners[owner] = kept
+		t.owners[owner] = kept
 	}
 	if removed == 0 {
 		return 0, nil
 	}
-
-	encoded, err := json.Marshal(owners)
-	if err != nil {
-		return 0, err
-	}
-	doc["owners"] = encoded
-	out := make(map[string]any, len(doc))
-	for k, v := range doc {
-		out[k] = v
-	}
-	if err := writeDocAtomic(path, out); err != nil {
+	if err := t.save(); err != nil {
 		return 0, err
 	}
 	return removed, nil
+}
+
+// CountToolToggles reports how many tools of the named local server Claude
+// Desktop has recorded as switched off, summed over all accounts. It reads
+// the same layouts ClearToolToggles changes, so the two cannot disagree.
+func CountToolToggles(configPath, server string) (int, error) {
+	t, err := loadToolToggles(configPath)
+	if err != nil || t == nil {
+		return 0, err
+	}
+	prefix := toggleKeyPrefix(server)
+	n := 0
+	for _, tools := range t.owners {
+		for _, name := range tools {
+			if strings.HasPrefix(name, prefix) {
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+// BridgeServers returns the names of the servers in the Claude Desktop config
+// at configPath that launch a taufinity stdio bridge, whatever label they were
+// installed under. A customer may have renamed the entry, so matching on the
+// command is the only reliable way to find ours.
+func BridgeServers(configPath string) ([]string, error) {
+	doc, err := readDoc(configPath)
+	if err != nil {
+		return nil, err
+	}
+	servers, _ := doc[DefaultServersKey].(map[string]any)
+	var names []string
+	for name, raw := range servers {
+		entry, _ := raw.(map[string]any)
+		command, _ := entry["command"].(string)
+		base := strings.TrimSuffix(filepath.Base(command), ".exe")
+		if base != "taufinity" {
+			continue
+		}
+		args, _ := entry["args"].([]any)
+		for _, a := range args {
+			if a == "stdio" {
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func toggleKeyPrefix(server string) string { return "local:" + server + ":" }
+
+// toolToggles is a parsed v3 toggles file. Unknown top-level keys are kept in
+// doc so save writes them back unchanged.
+type toolToggles struct {
+	path   string
+	doc    map[string]json.RawMessage
+	owners map[string][]string
+}
+
+// loadToolToggles returns nil without an error when there is nothing this
+// package should touch: no file, an empty file, or a layout other than v3.
+func loadToolToggles(configPath string) (*toolToggles, error) {
+	path := ToolTogglesPath(configPath)
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	var version int
+	if err := json.Unmarshal(doc["v"], &version); err != nil || version != toolTogglesVersion {
+		return nil, nil
+	}
+	var owners map[string][]string
+	if err := json.Unmarshal(doc["owners"], &owners); err != nil {
+		return nil, nil
+	}
+	return &toolToggles{path: path, doc: doc, owners: owners}, nil
+}
+
+func (t *toolToggles) save() error {
+	encoded, err := json.Marshal(t.owners)
+	if err != nil {
+		return err
+	}
+	t.doc["owners"] = encoded
+	out := make(map[string]any, len(t.doc))
+	for k, v := range t.doc {
+		out[k] = v
+	}
+	return writeDocAtomic(t.path, out)
 }

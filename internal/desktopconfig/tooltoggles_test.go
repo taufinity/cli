@@ -101,3 +101,33 @@ func TestClearToolToggles_InvalidJSON(t *testing.T) {
 		t.Fatal("want parse error")
 	}
 }
+
+func TestCountToolToggles(t *testing.T) {
+	cfg := writeToggles(t, t.TempDir(), `{"v":3,"owners":{
+		"a":["local:studio:x","local:studio:y","local:studio-2:z"],
+		"b":["local:studio:x"]}}`)
+	n, err := desktopconfig.CountToolToggles(cfg, "studio")
+	if err != nil || n != 3 {
+		t.Fatalf("got (%d, %v), want (3, nil)", n, err)
+	}
+}
+
+func TestBridgeServers_MatchesOnCommandNotLabel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	cfg := `{"mcpServers":{
+		"voorpositiviteit":{"command":"/Users/x/bin/taufinity","args":["--org","3","mcp","stdio"]},
+		"brew":{"command":"/opt/homebrew/bin/taufinity","args":["mcp","stdio"]},
+		"legacy-http":{"type":"http","url":"https://studio.taufinity.io/mcp"},
+		"not-a-bridge":{"command":"/usr/local/bin/taufinity","args":["status"]},
+		"other":{"command":"npx","args":["stdio"]}}}`
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := desktopconfig.BridgeServers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"brew", "voorpositiviteit"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

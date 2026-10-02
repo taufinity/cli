@@ -90,3 +90,8 @@ case "$CHECK_EXIT" in
       2>/dev/null || true
     ;;
 esac
+
+# Claude Desktop can switch off Taufinity tools and keep them off across
+# updates. Ask the user (one dialog, "Later" snoozes a week) to re-enable them;
+# silent when nothing is switched off. Never fails the agent.
+"$BINARY" mcp repair --prompt >/dev/null 2>&1 || log "WARN: mcp repair --prompt failed"
