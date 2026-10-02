@@ -550,3 +550,38 @@ func TestMCPInstall_RefusesOverwriteWithoutForce(t *testing.T) {
 		t.Errorf("error should mention --force, got: %v", err)
 	}
 }
+
+func TestMCPInstall_ClaudeDesktopNotesSwitchedOffToolsWithoutTouchingThem(t *testing.T) {
+	resetGlobals(t)
+	t.Setenv("HOME", t.TempDir())
+	seedCredentials(t, "toggles-note-token")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/opt/taufinity/bin/taufinity")
+
+	cfgDir := t.TempDir()
+	cfgPath := filepath.Join(cfgDir, "claude_desktop_config.json")
+	t.Setenv("TAUFINITY_DESKTOP_CONFIG", cfgPath)
+	togglesPath := filepath.Join(cfgDir, "mcp-user-tool-toggles.json")
+	body := `{"v":3,"owners":{"acct":["local:taufinity-test:query_insights"]}}`
+	if err := os.WriteFile(togglesPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	t.Cleanup(func() { rootCmd.SetOut(nil) })
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"--org", "3",
+		"mcp", "install", "--label", "taufinity-test",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if got, _ := os.ReadFile(togglesPath); string(got) != body {
+		t.Errorf("install wrote to Claude Desktop's toggles file: %s", got)
+	}
+	if !strings.Contains(out.String(), "1 feature(s)") || !strings.Contains(out.String(), "taufinity mcp repair") {
+		t.Errorf("output = %q, want a note pointing to 'taufinity mcp repair'", out.String())
+	}
+}
