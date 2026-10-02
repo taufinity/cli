@@ -183,12 +183,21 @@ func runMCPRepair(cmd *cobra.Command, _ []string) error {
 		if !desktopRepairSupported {
 			return nil
 		}
+		// The lock guards the dialogs and the state file alike, so a manual
+		// run cannot interleave with a prompt the bridge started.
+		release, ok := acquireRepairLock()
+		if !ok {
+			fmt.Fprintln(out, "A Taufinity dialog about this is already open; use that one.")
+			return nil
+		}
+		defer release()
 		_, err = guideRepair(out, off)
 		return err
 	}
 
 	// --prompt runs unattended (bridge startup, daily agent). Several bridges
-	// start in the same second, so only the first one may show a dialog.
+	// start in the same second, so only the first one may show a dialog. The
+	// lock is held for the whole run: it also serialises the state file.
 	release, ok := acquireRepairLock()
 	if !ok {
 		return nil
@@ -255,11 +264,16 @@ func guideRepair(out io.Writer, off switchedOff) (dialogAnswer, error) {
 		ErrorMessage: fmt.Sprintf("%d tools switched off across %d server(s)", off.total, len(off.servers)),
 	})
 	answer, err := claudeDesktop.Ask(repairMessage(off), "Open settings")
-	if err != nil || answer != answerOK {
+	if err != nil {
+		reportRepairFailure("dialog_failed", err)
 		return answer, err
+	}
+	if answer != answerOK {
+		return answer, nil
 	}
 
 	if err := claudeDesktop.OpenSettings(); err != nil {
+		reportRepairFailure("open_settings_failed", err)
 		fmt.Fprintf(out, "Could not open the settings (%v); open them yourself as described above.\n", err)
 	}
 	state := loadRepairState()
@@ -267,10 +281,28 @@ func guideRepair(out io.Writer, off switchedOff) (dialogAnswer, error) {
 	_ = saveRepairState(state)
 
 	restart, err := claudeDesktop.Ask(restartMessage, "Restart")
-	if err != nil || restart != answerOK {
+	if err != nil {
+		reportRepairFailure("dialog_failed", err)
 		return answerOK, err
 	}
-	return answerOK, restartClaudeDesktop(out)
+	if restart != answerOK {
+		return answerOK, nil
+	}
+	if err := restartClaudeDesktop(out); err != nil {
+		reportRepairFailure("restart_failed", err)
+		return answerOK, err
+	}
+	return answerOK, nil
+}
+
+// reportRepairFailure records why the guided repair could not complete, so a
+// broken deep link or dialog shows up in telemetry instead of only on screen.
+func reportRepairFailure(code string, err error) {
+	telemetry.Report(telemetry.Event{
+		EventType:    "mcp.repair_failed",
+		ErrorCode:    code,
+		ErrorMessage: err.Error(),
+	})
 }
 
 // restartClaudeDesktop quits Claude Desktop, waits for it to exit, and opens

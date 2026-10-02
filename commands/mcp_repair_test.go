@@ -262,3 +262,21 @@ func TestMCPRepair_PromptUnchangedAfterSettingsAsksAgainLater(t *testing.T) {
 		t.Errorf("dialogs = %d, want no new dialog during the pause", len(fake.messages))
 	}
 }
+
+func TestMCPRepair_ManualRunDefersToAnOpenDialog(t *testing.T) {
+	fake, _ := setupRepair(t, repairTestToggles, answerOK, answerOK)
+	release, ok := acquireRepairLock()
+	if !ok {
+		t.Fatal("could not take the lock")
+	}
+	defer release()
+
+	out := runRepair(t)
+
+	if len(fake.messages) != 0 || fake.settings != 0 {
+		t.Errorf("dialogs=%d settings=%d, want none while another dialog is open", len(fake.messages), fake.settings)
+	}
+	if !strings.Contains(out, "already open") || !strings.Contains(out, "To fix it") {
+		t.Errorf("output = %q, want the instructions plus a note about the open dialog", out)
+	}
+}
