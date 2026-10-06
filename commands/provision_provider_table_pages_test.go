@@ -65,6 +65,43 @@ func TestResolveTablePages_None(t *testing.T) {
 	}
 }
 
+// The server's boundaries are mirrored at provision time so a run fails here
+// rather than at the PUT: internal layers never get a page, and one page is
+// at most 32 KB.
+func TestResolveTablePages_Boundaries(t *testing.T) {
+	root := t.TempDir()
+	pageDir := filepath.Join(root, "docs", "table-pages")
+	if err := os.MkdirAll(pageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("x", 33<<10)
+	if err := os.WriteFile(filepath.Join(pageDir, "big.md"), []byte(big), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("internal layer refused", func(t *testing.T) {
+		cfg := &providerConfig{TablePages: map[string]string{"core_transactions": "docs/table-pages/any.md"}}
+		if err := resolveTablePages(root, cfg, false); err == nil {
+			t.Fatal("a core_ table must be refused")
+		}
+	})
+	t.Run("mart_ allowed", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(pageDir, "mart_failed_shifts.md"), []byte("# page"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &providerConfig{TablePages: map[string]string{"mart_failed_shifts": "docs/table-pages/mart_failed_shifts.md"}}
+		if err := resolveTablePages(root, cfg, false); err != nil {
+			t.Fatalf("mart_* is a legitimate surface table: %v", err)
+		}
+	})
+	t.Run("oversized page refused", func(t *testing.T) {
+		cfg := &providerConfig{TablePages: map[string]string{"rpt_x": "docs/table-pages/big.md"}}
+		if err := resolveTablePages(root, cfg, false); err == nil {
+			t.Fatal("a page over 32 KB must be refused")
+		}
+	})
+}
+
 // The fingerprint identifies page content in diffs by size and hash prefix.
 func TestPageFingerprint(t *testing.T) {
 	got := pageFingerprint("hello")

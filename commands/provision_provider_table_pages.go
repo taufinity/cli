@@ -7,7 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 )
+
+// tablePageForbiddenPrefix mirrors the server's boundary (Studio's
+// database.IsTablePageEligible): internal layers never get a table page. The
+// server re-validates on the PUT, so a drift between the two fails loudly
+// rather than provisioning dead content.
+var tablePageForbiddenPrefix = regexp.MustCompile(`^(raw_|stg_|core_|int_|base_)`)
+
+// maxTablePageBytes mirrors the server's limit (32 KB): a page rides directly
+// into the model context.
+const maxTablePageBytes = 32 << 10
 
 // Table pages (ADR-016 rule 8): the providerspec carries, per allow-listed
 // table, the path of its full table page. Provision reads the files and
@@ -20,13 +31,20 @@ import (
 // ../ path into a sibling repo is allowed, so a page can live where dbt's
 // meta.table_page points. A missing file is a hard error on apply and a
 // warning on dry-run, because uploading a partial set silently would leave an
-// agent reading "no table page" for a table the spec claims has one.
+// agent reading "no table page" for a table the spec claims has one. The
+// same boundaries the server enforces are checked here, so a run fails at
+// provision time rather than at the PUT: internal layers (raw_, stg_, core_,
+// int_, base_) never get a page, and one page is at most 32 KB (it rides
+// directly into the model context).
 func resolveTablePages(repoRoot string, cfg *providerConfig, dryRun bool) error {
 	if len(cfg.TablePages) == 0 {
 		return nil
 	}
 	contents := make(map[string]string, len(cfg.TablePages))
 	for table, path := range cfg.TablePages {
+		if tablePageForbiddenPrefix.MatchString(table) {
+			return fmt.Errorf("table page for %s: internal-layer tables (raw_, stg_, core_, int_, base_) never get a table page", table)
+		}
 		full := path
 		if !filepath.IsAbs(full) {
 			full = filepath.Join(repoRoot, full)
@@ -38,6 +56,9 @@ func resolveTablePages(repoRoot string, cfg *providerConfig, dryRun bool) error 
 				continue
 			}
 			return fmt.Errorf("table page for %s: %w", table, err)
+		}
+		if len(raw) > maxTablePageBytes {
+			return fmt.Errorf("table page for %s is %d bytes; the limit is %d", table, len(raw), maxTablePageBytes)
 		}
 		contents[table] = string(raw)
 	}
