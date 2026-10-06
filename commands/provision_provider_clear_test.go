@@ -160,3 +160,17 @@ func TestProviderMapFieldChanges(t *testing.T) {
 		}
 	})
 }
+
+func TestProviderMapFieldChanges_StoredShapeIsNamed(t *testing.T) {
+	cfg := providerConfig{ResponseMappings: map[string]string{"quote": "$.quote"}}
+	for _, tc := range []struct{ stored, want string }{
+		{`{"quote":1}`, "not a string map"},
+		{`["quote"]`, "not a JSON object"},
+		{`{not json`, "not a JSON object"},
+	} {
+		got := providerMapFieldChanges(cfg, providerItem{ResponseMappings: tc.stored})
+		if len(got) != 1 || !strings.Contains(got[0], tc.want) {
+			t.Errorf("stored %s: want one change saying %q, got %q", tc.stored, tc.want, got)
+		}
+	}
+}

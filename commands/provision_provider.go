@@ -252,7 +252,12 @@ func providerMapFieldChanges(cfg providerConfig, existing providerItem) []string
 		var have map[string]string
 		if f.stored != "" {
 			if err := json.Unmarshal([]byte(f.stored), &have); err != nil {
-				changes = append(changes, fmt.Sprintf("%s: stored value is not a JSON object, will be replaced", f.name))
+				shape := "not a JSON object"
+				var obj map[string]json.RawMessage
+				if json.Unmarshal([]byte(f.stored), &obj) == nil {
+					shape = "not a string map"
+				}
+				changes = append(changes, fmt.Sprintf("%s: stored value is %s, will be replaced", f.name, shape))
 				continue
 			}
 		}
