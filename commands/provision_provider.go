@@ -252,9 +252,13 @@ func providerMapFieldChanges(cfg providerConfig, existing providerItem) []string
 		var have map[string]string
 		if f.stored != "" {
 			if err := json.Unmarshal([]byte(f.stored), &have); err != nil {
+				// Name the shape, never the value: request_headers can carry credentials.
 				shape := "not a JSON object"
 				var obj map[string]json.RawMessage
-				if json.Unmarshal([]byte(f.stored), &obj) == nil {
+				switch {
+				case !json.Valid([]byte(f.stored)):
+					shape = "not valid JSON"
+				case json.Unmarshal([]byte(f.stored), &obj) == nil:
 					shape = "not a string map"
 				}
 				changes = append(changes, fmt.Sprintf("%s: stored value is %s, will be replaced", f.name, shape))

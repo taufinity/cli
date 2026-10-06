@@ -166,11 +166,22 @@ func TestProviderMapFieldChanges_StoredShapeIsNamed(t *testing.T) {
 	for _, tc := range []struct{ stored, want string }{
 		{`{"quote":1}`, "not a string map"},
 		{`["quote"]`, "not a JSON object"},
-		{`{not json`, "not a JSON object"},
+		{`{not json`, "not valid JSON"},
 	} {
 		got := providerMapFieldChanges(cfg, providerItem{ResponseMappings: tc.stored})
 		if len(got) != 1 || !strings.Contains(got[0], tc.want) {
 			t.Errorf("stored %s: want one change saying %q, got %q", tc.stored, tc.want, got)
 		}
+	}
+}
+
+func TestProviderMapFieldChanges_InvalidStoredHeadersNeverPrintValue(t *testing.T) {
+	cfg := providerConfig{RequestHeaders: map[string]string{"Authorization": "Bearer new"}}
+	got := providerMapFieldChanges(cfg, providerItem{RequestHeaders: `{"Authorization":"Bearer s3cret-old"`})
+	if len(got) != 1 || !strings.Contains(got[0], "not valid JSON") {
+		t.Fatalf("want one change saying the stored value is not valid JSON, got %q", got)
+	}
+	if strings.Contains(got[0], "s3cret") {
+		t.Errorf("stored header value leaked: %q", got[0])
 	}
 }
