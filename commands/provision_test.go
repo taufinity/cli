@@ -121,7 +121,7 @@ func TestApplyNavNoFile(t *testing.T) {
 func TestApplyProvidersNoFiles(t *testing.T) {
 	dir := t.TempDir()
 	c := newProvisionClient("http://localhost:9999", "key", true)
-	id, _, err := applyProviders(c, dir, 1)
+	id, _, err := applyProviders(c, dir, filepath.Dir(dir), 1)
 	if err != nil {
 		t.Fatalf("applyProviders with no files: %v", err)
 	}
