@@ -40,6 +40,33 @@ func TestResolveTablePages_ReadsContent(t *testing.T) {
 	}
 }
 
+func TestResolveTablePages_UsesExplicitRepoRootForStagedSpec(t *testing.T) {
+	workspace := t.TempDir()
+	templatesRoot := filepath.Join(workspace, "templates")
+	dataRoot := filepath.Join(workspace, "data")
+	pageDir := filepath.Join(dataRoot, "docs", "table-pages")
+	if err := os.MkdirAll(templatesRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(pageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pageDir, "platform.md"), []byte("# platform"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitTablePageFixture(t, dataRoot)
+
+	cfg := &providerConfig{AllowedTables: []string{"rpt_platform_performance"}, TablePages: map[string]string{
+		"rpt_platform_performance": "../data/docs/table-pages/platform.md",
+	}}
+	if err := resolveTablePages(templatesRoot, cfg, false); err != nil {
+		t.Fatalf("resolve staged spec with explicit repo root: %v", err)
+	}
+	if got := cfg.tablePageContents["rpt_platform_performance"].Markdown; got != "# platform" {
+		t.Fatalf("content = %q, want page from sibling data repo", got)
+	}
+}
+
 // A missing page file is a hard error on apply (a partial upload would leave
 // an agent reading "no table page" for a table the spec claims has one) and a
 // warning on dry-run.
@@ -167,6 +194,36 @@ func TestPageFingerprint(t *testing.T) {
 	}
 	if pageFingerprint("hello") == pageFingerprint("world") {
 		t.Fatal("different content must produce different fingerprints")
+	}
+}
+
+func TestCommittedPageSource_IgnoresUnrelatedRepoCommits(t *testing.T) {
+	root := t.TempDir()
+	pageDir := filepath.Join(root, "docs", "table-pages")
+	if err := os.MkdirAll(pageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pagePath := filepath.Join(pageDir, "rpt_x.md")
+	if err := os.WriteFile(pagePath, []byte("# page"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commitTablePageFixture(t, root)
+	before, beforeUpdatedAt, err := committedPageSource(pagePath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("unrelated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, root, "add", "README.md")
+	runGit(t, root, "commit", "-qm", "unrelated change")
+	after, afterUpdatedAt, err := committedPageSource(pagePath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before || afterUpdatedAt != beforeUpdatedAt {
+		t.Fatalf("page provenance changed after unrelated commit: (%q, %q) -> (%q, %q)", before, beforeUpdatedAt, after, afterUpdatedAt)
 	}
 }
 

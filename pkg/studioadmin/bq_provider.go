@@ -125,6 +125,9 @@ func (p *BQProvider) basePayload() map[string]any {
 
 // writeAllowedTables persists allowed_tables and table_pages via the
 // admin/bq-providers endpoint (the base custom-ai-provider PUT ignores both).
+// A nil TablePages map deliberately omits that field, preserving pages for
+// callers such as the Terraform provider that do not manage them. A non-nil
+// empty map sends {} and explicitly removes every existing page.
 func (c *Client) writeAllowedTables(ctx context.Context, p *BQProvider) error {
 	tablesJSON, err := json.Marshal(p.AllowedTables)
 	if err != nil {

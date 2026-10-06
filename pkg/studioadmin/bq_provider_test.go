@@ -78,6 +78,30 @@ func TestUpdateBQProvider_EncodesAllowedTablesAsString(t *testing.T) {
 	if got != `["x","y"]` {
 		t.Fatalf("allowed_tables string = %q, want %q", got, `["x","y"]`)
 	}
+	if _, ok := bqBody["table_pages"]; ok {
+		t.Fatalf("nil TablePages must preserve existing pages, payload = %#v", bqBody)
+	}
+}
+
+func TestUpdateBQProvider_EmptyTablePagesExplicitlyClears(t *testing.T) {
+	var bqBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/admin/bq-providers/9" {
+			_ = json.NewDecoder(r.Body).Decode(&bqBody)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL, "tok", "").UpdateBQProvider(context.Background(), &BQProvider{
+		ID: 9, AllowedTables: []string{"x"}, TablePages: map[string]TablePage{},
+	})
+	if err != nil {
+		t.Fatalf("UpdateBQProvider: %v", err)
+	}
+	if got := bqBody["table_pages"]; got != `{}` {
+		t.Fatalf("table_pages = %#v, want explicit empty object", got)
+	}
 }
 
 // The org header must be numeric X-Organization-ID for a numeric org, slug otherwise.

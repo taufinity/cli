@@ -33,10 +33,10 @@ type providerConfig struct {
 	HTTPMethod    string   `yaml:"http_method"`
 	AllowedTables []string `yaml:"allowed_tables"`
 	// TablePages maps an allow-listed table name to the path of its table
-	// page (markdown, ADR-016 rule 8), relative to the repo root (the parent
-	// of --dir); a ../ path into a sibling repo is allowed, so a page can live
-	// where dbt's meta.table_page points. Provision uploads the CONTENT, so
-	// the pages are provisioned, never hand-edited in Studio.
+	// page (markdown, ADR-016 rule 8), relative to --repo-root (the parent of
+	// --dir by default); a ../ path into a sibling repo is allowed, so a page
+	// can live where dbt's meta.table_page points. Provision uploads the
+	// CONTENT, so the pages are provisioned, never hand-edited in Studio.
 	TablePages map[string]string `yaml:"table_pages,omitempty"`
 	// tablePageContents is the resolved content of TablePages, filled by
 	// applyProviders before upsert; not a YAML field.
@@ -64,6 +64,9 @@ type providerConfig struct {
 // Returns the live provider ID (existing or newly created) so the caller can
 // write it back to the YAML file as a pinned id.
 func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, error) {
+	if err := validateProviderBoundary(cfg); err != nil {
+		return 0, err
+	}
 	body, status, err := c.getForOrg("/custom-ai-providers", orgID)
 	if err != nil || status != 200 {
 		return 0, fmt.Errorf("list providers: status=%d err=%v", status, err)
@@ -218,13 +221,20 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	return created.ID, nil
 }
 
+func validateProviderBoundary(cfg providerConfig) error {
+	if strings.EqualFold(cfg.ProviderType, "bigquery") && cfg.AllowedTables == nil {
+		return fmt.Errorf("bigquery provider %q must declare allowed_tables (use allowed_tables: [] to clear it intentionally)", cfg.Name)
+	}
+	return nil
+}
+
 // applyProviders upserts every provider declared under dir (the single root
 // provider.yaml, if present, plus every *.yaml under providers/). It returns
 // the primary provider's ID (root provider.yaml — dashboards default to this
 // one, unchanged behavior) and a slug→ID lookup covering ALL upserted
 // providers, root included, so a dashboard can opt into a non-primary
 // provider via its own "provider" field (see provisionDashboardDef.Provider).
-func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[string]uint, error) {
+func applyProviders(c *provisionClient, dir, repoRoot string, orgID uint) (uint, map[string]uint, error) {
 	var primaryID uint
 	bySlug := make(map[string]uint)
 
@@ -232,7 +242,7 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[strin
 	if pf := filepath.Join(dir, "provider.yaml"); fileExists(pf) {
 		var cfg providerConfig
 		mustReadYAML(pf, &cfg)
-		if err := resolveTablePages(filepath.Dir(dir), &cfg, c.dryRun); err != nil {
+		if err := resolveTablePages(repoRoot, &cfg, c.dryRun); err != nil {
 			return 0, nil, fmt.Errorf("provider: %w", err)
 		}
 		if cfg.SkipUpsert {
@@ -269,7 +279,7 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[strin
 			pf := filepath.Join(pd, e.Name())
 			var cfg providerConfig
 			mustReadYAML(pf, &cfg)
-			if err := resolveTablePages(filepath.Dir(dir), &cfg, c.dryRun); err != nil {
+			if err := resolveTablePages(repoRoot, &cfg, c.dryRun); err != nil {
 				return 0, nil, fmt.Errorf("provider %s: %w", e.Name(), err)
 			}
 			if cfg.SkipUpsert {

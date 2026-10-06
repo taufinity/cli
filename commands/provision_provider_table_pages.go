@@ -36,7 +36,8 @@ type resolvedTablePage struct {
 // in the Studio interface.
 
 // resolveTablePages reads every table_pages entry into cfg.tablePageContents.
-// Paths resolve against repoRoot (the parent of the --dir studio folder); a
+// Paths resolve against repoRoot (--repo-root, defaulting to the parent of the
+// --dir studio folder); a
 // ../ path into a sibling repo is allowed, so a page can live where dbt's
 // meta.table_page points. A missing file is a hard error on apply and a
 // warning on dry-run, because uploading a partial set silently would leave an
@@ -194,16 +195,15 @@ func committedPageSource(path string, dryRun bool) (source, updatedAt string, er
 		}
 		fmt.Printf("  WARN: table page source has uncommitted changes: %s\n", rel)
 	}
-	shaRaw, err := exec.Command("git", "-C", repoRoot, "rev-parse", "HEAD").Output()
-	if err != nil {
-		return "", "", fmt.Errorf("read source commit: %w", err)
-	}
-	dateRaw, err := exec.Command("git", "-C", repoRoot, "log", "-1", "--format=%cI", "--", rel).Output()
-	if err != nil || strings.TrimSpace(string(dateRaw)) == "" {
+	commitRaw, err := exec.Command("git", "-C", repoRoot, "log", "-1", "--format=%H%n%cI", "--", rel).Output()
+	commitParts := strings.SplitN(strings.TrimSpace(string(commitRaw)), "\n", 2)
+	if err != nil || len(commitParts) != 2 || commitParts[0] == "" || commitParts[1] == "" {
 		return "", "", fmt.Errorf("source is not committed: %s", rel)
 	}
-	return fmt.Sprintf("%s@%s:%s", filepath.Base(repoRoot), strings.TrimSpace(string(shaRaw)), rel),
-		strings.TrimSpace(string(dateRaw)), nil
+	// Tie provenance to the commit that last changed this page, rather than the
+	// repository HEAD. Unrelated commits must not make unchanged pages appear
+	// changed in every subsequent provision diff.
+	return fmt.Sprintf("%s@%s:%s", filepath.Base(repoRoot), commitParts[0], rel), commitParts[1], nil
 }
 
 func isRawDataset(name string) bool {

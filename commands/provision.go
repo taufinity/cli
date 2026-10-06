@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -21,6 +22,7 @@ var (
 	provisionPreviewDataset   string
 	provisionAllowDrift       bool
 	provisionWorkspaceConfig  string
+	provisionRepoRoot         string
 )
 
 var provisionCmd = &cobra.Command{
@@ -80,6 +82,7 @@ func init() {
 
 	for _, cmd := range []*cobra.Command{provisionApplyCmd, provisionDiffCmd} {
 		cmd.Flags().StringVar(&provisionDir, "dir", "", "Customer config directory (required)")
+		cmd.Flags().StringVar(&provisionRepoRoot, "repo-root", "", "Repository root for resolving provider table_pages paths (default: parent of --dir)")
 		cmd.Flags().StringVar(&provisionOrgSlug, "org", "", "Organization slug (required)")
 		cmd.Flags().StringVar(&provisionAPIKey, "api-key", "", "Bootstrap admin API key (overrides TAUFINITY_ADMIN_TOKEN env)")
 		cmd.Flags().BoolVar(&provisionStrict, "strict", false, "Exit 2 on dashboard drift, exit 3 on warnings")
@@ -180,13 +183,21 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 	fmt.Printf("provision: org %q = id %d\n", provisionOrgSlug, orgID)
 
 	dir := provisionDir
+	repoRoot := provisionRepoRoot
+	if repoRoot == "" {
+		repoRoot = filepath.Dir(dir)
+	}
+	repoRoot, err = filepath.Abs(repoRoot)
+	if err != nil {
+		return fmt.Errorf("resolve provision repo root: %w", err)
+	}
 
 	// 1. Org members
 	if err := applyOrgMembers(c, dir, orgID); err != nil {
 		return err
 	}
 	// 2. Providers
-	providerID, providersBySlug, err := applyProviders(c, dir, orgID)
+	providerID, providersBySlug, err := applyProviders(c, dir, repoRoot, orgID)
 	if err != nil {
 		return err
 	}
