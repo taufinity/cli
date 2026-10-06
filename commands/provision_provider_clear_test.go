@@ -50,7 +50,7 @@ func putPayloadFor(t *testing.T, providerYAML string) map[string]interface{} {
 		t.Fatal(err)
 	}
 	c := newProvisionClient(srv.URL, "key", false)
-	if _, _, err := applyProviders(c, dir, 1); err != nil {
+	if _, _, err := applyProviders(c, dir, filepath.Dir(dir), 1); err != nil {
 		t.Fatalf("applyProviders: %v", err)
 	}
 	if put == nil {

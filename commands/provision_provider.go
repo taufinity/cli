@@ -6,9 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 )
 
@@ -29,15 +27,24 @@ type providerConfig struct {
 	// Slug is a stable, env-independent identifier. When set, provision matches
 	// the provider by slug instead of id/name — robust across environments where
 	// the numeric id differs and names may be ambiguous.
-	Slug           string   `yaml:"slug,omitempty"`
-	Description    string   `yaml:"description"`
-	ProviderType   string   `yaml:"provider_type"`
-	Category       string   `yaml:"category"`
-	EndpointURL    string   `yaml:"endpoint_url"`
-	HTTPMethod     string   `yaml:"http_method"`
-	AllowedTables  []string `yaml:"allowed_tables"`
-	MaxBytesBilled int64    `yaml:"max_bytes_billed"`
-	Enabled        bool     `yaml:"enabled"`
+	Slug          string   `yaml:"slug,omitempty"`
+	Description   string   `yaml:"description"`
+	ProviderType  string   `yaml:"provider_type"`
+	Category      string   `yaml:"category"`
+	EndpointURL   string   `yaml:"endpoint_url"`
+	HTTPMethod    string   `yaml:"http_method"`
+	AllowedTables []string `yaml:"allowed_tables"`
+	// TablePages maps an allow-listed table name to the path of its table
+	// page (markdown, ADR-016 rule 8), relative to --repo-root (the parent of
+	// --dir by default); a ../ path into a sibling repo is allowed, so a page
+	// can live where dbt's meta.table_page points. Provision uploads the
+	// CONTENT, so the pages are provisioned, never hand-edited in Studio.
+	TablePages map[string]string `yaml:"table_pages,omitempty"`
+	// tablePageContents is the resolved content of TablePages, filled by
+	// applyProviders before upsert; not a YAML field.
+	tablePageContents map[string]resolvedTablePage `yaml:"-"`
+	MaxBytesBilled    int64                        `yaml:"max_bytes_billed"`
+	Enabled           bool                         `yaml:"enabled"`
 
 	// REST-provider fields (provider_type != bigquery)
 	MessageParamName string `yaml:"message_param_name,omitempty"`
@@ -53,21 +60,15 @@ type providerConfig struct {
 	RateLimitPerMin  int               `yaml:"rate_limit_per_min,omitempty"`
 }
 
-type providerItem struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
-	Slug string `json:"slug,omitempty"`
-	// Stored JSON-encoded maps, used only to report what a PUT will change.
-	ResponseMappings string `json:"response_mappings,omitempty"`
-	RequestHeaders   string `json:"request_headers,omitempty"`
-}
-
 // upsertProvider creates or updates a provider for the given org.
 // When cfg.ID > 0 it matches by ID (safe rename support); otherwise falls back
 // to case-insensitive name match.
 // Returns the live provider ID (existing or newly created) so the caller can
 // write it back to the YAML file as a pinned id.
 func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, error) {
+	if err := validateProviderBoundary(cfg); err != nil {
+		return 0, err
+	}
 	body, status, err := c.getForOrg("/custom-ai-providers", orgID)
 	if err != nil || status != 200 {
 		return 0, fmt.Errorf("list providers: status=%d err=%v", status, err)
@@ -108,7 +109,11 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	// BQ-specific fields that the REST handler rejects.
 	var allowedJSON []byte
 	if isBQ {
-		allowedJSON, err = json.Marshal(cfg.AllowedTables)
+		allowedTables := cfg.AllowedTables
+		if allowedTables == nil {
+			allowedTables = []string{}
+		}
+		allowedJSON, err = json.Marshal(allowedTables)
 		if err != nil {
 			return 0, fmt.Errorf("marshal allowed_tables: %w", err)
 		}
@@ -190,19 +195,15 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 		for _, change := range providerMapFieldChanges(cfg, existing) {
 			fmt.Printf("  %s\n", change)
 		}
+		diffTablePages(c, existing.ID, cfg.tablePageContents)
 		_, status, err = c.put(fmt.Sprintf("/custom-ai-providers/%d", existing.ID), payloadBytes)
 		if err != nil || status >= 300 {
 			return 0, fmt.Errorf("update provider: status=%d err=%v", status, err)
 		}
-		// PUT /custom-ai-providers/{id} doesn't process allowed_tables — BQ providers
-		// need a second call to the admin endpoint which owns that field.
-		if isBQ && len(cfg.AllowedTables) > 0 {
-			bqPayload, _ := json.Marshal(map[string]interface{}{
-				"allowed_tables": string(allowedJSON),
-			})
-			_, status, err = c.put(fmt.Sprintf("/admin/bq-providers/%d", existing.ID), bqPayload)
-			if err != nil || status >= 300 {
-				return 0, fmt.Errorf("update BQ allowed_tables: status=%d err=%v", status, err)
+		// The admin endpoint atomically owns allowed_tables + table_pages.
+		if isBQ {
+			if err := writeBQProviderBoundary(c, existing.ID, allowedJSON, cfg.tablePageContents); err != nil {
+				return 0, err
 			}
 		}
 		return existing.ID, nil
@@ -221,6 +222,11 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	var created providerItem
 	if err := json.Unmarshal(respBody, &created); err != nil || created.ID == 0 {
 		return 0, fmt.Errorf("parse create response: %w body=%s", err, provisionSummarize(respBody))
+	}
+	if isBQ {
+		if err := writeBQProviderBoundary(c, created.ID, allowedJSON, cfg.tablePageContents); err != nil {
+			return 0, err
+		}
 	}
 	fmt.Printf("provision: created provider %q id=%d\n", cfg.Name, created.ID)
 	return created.ID, nil
@@ -269,50 +275,10 @@ func providerMapFieldChanges(cfg providerConfig, existing providerItem) []string
 	return changes
 }
 
-// pinProviderID writes `id: <liveID>` into the YAML file when the provider was
-// just created (cfgID == 0) or when the pinned id in the file is stale.
-// It preserves all comments and formatting by doing a targeted line edit on the
-// raw bytes rather than a full YAML round-trip.
-func pinProviderID(path string, cfgID, liveID int) error {
-	if liveID == 0 {
-		return nil // nothing to pin
+func validateProviderBoundary(cfg providerConfig) error {
+	if strings.EqualFold(cfg.ProviderType, "bigquery") && cfg.AllowedTables == nil {
+		return fmt.Errorf("bigquery provider %q must declare allowed_tables (use allowed_tables: [] to clear it intentionally)", cfg.Name)
 	}
-	if cfgID == liveID {
-		return nil // already pinned and correct
-	}
-	// cfgID != 0 and cfgID != liveID means the YAML had an ID pinned but the
-	// server returned a different one (stale pin, or name/slug matched a different
-	// record). Log a warning before overwriting so operators can catch env mixups.
-	if cfgID != 0 {
-		fmt.Printf("  WARN: provider id in YAML (%d) differs from server (%d) — updating pin in %s\n", cfgID, liveID, path)
-	}
-
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-
-	// Replace existing top-level `id: N` line, or insert one before `name:`.
-	idLine := regexp.MustCompile(`(?m)^id:\s+\d+`)
-	newIDLine := "id: " + strconv.Itoa(liveID)
-	if idLine.Match(raw) {
-		raw = idLine.ReplaceAll(raw, []byte(newIDLine))
-	} else {
-		// Insert before the `name:` line.
-		nameLine := regexp.MustCompile(`(?m)^name:`)
-		if loc := nameLine.FindIndex(raw); loc != nil {
-			insert := []byte(newIDLine + "\n")
-			raw = append(raw[:loc[0]], append(insert, raw[loc[0]:]...)...)
-		} else {
-			// Fallback: prepend.
-			raw = append([]byte(newIDLine+"\n"), raw...)
-		}
-	}
-
-	if err := os.WriteFile(path, raw, 0644); err != nil {
-		return err
-	}
-	fmt.Printf("provision: pinned provider id=%d in %s\n", liveID, path)
 	return nil
 }
 
@@ -322,7 +288,7 @@ func pinProviderID(path string, cfgID, liveID int) error {
 // one, unchanged behavior) and a slug→ID lookup covering ALL upserted
 // providers, root included, so a dashboard can opt into a non-primary
 // provider via its own "provider" field (see provisionDashboardDef.Provider).
-func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[string]uint, error) {
+func applyProviders(c *provisionClient, dir, repoRoot string, orgID uint) (uint, map[string]uint, error) {
 	var primaryID uint
 	bySlug := make(map[string]uint)
 
@@ -330,6 +296,9 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[strin
 	if pf := filepath.Join(dir, "provider.yaml"); fileExists(pf) {
 		var cfg providerConfig
 		mustReadYAML(pf, &cfg)
+		if err := resolveTablePages(repoRoot, &cfg, c.dryRun); err != nil {
+			return 0, nil, fmt.Errorf("provider: %w", err)
+		}
 		if cfg.SkipUpsert {
 			fmt.Printf("provision: skipping provider %q (skip_upsert=true, id=%d)\n", cfg.Name, cfg.ID)
 			primaryID = uint(cfg.ID)
@@ -364,6 +333,9 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[strin
 			pf := filepath.Join(pd, e.Name())
 			var cfg providerConfig
 			mustReadYAML(pf, &cfg)
+			if err := resolveTablePages(repoRoot, &cfg, c.dryRun); err != nil {
+				return 0, nil, fmt.Errorf("provider %s: %w", e.Name(), err)
+			}
 			if cfg.SkipUpsert {
 				fmt.Printf("provision: skipping provider %q (skip_upsert=true)\n", cfg.Name)
 				if cfg.Slug != "" {
