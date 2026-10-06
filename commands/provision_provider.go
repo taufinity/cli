@@ -27,15 +27,24 @@ type providerConfig struct {
 	// Slug is a stable, env-independent identifier. When set, provision matches
 	// the provider by slug instead of id/name — robust across environments where
 	// the numeric id differs and names may be ambiguous.
-	Slug           string   `yaml:"slug,omitempty"`
-	Description    string   `yaml:"description"`
-	ProviderType   string   `yaml:"provider_type"`
-	Category       string   `yaml:"category"`
-	EndpointURL    string   `yaml:"endpoint_url"`
-	HTTPMethod     string   `yaml:"http_method"`
-	AllowedTables  []string `yaml:"allowed_tables"`
-	MaxBytesBilled int64    `yaml:"max_bytes_billed"`
-	Enabled        bool     `yaml:"enabled"`
+	Slug          string   `yaml:"slug,omitempty"`
+	Description   string   `yaml:"description"`
+	ProviderType  string   `yaml:"provider_type"`
+	Category      string   `yaml:"category"`
+	EndpointURL   string   `yaml:"endpoint_url"`
+	HTTPMethod    string   `yaml:"http_method"`
+	AllowedTables []string `yaml:"allowed_tables"`
+	// TablePages maps an allow-listed table name to the path of its table
+	// page (markdown, ADR-016 rule 8), relative to the repo root (the parent
+	// of --dir); a ../ path into a sibling repo is allowed, so a page can live
+	// where dbt's meta.table_page points. Provision uploads the CONTENT, so
+	// the pages are provisioned, never hand-edited in Studio.
+	TablePages map[string]string `yaml:"table_pages,omitempty"`
+	// tablePageContents is the resolved content of TablePages, filled by
+	// applyProviders before upsert; not a YAML field.
+	tablePageContents map[string]string `yaml:"-"`
+	MaxBytesBilled    int64             `yaml:"max_bytes_billed"`
+	Enabled           bool              `yaml:"enabled"`
 
 	// REST-provider fields (provider_type != bigquery)
 	MessageParamName string `yaml:"message_param_name,omitempty"`
@@ -176,6 +185,7 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 			fmt.Printf("provision: provider id=%d name changed %q → %q\n", existing.ID, existing.Name, cfg.Name)
 		}
 		fmt.Printf("provision: updating provider %q (id=%d)\n", cfg.Name, existing.ID)
+		diffTablePages(c, existing.ID, cfg.tablePageContents)
 		_, status, err = c.put(fmt.Sprintf("/custom-ai-providers/%d", existing.ID), payloadBytes)
 		if err != nil || status >= 300 {
 			return 0, fmt.Errorf("update provider: status=%d err=%v", status, err)
@@ -183,9 +193,17 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 		// PUT /custom-ai-providers/{id} doesn't process allowed_tables — BQ providers
 		// need a second call to the admin endpoint which owns that field.
 		if isBQ && len(cfg.AllowedTables) > 0 {
-			bqPayload, _ := json.Marshal(map[string]interface{}{
+			bqPayloadMap := map[string]interface{}{
 				"allowed_tables": string(allowedJSON),
-			})
+			}
+			if len(cfg.tablePageContents) > 0 {
+				pagesJSON, merr := json.Marshal(cfg.tablePageContents)
+				if merr != nil {
+					return 0, fmt.Errorf("marshal table_pages: %w", merr)
+				}
+				bqPayloadMap["table_pages"] = string(pagesJSON)
+			}
+			bqPayload, _ := json.Marshal(bqPayloadMap)
 			_, status, err = c.put(fmt.Sprintf("/admin/bq-providers/%d", existing.ID), bqPayload)
 			if err != nil || status >= 300 {
 				return 0, fmt.Errorf("update BQ allowed_tables: status=%d err=%v", status, err)
@@ -273,6 +291,9 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[strin
 	if pf := filepath.Join(dir, "provider.yaml"); fileExists(pf) {
 		var cfg providerConfig
 		mustReadYAML(pf, &cfg)
+		if err := resolveTablePages(filepath.Dir(dir), &cfg, c.dryRun); err != nil {
+			return 0, nil, fmt.Errorf("provider: %w", err)
+		}
 		if cfg.SkipUpsert {
 			fmt.Printf("provision: skipping provider %q (skip_upsert=true, id=%d)\n", cfg.Name, cfg.ID)
 			primaryID = uint(cfg.ID)
@@ -307,6 +328,9 @@ func applyProviders(c *provisionClient, dir string, orgID uint) (uint, map[strin
 			pf := filepath.Join(pd, e.Name())
 			var cfg providerConfig
 			mustReadYAML(pf, &cfg)
+			if err := resolveTablePages(filepath.Dir(dir), &cfg, c.dryRun); err != nil {
+				return 0, nil, fmt.Errorf("provider %s: %w", e.Name(), err)
+			}
 			if cfg.SkipUpsert {
 				fmt.Printf("provision: skipping provider %q (skip_upsert=true)\n", cfg.Name)
 				if cfg.Slug != "" {
