@@ -36,7 +36,8 @@ type siteYAML struct {
 	// CategoryIndexPage, Redirects and InfraPagesUnderPrefix are general
 	// settings: sent through PUT settings/general, which replaces each key it
 	// receives whole. nil (absent or null) is never sent; an explicit empty
-	// value ({}, [], false) is, and replaces the stored one. See
+	// value ([], false) is, and replaces the stored one; category_index_page
+	// must carry path and template ({} is refused). See
 	// provision_site_general_keys.go.
 	CategoryIndexPage any `yaml:"category_index_page,omitempty"`
 	// Redirects: old paths that forward to a live page (stub pages at build).
@@ -595,6 +596,9 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 		if err := validateCategoryPages(sy.CategoryPages); err != nil {
 			return fmt.Errorf("site.yaml category_pages: %w", err)
 		}
+	}
+	if err := validateCategoryIndexPage(sy.CategoryIndexPage); err != nil {
+		return fmt.Errorf("site.yaml category_index_page: %w", err)
 	}
 	if hasSiteContent && hasContentSettings {
 		return fmt.Errorf("site %q sets content in both site.yaml and content-settings.yaml; keep one", dirName)

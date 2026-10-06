@@ -22,6 +22,10 @@ type generalSettingsFake struct {
 	gets       int
 	puts       []sitePutCall
 	storeOnPut bool
+	// getStatus and getBody override the GET response when set, to fake a
+	// failing read or a body that says nothing about what is stored.
+	getStatus int
+	getBody   *string
 }
 
 func (f *generalSettingsFake) server(t *testing.T) *httptest.Server {
@@ -33,6 +37,13 @@ func (f *generalSettingsFake) server(t *testing.T) *httptest.Server {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/sites/6/settings/general":
 			f.gets++
+			if f.getStatus != 0 {
+				w.WriteHeader(f.getStatus)
+			}
+			if f.getBody != nil {
+				_, _ = w.Write([]byte(*f.getBody))
+				return
+			}
 			_ = json.NewEncoder(w).Encode(f.stored)
 		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/sites/6/settings/"):
 			b, _ := io.ReadAll(r.Body)
@@ -102,25 +113,36 @@ func TestSiteYAMLGeneralKeysAbsentStayNil(t *testing.T) {
 }
 
 func TestSiteYAMLGeneralKeysNullIsAbsent(t *testing.T) {
-	var sy siteYAML
-	err := yamlUnmarshalStrict([]byte("id: 6\ncategory_index_page:\nredirects:\ninfra_pages_under_prefix:\n"), &sy)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p := siteGeneralPayload(sy); p != nil {
-		t.Fatalf("null values must be treated as absent, got %v", p)
+	for _, src := range []string{
+		"id: 6\ncategory_index_page:\nredirects:\ninfra_pages_under_prefix:\n",
+		"id: 6\ncategory_index_page: ~\nredirects: ~\ninfra_pages_under_prefix: ~\n",
+	} {
+		var sy siteYAML
+		if err := yamlUnmarshalStrict([]byte(src), &sy); err != nil {
+			t.Fatal(err)
+		}
+		if p := siteGeneralPayload(sy); p != nil {
+			t.Fatalf("null values must be treated as absent, got %v for %q", p, src)
+		}
+		if err := validateCategoryIndexPage(sy.CategoryIndexPage); err != nil {
+			t.Fatalf("a null category_index_page is absent, not invalid: %v", err)
+		}
 	}
 }
 
+// Explicit empty is a deliberate clear for redirects and
+// infra_pages_under_prefix. category_index_page: {} is refused instead (see
+// TestCategoryIndexPageValidation): an index page without path and template
+// breaks every deploy of the site.
 func TestSiteYAMLGeneralKeysExplicitEmptyIsSent(t *testing.T) {
 	var sy siteYAML
-	err := yamlUnmarshalStrict([]byte("id: 6\ncategory_index_page: {}\nredirects: []\ninfra_pages_under_prefix: false\n"), &sy)
+	err := yamlUnmarshalStrict([]byte("id: 6\nredirects: []\ninfra_pages_under_prefix: false\n"), &sy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := siteGeneralPayload(sy)
 	b, _ := json.Marshal(p)
-	want := `{"category_index_page":{},"infra_pages_under_prefix":false,"redirects":[]}`
+	want := `{"infra_pages_under_prefix":false,"redirects":[]}`
 	if string(b) != want {
 		t.Fatalf("payload = %s, want %s", b, want)
 	}
@@ -212,7 +234,7 @@ func TestCategoryPagesRefusesBadExcludeValuesBeforeAnyWrite(t *testing.T) {
 	f := &generalSettingsFake{stored: prodSite6General()}
 	ts := f.server(t)
 	c := newProvisionClient(ts.URL, "k", false)
-	dir := writeSiteDir(t, map[string]string{"site.yaml": "id: 6\ncategory_index_page: {path: spreuken}\ncategory_pages:\n  - meta_field: a\n    url_pattern: x/{slug}\n    exclude_values: geen\n"})
+	dir := writeSiteDir(t, map[string]string{"site.yaml": "id: 6\ncategory_index_page: {path: spreuken, template: spreuken-index.html}\ncategory_pages:\n  - meta_field: a\n    url_pattern: x/{slug}\n    exclude_values: geen\n"})
 
 	if err := applySiteDir(c, dir, 3, false); err == nil {
 		t.Fatal("want an error for a string exclude_values")
@@ -296,23 +318,55 @@ func TestGeneralKeysDiffShowsCategoryIndexPageChange(t *testing.T) {
 	}
 }
 
-func TestGeneralKeysDiffShowsClearOfExplicitEmpty(t *testing.T) {
-	f := &generalSettingsFake{stored: prodSite6General()}
-	ts := f.server(t)
-	c := newProvisionClient(ts.URL, "k", true)
-	dir := writeSiteDir(t, map[string]string{"site.yaml": "id: 6\ncategory_index_page: {}\n"})
-
-	out := captureStdout(t, func() {
-		if err := applySiteDir(c, dir, 3, false); err != nil {
-			t.Errorf("applySiteDir: %v", err)
-		}
-	})
-	for _, want := range []string{
-		"category_index_page.path  spreuken -> (absent)",
-		"category_index_page.template  spreuken-index.html -> (absent)",
+func TestCategoryIndexPageValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name, yaml, want string
+	}{
+		{"valid", "category_index_page: {path: spreuken, template: spreuken-index.html}\n", ""},
+		{"empty mapping", "category_index_page: {}\n", "deliberate Studio-side action"},
+		{"missing template", "category_index_page: {path: spreuken}\n", "template"},
+		{"missing path", "category_index_page: {template: spreuken-index.html}\n", "path"},
+		{"blank template", "category_index_page: {path: spreuken, template: \"\"}\n", "template"},
+		{"non-string path", "category_index_page: {path: 3, template: t.html}\n", "path"},
+		{"not a mapping", "category_index_page: spreuken\n", "mapping"},
 	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("diff output missing %q\n---\n%s", want, out)
+		t.Run(tc.name, func(t *testing.T) {
+			var sy siteYAML
+			if err := yamlUnmarshalStrict([]byte("id: 6\n"+tc.yaml), &sy); err != nil {
+				t.Fatal(err)
+			}
+			err := validateCategoryIndexPage(sy.CategoryIndexPage)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("want ok, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want an error containing %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// An index page without path or template is stored by Studio and then aborts
+// every build of the site (template "" not found), so it is refused before
+// any write, in diff and apply alike.
+func TestCategoryIndexPageIncompleteRefusedBeforeAnyWrite(t *testing.T) {
+	for _, idx := range []string{"{}", "{path: spreuken}", "{template: spreuken-index.html}"} {
+		for _, dry := range []bool{false, true} {
+			f := &generalSettingsFake{stored: prodSite6General(), storeOnPut: true}
+			ts := f.server(t)
+			c := newProvisionClient(ts.URL, "k", dry)
+			dir := writeSiteDir(t, map[string]string{"site.yaml": "id: 6\ncategory_index_page: " + idx + "\ncategory_pages:\n  - meta_field: a\n    url_pattern: x/{slug}\n"})
+
+			err := applySiteDir(c, dir, 3, false)
+			if err == nil || !strings.Contains(err.Error(), "category_index_page") {
+				t.Fatalf("%s (dry=%v): want a category_index_page error, got %v", idx, dry, err)
+			}
+			if len(f.puts) != 0 {
+				t.Fatalf("%s (dry=%v): nothing may be written, got %+v", idx, dry, f.puts)
+			}
 		}
 	}
 }
@@ -376,5 +430,62 @@ func TestGeneralKeysWarnWhenStudioDropsAKey(t *testing.T) {
 	})
 	if c.WarningCount() != 1 || !strings.Contains(c.warnings[0], "redirects") {
 		t.Fatalf("want one warning naming redirects, got %v", c.warnings)
+	}
+}
+
+// A failed or uninformative GET means the diff cannot say what a replace
+// would change, so the PUT is refused in diff and apply unless the operator
+// passes --force-general-settings.
+func TestGeneralKeysRefuseWhenLiveUnreadable(t *testing.T) {
+	str := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   *string
+	}{
+		{"server error", http.StatusInternalServerError, str(`{"error":"boom"}`)},
+		{"not found", http.StatusNotFound, str(`{"error":"no"}`)},
+		{"null body", 0, str("null")},
+		{"empty body", 0, str("")},
+		{"empty object", 0, str("{}")},
+		{"not JSON", 0, str("<html>")},
+	} {
+		for _, dry := range []bool{false, true} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := &generalSettingsFake{stored: prodSite6General(), storeOnPut: true, getStatus: tc.status, getBody: tc.body}
+				ts := f.server(t)
+				c := newProvisionClient(ts.URL, "k", dry)
+				dir := writeSiteDir(t, map[string]string{"site.yaml": vpCategoryIndexYAML})
+
+				var err error
+				_ = captureStdout(t, func() { err = applySiteDir(c, dir, 3, false) })
+				if err == nil || !strings.Contains(err.Error(), "--force-general-settings") {
+					t.Fatalf("dry=%v: want an error naming --force-general-settings, got %v", dry, err)
+				}
+				if len(f.generalPuts()) != 0 {
+					t.Fatalf("dry=%v: no general PUT allowed without a readable live section, got %+v", dry, f.puts)
+				}
+			})
+		}
+	}
+}
+
+func TestGeneralKeysForceSendsWhenLiveUnreadable(t *testing.T) {
+	f := &generalSettingsFake{stored: prodSite6General(), getStatus: http.StatusInternalServerError, getBody: func() *string { s := "{}"; return &s }()}
+	ts := f.server(t)
+	c := newProvisionClient(ts.URL, "k", false)
+	c.forceGeneralSettings = true
+	dir := writeSiteDir(t, map[string]string{"site.yaml": vpCategoryIndexYAML})
+
+	_ = captureStdout(t, func() {
+		if err := applySiteDir(c, dir, 3, false); err != nil {
+			t.Errorf("applySiteDir: %v", err)
+		}
+	})
+	if len(f.generalPuts()) != 1 {
+		t.Fatalf("--force-general-settings: want one general PUT, got %+v", f.puts)
+	}
+	if c.WarningCount() == 0 || !strings.Contains(c.warnings[0], "--force-general-settings") {
+		t.Fatalf("a forced PUT without a diff must warn, got %v", c.warnings)
 	}
 }

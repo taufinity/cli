@@ -6,11 +6,21 @@
 // So the rules are:
 //   - a key absent from site.yaml (or null) is never sent, so it cannot clear
 //     what Studio holds;
-//   - an explicit empty value ({}, [], false) is sent and replaces the stored
-//     value, the same absent-versus-explicit rule provider map fields follow;
+//   - an explicit empty value ([] for redirects, false for
+//     infra_pages_under_prefix) is sent and replaces the stored value, the
+//     same absent-versus-explicit rule provider map fields follow;
+//   - category_index_page is the exception: a non-null value must carry a
+//     non-empty path and template, and {} is refused. Sitegen aborts the whole
+//     build on an index page without a template, so a stored {} would break
+//     every deploy; removing the index page is a deliberate Studio-side
+//     action, not a provisioning side effect (validateCategoryIndexPage);
 //   - before the PUT the live values are read (GET) and diffed per key, so
 //     `provision diff` shows exactly what a replace would change, and an
-//     unchanged section is a NOOP with no write and no version row.
+//     unchanged section is a NOOP with no write and no version row;
+//   - when that GET fails, or returns nothing that shows what is stored
+//     (empty body, null, {}), the PUT is refused in diff and apply alike:
+//     without the live values nobody can see what the replace would do.
+//     --force-general-settings sends it anyway, with a warning.
 //
 // A Studio whose allowlist predates a key drops it without an error. After a
 // real PUT the section is read back and any key that did not stick is a warning.
@@ -149,8 +159,11 @@ func getGeneralSettings(c *provisionClient, siteID uint) (map[string]any, error)
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	if out == nil {
-		out = map[string]any{}
+	// A live section always holds at least the site's name and domain, so an
+	// empty or null body says nothing about what is stored; treating it as
+	// "nothing stored" would report every key as new.
+	if len(out) == 0 {
+		return nil, fmt.Errorf("empty response (%s), cannot tell what is stored", provisionSummarize(body))
 	}
 	return out, nil
 }
@@ -177,7 +190,12 @@ func pushSiteGeneralKeys(c *provisionClient, siteID uint, sy siteYAML) error {
 
 	remote, gerr := getGeneralSettings(c, siteID)
 	if gerr != nil {
-		c.Warn("site %d: could not read live general settings for a diff (%v); sending %s without one", siteID, gerr, strings.Join(keys, ", "))
+		if !c.forceGeneralSettings {
+			return fmt.Errorf("site %d: could not read live general settings (%v), so a replace of %s cannot be diffed; "+
+				"refusing to send it. Re-run with --force-general-settings to send it without a diff",
+				siteID, gerr, strings.Join(keys, ", "))
+		}
+		c.Warn("site %d: could not read live general settings (%v); --force-general-settings: sending %s without a diff", siteID, gerr, strings.Join(keys, ", "))
 	} else {
 		changes := diffGeneralKeys(remote, localMap)
 		if len(changes) == 0 {
@@ -219,5 +237,31 @@ func pushSiteGeneralKeys(c *provisionClient, siteID uint, sy siteYAML) error {
 		}
 	}
 	fmt.Printf("provision: site %d general settings updated from site.yaml (%s)\n", siteID, strings.Join(keys, ", "))
+	return nil
+}
+
+// validateCategoryIndexPage refuses an index page the site build cannot
+// render. Studio stores whatever it receives, and sitegen aborts the whole
+// build when the index template is "" or missing, so an incomplete value
+// would break every deploy of the site, not just the index page. nil (absent
+// or null) is fine: it is never sent.
+func validateCategoryIndexPage(v any) error {
+	if v == nil {
+		return nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok {
+		return fmt.Errorf("must be a mapping with path and template")
+	}
+	if len(m) == 0 {
+		return fmt.Errorf("{} would remove the category index page and break every deploy of the site; " +
+			"removing the index page is a deliberate Studio-side action, not a provisioning side effect. " +
+			"Remove the key from site.yaml to leave the live value alone")
+	}
+	for _, k := range []string{"path", "template"} {
+		if s, ok := m[k].(string); !ok || strings.TrimSpace(s) == "" {
+			return fmt.Errorf("%s must be a non-empty string: without it the site build fails on every deploy", k)
+		}
+	}
 	return nil
 }
