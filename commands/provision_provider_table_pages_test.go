@@ -1,7 +1,11 @@
 package commands
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,13 +28,14 @@ func TestResolveTablePages_ReadsContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &providerConfig{TablePages: map[string]string{
+	commitTablePageFixture(t, root)
+	cfg := &providerConfig{AllowedTables: []string{"rpt_platform_performance"}, TablePages: map[string]string{
 		"rpt_platform_performance": "docs/table-pages/rpt_platform_performance.md",
 	}}
 	if err := resolveTablePages(root, cfg, false); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if got := cfg.tablePageContents["rpt_platform_performance"]; got != "# page" {
+	if got := cfg.tablePageContents["rpt_platform_performance"].Markdown; got != "# page" {
 		t.Fatalf("content = %q, want the file's content", got)
 	}
 }
@@ -40,7 +45,7 @@ func TestResolveTablePages_ReadsContent(t *testing.T) {
 // warning on dry-run.
 func TestResolveTablePages_MissingFile(t *testing.T) {
 	root := t.TempDir()
-	cfg := &providerConfig{TablePages: map[string]string{
+	cfg := &providerConfig{AllowedTables: []string{"rpt_platform_performance"}, TablePages: map[string]string{
 		"rpt_platform_performance": "docs/table-pages/missing.md",
 	}}
 	if err := resolveTablePages(root, cfg, false); err == nil {
@@ -80,7 +85,7 @@ func TestResolveTablePages_Boundaries(t *testing.T) {
 	}
 
 	t.Run("internal layer refused", func(t *testing.T) {
-		cfg := &providerConfig{TablePages: map[string]string{"core_transactions": "docs/table-pages/any.md"}}
+		cfg := &providerConfig{AllowedTables: []string{"core_transactions"}, TablePages: map[string]string{"core_transactions": "docs/table-pages/any.md"}}
 		if err := resolveTablePages(root, cfg, false); err == nil {
 			t.Fatal("a core_ table must be refused")
 		}
@@ -89,17 +94,69 @@ func TestResolveTablePages_Boundaries(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(pageDir, "mart_failed_shifts.md"), []byte("# page"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		cfg := &providerConfig{TablePages: map[string]string{"mart_failed_shifts": "docs/table-pages/mart_failed_shifts.md"}}
+		commitTablePageFixture(t, root)
+		cfg := &providerConfig{AllowedTables: []string{"mart_failed_shifts"}, TablePages: map[string]string{"mart_failed_shifts": "docs/table-pages/mart_failed_shifts.md"}}
 		if err := resolveTablePages(root, cfg, false); err != nil {
 			t.Fatalf("mart_* is a legitimate surface table: %v", err)
 		}
 	})
 	t.Run("oversized page refused", func(t *testing.T) {
-		cfg := &providerConfig{TablePages: map[string]string{"rpt_x": "docs/table-pages/big.md"}}
+		cfg := &providerConfig{AllowedTables: []string{"rpt_x"}, TablePages: map[string]string{"rpt_x": "docs/table-pages/big.md"}}
 		if err := resolveTablePages(root, cfg, false); err == nil {
 			t.Fatal("a page over 32 KB must be refused")
 		}
 	})
+}
+
+func TestResolveTablePages_RequiresAllowListAndCommittedSource(t *testing.T) {
+	root := t.TempDir()
+	pageDir := filepath.Join(root, "docs", "table-pages")
+	if err := os.MkdirAll(pageDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(pageDir, "rpt_x.md")
+	if err := os.WriteFile(path, []byte("# page"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("not allow-listed", func(t *testing.T) {
+		cfg := &providerConfig{TablePages: map[string]string{"rpt_x": "docs/table-pages/rpt_x.md"}}
+		if err := resolveTablePages(root, cfg, true); err == nil {
+			t.Fatal("dry-run must reject a table page outside allowed_tables")
+		}
+	})
+	t.Run("dirty source", func(t *testing.T) {
+		commitTablePageFixture(t, root)
+		if err := os.WriteFile(path, []byte("# changed"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := &providerConfig{AllowedTables: []string{"rpt_x"}, TablePages: map[string]string{"rpt_x": "docs/table-pages/rpt_x.md"}}
+		if err := resolveTablePages(root, cfg, false); err == nil {
+			t.Fatal("apply must reject an uncommitted table page")
+		}
+	})
+}
+
+func commitTablePageFixture(t *testing.T, root string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+		runGit(t, root, "init", "-q")
+		runGit(t, root, "config", "user.email", "test@example.com")
+		runGit(t, root, "config", "user.name", "Test")
+	}
+	runGit(t, root, "add", "docs/table-pages")
+	cmd := exec.Command("git", "-C", root, "diff", "--cached", "--quiet")
+	if err := cmd.Run(); err != nil {
+		runGit(t, root, "commit", "-qm", "table pages")
+	}
+}
+
+func runGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmdArgs := append([]string{"-C", root}, args...)
+	if out, err := exec.Command("git", cmdArgs...).CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
 }
 
 // The fingerprint identifies page content in diffs by size and hash prefix.
@@ -110,5 +167,27 @@ func TestPageFingerprint(t *testing.T) {
 	}
 	if pageFingerprint("hello") == pageFingerprint("world") {
 		t.Fatal("different content must produce different fingerprints")
+	}
+}
+
+func TestWriteBQProviderBoundary_ExplicitlyClearsPages(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/admin/bq-providers/42" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := newProvisionClient(srv.URL, "key", false)
+	if err := writeBQProviderBoundary(c, 42, []byte(`[]`), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got["allowed_tables"] != "[]" || got["table_pages"] != "{}" {
+		t.Fatalf("payload = %#v, want explicit empty allowed_tables and table_pages", got)
 	}
 }

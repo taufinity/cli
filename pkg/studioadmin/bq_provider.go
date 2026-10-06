@@ -25,9 +25,28 @@ type BQProvider struct {
 	// TablePages maps an allow-listed table name to its full table page
 	// (markdown, ADR-016 rule 8), served by describe_table. Uploaded with the
 	// provider so the pages are provisioned, never hand-edited in Studio.
-	TablePages     map[string]string
+	TablePages     map[string]TablePage
 	MaxBytesBilled int64
 	Enabled        bool
+}
+
+// TablePage is the committed source material uploaded for one allow-listed
+// table. Studio returns the metadata with describe_table for auditability.
+type TablePage struct {
+	Markdown  string `json:"markdown"`
+	SHA256    string `json:"sha256"`
+	Source    string `json:"source"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+func (p *TablePage) UnmarshalJSON(data []byte) error {
+	var markdown string
+	if err := json.Unmarshal(data, &markdown); err == nil {
+		p.Markdown = markdown
+		return nil
+	}
+	type alias TablePage
+	return json.Unmarshal(data, (*alias)(p))
 }
 
 const bqProviderType = "bigquery"
@@ -75,11 +94,11 @@ func (c *Client) GetBQProvider(ctx context.Context, id int64) (*BQProvider, erro
 // decodeTablePages parses the stringified table_pages JSON object. Empty or
 // malformed yields nil (no pages); malformed is a provisioning mistake that
 // the next provision run overwrites.
-func decodeTablePages(raw string) map[string]string {
+func decodeTablePages(raw string) map[string]TablePage {
 	if raw == "" {
 		return nil
 	}
-	pages := map[string]string{}
+	pages := map[string]TablePage{}
 	if err := json.Unmarshal([]byte(raw), &pages); err != nil {
 		return nil
 	}
