@@ -3,8 +3,10 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -132,7 +134,11 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	if cfg.InputTemplate != "" {
 		payload["input_template"] = cfg.InputTemplate
 	}
-	if len(cfg.ResponseMappings) > 0 {
+	// Map fields: nil (key absent or null in YAML) keeps the stored value; an
+	// explicit `{}` is sent as "{}", which Studio stores and reads back as an
+	// empty map, i.e. it clears the stored value. Studio ignores an empty
+	// string on update, so "{}" is the only way to clear these.
+	if cfg.ResponseMappings != nil {
 		mappingsJSON, err := json.Marshal(cfg.ResponseMappings)
 		if err != nil {
 			return 0, fmt.Errorf("marshal response_mappings: %w", err)
@@ -142,7 +148,7 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	if cfg.ResponseJSONPath != "" {
 		payload["response_json_path"] = cfg.ResponseJSONPath
 	}
-	if len(cfg.RequestHeaders) > 0 {
+	if cfg.RequestHeaders != nil {
 		headersJSON, err := json.Marshal(cfg.RequestHeaders)
 		if err != nil {
 			return 0, fmt.Errorf("marshal request_headers: %w", err)
@@ -184,6 +190,11 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 			fmt.Printf("provision: provider id=%d name changed %q → %q\n", existing.ID, existing.Name, cfg.Name)
 		}
 		fmt.Printf("provision: updating provider %q (id=%d)\n", cfg.Name, existing.ID)
+		// The dry-run payload line is truncated, so spell out map-field changes
+		// (a clear in particular) for provision diff.
+		for _, change := range providerMapFieldChanges(cfg, existing) {
+			fmt.Printf("  %s\n", change)
+		}
 		diffTablePages(c, existing.ID, cfg.tablePageContents)
 		_, status, err = c.put(fmt.Sprintf("/custom-ai-providers/%d", existing.ID), payloadBytes)
 		if err != nil || status >= 300 {
@@ -219,6 +230,54 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	}
 	fmt.Printf("provision: created provider %q id=%d\n", cfg.Name, created.ID)
 	return created.ID, nil
+}
+
+// providerMapFieldChanges describes how the configured map fields differ from
+// the stored provider. An absent (nil) field never changes; an explicit empty
+// map against a stored non-empty one is reported as a clear.
+func providerMapFieldChanges(cfg providerConfig, existing providerItem) []string {
+	var changes []string
+	for _, f := range []struct {
+		name     string
+		want     map[string]string
+		stored   string
+		keysOnly bool // header values can carry credentials: never print them
+	}{
+		{"response_mappings", cfg.ResponseMappings, existing.ResponseMappings, false},
+		{"request_headers", cfg.RequestHeaders, existing.RequestHeaders, true},
+	} {
+		if f.want == nil {
+			continue
+		}
+		var have map[string]string
+		if f.stored != "" {
+			if err := json.Unmarshal([]byte(f.stored), &have); err != nil {
+				shape := "not a JSON object"
+				var obj map[string]json.RawMessage
+				if json.Unmarshal([]byte(f.stored), &obj) == nil {
+					shape = "not a string map"
+				}
+				changes = append(changes, fmt.Sprintf("%s: stored value is %s, will be replaced", f.name, shape))
+				continue
+			}
+		}
+		if maps.Equal(f.want, have) {
+			continue
+		}
+		render := func(m map[string]string) string {
+			if f.keysOnly {
+				return "keys " + fmt.Sprint(slices.Sorted(maps.Keys(m)))
+			}
+			b, _ := json.Marshal(m)
+			return string(b)
+		}
+		if len(f.want) == 0 {
+			changes = append(changes, fmt.Sprintf("%s: %s -> {} (clears the stored value)", f.name, render(have)))
+		} else {
+			changes = append(changes, fmt.Sprintf("%s: %s -> %s", f.name, render(have), render(f.want)))
+		}
+	}
+	return changes
 }
 
 func validateProviderBoundary(cfg providerConfig) error {

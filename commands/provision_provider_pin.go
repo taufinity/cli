@@ -11,6 +11,9 @@ type providerItem struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug,omitempty"`
+	// Stored JSON-encoded maps, used only to report what a PUT will change.
+	ResponseMappings string `json:"response_mappings,omitempty"`
+	RequestHeaders   string `json:"request_headers,omitempty"`
 }
 
 // pinProviderID writes `id: <liveID>` into the YAML file when the provider was
