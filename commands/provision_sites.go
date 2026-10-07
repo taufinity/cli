@@ -29,12 +29,21 @@ type siteYAML struct {
 	ID     uint   `yaml:"id"`
 	// Name is used when provision creates a site that does not yet exist.
 	Name string `yaml:"name,omitempty"`
-	// CategoryPages is SSG-only; captured here so the strict YAML decoder does
-	// not reject site.yaml files that include it.
+	// CategoryPages is pushed whole to PUT settings/category-pages. Kept
+	// untyped so keys the CLI does not model (exclude_values, index_page, ...)
+	// reach Studio unchanged; validateCategoryPages checks the ones it knows.
 	CategoryPages any `yaml:"category_pages,omitempty"`
-	// CategoryIndexPage is SSG-only; accepted here so site.yaml files that
-	// include it are not rejected by the strict decoder.
+	// CategoryIndexPage, Redirects and InfraPagesUnderPrefix are general
+	// settings: sent through PUT settings/general, which replaces each key it
+	// receives whole. nil (absent or null) is never sent; an explicit empty
+	// value ([], false) is, and replaces the stored one; category_index_page
+	// must carry path and template ({} is refused). See
+	// provision_site_general_keys.go.
 	CategoryIndexPage any `yaml:"category_index_page,omitempty"`
+	// Redirects: old paths that forward to a live page (stub pages at build).
+	Redirects []siteRedirect `yaml:"redirects,omitempty"`
+	// InfraPagesUnderPrefix writes 404 and archive pages under the path prefix.
+	InfraPagesUnderPrefix *bool `yaml:"infra_pages_under_prefix,omitempty"`
 	// Content is the same section content-settings.yaml carries, typed the same way,
 	// so an unknown key still fails the strict decoder. Setting it in both places is
 	// refused: one source per setting.
@@ -581,7 +590,16 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 	hasCategoryPages := sy.CategoryPages != nil
 	hasSiteContent := sy.Content != nil
 	hasUITranslations := sy.UITranslations != nil
+	hasGeneralKeys := siteGeneralPayload(sy) != nil
 
+	if hasCategoryPages {
+		if err := validateCategoryPages(sy.CategoryPages); err != nil {
+			return fmt.Errorf("site.yaml category_pages: %w", err)
+		}
+	}
+	if err := validateCategoryIndexPage(sy.CategoryIndexPage); err != nil {
+		return fmt.Errorf("site.yaml category_index_page: %w", err)
+	}
 	if hasSiteContent && hasContentSettings {
 		return fmt.Errorf("site %q sets content in both site.yaml and content-settings.yaml; keep one", dirName)
 	}
@@ -594,7 +612,7 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 	if !hasPipeline && !hasSecureRender && !hasAISettings &&
 		!hasGeneralSettings && !hasContentSettings && !hasMetadataSettings &&
 		!hasCategoryPages && !hasTracker && !hasPrompts &&
-		!hasSiteContent && !hasUITranslations {
+		!hasSiteContent && !hasUITranslations && !hasGeneralKeys {
 		return nil
 	}
 
@@ -636,6 +654,14 @@ func applySiteDir(c *provisionClient, siteDir string, orgID uint, allowDrift boo
 	if hasGeneralSettings {
 		if err := provisionGeneralSettings(c, siteID, siteDir); err != nil {
 			return fmt.Errorf("general-settings: %w", err)
+		}
+	}
+
+	// Same endpoint, different keys: category_index_page, redirects and
+	// infra_pages_under_prefix from site.yaml, diffed against live first.
+	if hasGeneralKeys {
+		if err := pushSiteGeneralKeys(c, siteID, sy); err != nil {
+			return fmt.Errorf("site.yaml general settings: %w", err)
 		}
 	}
 

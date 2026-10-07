@@ -21,6 +21,7 @@ var (
 	provisionDraft            bool
 	provisionPreviewDataset   string
 	provisionAllowDrift       bool
+	provisionForceGeneral     bool
 	provisionWorkspaceConfig  string
 	provisionRepoRoot         string
 )
@@ -92,6 +93,7 @@ func init() {
 		cmd.Flags().StringVar(&provisionPreviewDataset, "preview-dataset", "", "BQ dataset override for preview mode (use with --draft)")
 		cmd.Flags().StringVar(&provisionWorkspaceConfig, "workspace-config", "", "Path to the analytics workspace config declaring valid source write keys. Used to validate each site's tracker write_key before it is pushed. Without it the key cannot be checked, and an unknown key means the tracker deploys fine and then silently drops every event. Env: TAUFINITY_WORKSPACE_CONFIG")
 		cmd.Flags().BoolVar(&provisionAllowDrift, "allow-drift", false, "Apply playbooks and site pipelines even when the diff is classified HIGH drift (removed steps, AI model/provider change, error-policy change, schedule/enabled flip, wholesale step rewrite). Default off: a HIGH-drift apply aborts so a stale local file can't silently revert live config")
+		cmd.Flags().BoolVar(&provisionForceGeneral, "force-general-settings", false, "Send site.yaml's category_index_page, redirects and infra_pages_under_prefix even when the live general settings cannot be read to diff them. Default off: an unreadable live section refuses the write, because nobody can see what the replace would change")
 		_ = cmd.MarkFlagRequired("dir")
 		_ = cmd.MarkFlagRequired("org")
 	}
@@ -174,6 +176,7 @@ func runProvisionApply(cmd *cobra.Command, args []string) error {
 
 	c := newProvisionClient(apiURL, key, dryRun)
 	c.noInviteEmail = provisionNoInviteEmail
+	c.forceGeneralSettings = provisionForceGeneral
 	c.workspaceConfigPath = resolveWorkspaceConfigPath()
 
 	orgID, err := resolveProvisionOrgID(c, provisionOrgSlug)

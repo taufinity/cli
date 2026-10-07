@@ -21,8 +21,11 @@ type provisionClient struct {
 	token         string
 	dryRun        bool
 	noInviteEmail bool
-	http          *http.Client
-	warnings      []string
+	// forceGeneralSettings sends site.yaml's general-settings keys even when
+	// the live section cannot be read to diff them (--force-general-settings).
+	forceGeneralSettings bool
+	http                 *http.Client
+	warnings             []string
 
 	// workspaceConfigPath points at the analytics workspace config that declares
 	// the valid source write keys. It lives with the analytics infrastructure

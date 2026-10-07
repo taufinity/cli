@@ -516,6 +516,13 @@ func decodeStepConfigJSON(s string) (any, bool) {
 // key-by-key (so a one-key change reports as config.model, not "config
 // changed"); everything else compares as a whole.
 func diffJSONValues(path string, remote, local any) []fieldChange {
+	return diffJSONValuesFmt(path, remote, local, fmtJSON)
+}
+
+// diffJSONValuesFmt is diffJSONValues with the value formatter chosen by the
+// caller: fmtJSON truncates for drift warnings, fmtJSONFull prints a value
+// whole where the operator has to see exactly what a replace will write.
+func diffJSONValuesFmt(path string, remote, local any, format func(any) string) []fieldChange {
 	rm, rok := remote.(map[string]any)
 	lm, lok := local.(map[string]any)
 	if rok && lok {
@@ -539,11 +546,11 @@ func diffJSONValues(path string, remote, local any) []fieldChange {
 			sub := path + "." + k
 			switch {
 			case !rhas:
-				out = append(out, fieldChange{Path: sub, Old: "(absent)", New: fmtJSON(lv)})
+				out = append(out, fieldChange{Path: sub, Old: "(absent)", New: format(lv)})
 			case !lhas:
-				out = append(out, fieldChange{Path: sub, Old: fmtJSON(rv), New: "(absent)"})
+				out = append(out, fieldChange{Path: sub, Old: format(rv), New: "(absent)"})
 			default:
-				out = append(out, diffJSONValues(sub, rv, lv)...)
+				out = append(out, diffJSONValuesFmt(sub, rv, lv, format)...)
 			}
 		}
 		return out
@@ -551,7 +558,7 @@ func diffJSONValues(path string, remote, local any) []fieldChange {
 	if jsonDeepEqual(remote, local) {
 		return nil
 	}
-	return []fieldChange{{Path: path, Old: fmtJSON(remote), New: fmtJSON(local)}}
+	return []fieldChange{{Path: path, Old: format(remote), New: format(local)}}
 }
 
 // isAIModelPath reports whether the final segment of a config path names a
