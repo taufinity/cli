@@ -11,7 +11,8 @@ import (
 // get through — on reads and writes alike, because the diff GETs remote state and
 // would 403 before it computed a change if only writes carried the header.
 //
-// The token comes from the environment only. These tests pin: it rides both
+// With the environment set, the token goes to the configured host (here an
+// httptest server); the gcloud fallback is staging-only, see internal/cfaccess. These tests pin: it rides both
 // paths when set; nothing is sent when unset; and it is never one-sided.
 func TestCFAccess_HeadersRideReadAndWritePaths(t *testing.T) {
 	var readID, readSecret, writeID, writeSecret string
@@ -29,9 +30,9 @@ func TestCFAccess_HeadersRideReadAndWritePaths(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	t.Setenv("CF_ACCESS_CLIENT_ID", "svc-id")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "svc-secret")
 	c := newProvisionClient(srv.URL, "tok", false)
-	c.cfAccessID = "svc-id"
-	c.cfAccessSecret = "svc-secret"
 
 	if _, _, err := c.get("/anything"); err != nil {
 		t.Fatalf("get: %v", err)
@@ -63,8 +64,9 @@ func TestCFAccess_NothingSentWhenUnset(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	t.Setenv("CF_ACCESS_CLIENT_ID", "")
+	t.Setenv("CF_ACCESS_CLIENT_SECRET", "")
 	c := newProvisionClient(srv.URL, "tok", false)
-	// cfAccessID / cfAccessSecret deliberately left empty.
 
 	if _, _, err := c.get("/x"); err != nil {
 		t.Fatalf("get: %v", err)
@@ -100,9 +102,9 @@ func TestCFAccess_HalfConfiguredSendsNothing(t *testing.T) {
 			}))
 			defer srv.Close()
 
+			t.Setenv("CF_ACCESS_CLIENT_ID", tc.id)
+			t.Setenv("CF_ACCESS_CLIENT_SECRET", tc.secret)
 			c := newProvisionClient(srv.URL, "tok", false)
-			c.cfAccessID = tc.id
-			c.cfAccessSecret = tc.secret
 
 			if _, _, err := c.get("/x"); err != nil {
 				t.Fatalf("get: %v", err)

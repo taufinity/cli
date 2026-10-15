@@ -8,11 +8,11 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/taufinity/cli/internal/cfaccess"
 	"github.com/taufinity/cli/pkg/studioadmin"
 )
 
@@ -34,19 +34,9 @@ type provisionClient struct {
 	// warning). See checkTrackerWriteKey.
 	workspaceConfigPath string
 
-	// cfAccessID and cfAccessSecret are a Cloudflare Access service token, sent
-	// as CF-Access-Client-Id / CF-Access-Client-Secret on every request. They let
-	// provision reach a Studio instance that sits behind Cloudflare Access (a
-	// pre-authentication gate in front of the app). Sourced from the environment
-	// only — a service token is a credential and must never land in a flag, where
-	// it would show up in shell history and process listings, nor in this repo.
-	// Empty when either is unset, in which case no CF-Access headers are sent and
-	// the request goes straight through (correct for any host not behind Access).
-	// These headers only pass Cloudflare's gate; the app's own X-API-Key still
-	// authorises every request, so sending them to a host that does not need them
-	// is harmless.
-	cfAccessID     string
-	cfAccessSecret string
+	// Cloudflare Access (staging) is handled by the transport under http and
+	// admin, see internal/cfaccess: CF_ACCESS_CLIENT_ID/SECRET from the
+	// environment, else the staging token via gcloud. Never log those headers.
 
 	// admin is the shared transport (pkg/studioadmin) — the single code path for
 	// JSON get/write, the same client the Terraform provider uses. The local http
@@ -55,47 +45,13 @@ type provisionClient struct {
 }
 
 func newProvisionClient(base, token string, dryRun bool) *provisionClient {
-	// CF-Access service token from the environment. The same variable names
-	// the rest of the codebase uses for its Cloudflare Access bypass.
-	cfID := os.Getenv("CF_ACCESS_CLIENT_ID")
-	cfSecret := os.Getenv("CF_ACCESS_CLIENT_SECRET")
 	return &provisionClient{
-		base:           base,
-		token:          token,
-		dryRun:         dryRun,
-		http:           &http.Client{Timeout: 30 * time.Second},
-		cfAccessID:     cfID,
-		cfAccessSecret: cfSecret,
-		// CF-Access is applied per-call from cfAccessID/cfAccessSecret (below), not
-		// configured on the admin client — some callers (and tests) set the token
-		// on the struct after construction, so the struct fields are the source of
-		// truth.
-		admin: studioadmin.New(base, token, "", studioadmin.WithChangeSource("provision")),
+		base:   base,
+		token:  token,
+		dryRun: dryRun,
+		http:   cfaccess.NewClient(30 * time.Second),
+		admin:  studioadmin.New(base, token, "", studioadmin.WithChangeSource("provision")),
 	}
-}
-
-// cfAccessInto adds the Cloudflare Access service token to h when BOTH id and secret
-// are set (a half-configured pair sends nothing).
-func (c *provisionClient) cfAccessInto(h map[string]string) {
-	if c.cfAccessID != "" && c.cfAccessSecret != "" {
-		h["CF-Access-Client-Id"] = c.cfAccessID
-		h["CF-Access-Client-Secret"] = c.cfAccessSecret
-	}
-}
-
-// setCFAccessHeaders attaches the Cloudflare Access service token to a request,
-// but only when both halves are present. Sent on reads and writes alike, because
-// Cloudflare Access gates every request — a diff that GETs remote state would 403
-// before it ever computed a change if the header only rode the write path.
-//
-// Never log these values. The dry-run and error paths print method, path and
-// status, and must never grow to print headers.
-func (c *provisionClient) setCFAccessHeaders(req *http.Request) {
-	if c.cfAccessID == "" || c.cfAccessSecret == "" {
-		return
-	}
-	req.Header.Set("CF-Access-Client-Id", c.cfAccessID)
-	req.Header.Set("CF-Access-Client-Secret", c.cfAccessSecret)
 }
 
 func (c *provisionClient) Warn(format string, args ...interface{}) {
@@ -118,10 +74,9 @@ func (c *provisionClient) getForOrg(path string, orgID uint) ([]byte, int, error
 
 func (c *provisionClient) getWithHeaders(path string, extra map[string]string) ([]byte, int, error) {
 	// Delegate the JSON transport to the shared client (single code path). Accept is
-	// GET-specific, so it rides as an extra header; X-API-Key, CF-Access and org are
-	// applied by studioadmin.Do.
+	// GET-specific, so it rides as an extra header; X-API-Key and org are applied by
+	// studioadmin.Do, Cloudflare Access by its transport.
 	h := map[string]string{"Accept": "application/json"}
-	c.cfAccessInto(h)
 	for k, v := range extra {
 		h[k] = v
 	}
@@ -163,10 +118,9 @@ func (c *provisionClient) writeWithHeaders(method, path string, payload []byte, 
 	}
 	// Delegate to the shared client (single code path). X-API-Key, Content-Type and
 	// X-Change-Source=provision are applied by studioadmin.Do (change-source was
-	// configured on the admin client). User-Agent, CF-Access and any per-call extras
-	// (e.g. X-Organization-ID) ride as extra headers.
+	// configured on the admin client). User-Agent and any per-call extras (e.g.
+	// X-Organization-ID) ride as extra headers; Cloudflare Access is the transport's.
 	h := map[string]string{"User-Agent": provisionUserAgent()}
-	c.cfAccessInto(h)
 	for k, v := range extra {
 		h[k] = v
 	}
@@ -199,7 +153,6 @@ func (c *provisionClient) uploadMultipartForOrg(path, fileField, filename string
 	req.Header.Set("X-Organization-ID", fmt.Sprintf("%d", orgID))
 	req.Header.Set("X-Change-Source", "provision")
 	req.Header.Set("User-Agent", provisionUserAgent())
-	c.setCFAccessHeaders(req) // uploads are gated by Cloudflare Access too
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, 0, err

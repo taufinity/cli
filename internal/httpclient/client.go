@@ -5,6 +5,7 @@ package httpclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -178,6 +179,13 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 
 		resp, err := c.client.Do(reqWithCtx)
 		if err != nil {
+			// An error that declares itself final (e.g. Cloudflare Access
+			// turning the request away) is returned as-is: retrying only
+			// repeats it, with backoff the user sits through.
+			var final interface{ NonRetryable() bool }
+			if errors.As(err, &final) && final.NonRetryable() {
+				return nil, err
+			}
 			lastErr = err
 			if c.isRetryableError(err, 0) {
 				slog.Warn("HTTP request failed, will retry",

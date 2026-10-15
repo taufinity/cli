@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/cfaccess"
 	"github.com/taufinity/cli/internal/telemetry"
 )
 
@@ -485,6 +487,8 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 		// subprocess alive for hours/days, and the original token will expire
 		// mid-session. See HIGH-1 in the Phase 2 review.
 		transport.WithHTTPHeaderFunc(br.requestHeaders),
+		// Must precede WithHTTPTimeout, which sets the timeout on this client.
+		transport.WithHTTPBasicClient(&http.Client{Transport: cfaccess.NewTransport(nil)}),
 		transport.WithHTTPTimeout(cfg.Timeout),
 	)
 	if err != nil {
@@ -619,17 +623,10 @@ func (b *bridge) buildHeaders(token string) map[string]string {
 	if b.orgID != "" {
 		h["X-Organization-ID"] = b.orgID
 	}
-	// Cloudflare Access service token, lets this bridge reach a Studio
-	// instance behind Cloudflare Access (e.g. staging). Same env vars
-	// internal/api.Client and commands/provision_client.go already read for
-	// their own bypass. Without this, requests never reach the app at all,
-	// Cloudflare serves its own interactive login page (text/html) instead
-	// of proxying to /mcp, which surfaces here as an "unexpected content
-	// type" error rather than a clean 401 from the app.
-	if cfID, cfSecret := os.Getenv("CF_ACCESS_CLIENT_ID"), os.Getenv("CF_ACCESS_CLIENT_SECRET"); cfID != "" && cfSecret != "" {
-		h["CF-Access-Client-Id"] = cfID
-		h["CF-Access-Client-Secret"] = cfSecret
-	}
+	// The Cloudflare Access service token (staging) is not set here: the
+	// upstream http.Client routes through internal/cfaccess, the one place that
+	// decides it (env, else gcloud for staging only) and that turns an Access
+	// login page into an actionable error instead of "unexpected content type".
 	return h
 }
 
@@ -906,6 +903,13 @@ func (b *bridge) writeErrorResponse(id mcp.RequestId, args ...any) {
 // Note: data is never the raw bearer token.
 func mapTransportError(err error) (int, string, map[string]any) {
 	traceID := newTraceID()
+
+	if be := cfaccess.AsBlocked(err); be != nil {
+		return errCodeNetwork, be.Error(), map[string]any{
+			"error":    "cloudflare_access",
+			"trace_id": traceID,
+		}
+	}
 
 	if errors.Is(err, transport.ErrUnauthorized) {
 		return errCodeAuthFailed, authFailedMessage, map[string]any{

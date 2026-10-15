@@ -16,6 +16,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/taufinity/cli/internal/cfaccess"
 )
 
 // Client talks to the Studio admin API. Construct with New.
@@ -51,7 +53,9 @@ func New(base, token, org string, opts ...Option) *Client {
 		token:        token,
 		org:          org,
 		changeSource: "terraform",
-		http:         &http.Client{Timeout: 30 * time.Second},
+		// The Cloudflare Access transport adds the staging service token when
+		// WithCFAccess did not set one (env, else gcloud for staging only).
+		http: cfaccess.NewClient(30 * time.Second),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -112,7 +116,8 @@ func (c *Client) Write(ctx context.Context, method, path string, body any, out a
 
 // Do is the low-level transport shared by both frontends (the provider's typed
 // Get/Write below, and the CLI's provision client). It sets the common headers
-// (X-API-Key, X-Change-Source, org, CF-Access, Content-Type for bodies), applies
+// (X-API-Key, X-Change-Source, org, an explicit WithCFAccess token, Content-Type for
+// bodies; otherwise the cfaccess transport supplies the Access token), applies
 // any extra headers, and returns the raw body + status. It does NOT treat a non-2xx
 // as an error — the caller decides (the CLI checks the status int; Get/Write map it
 // to an APIError).

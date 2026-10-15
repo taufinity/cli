@@ -146,6 +146,26 @@ taufinity auth login
 
 Opens a browser window for device authorization. Credentials are stored at `~/.config/taufinity/credentials.json`.
 
+### Staging
+
+```bash
+taufinity --env staging auth login      # or TAUFINITY_ENV=staging
+taufinity --env staging auth status
+```
+
+`--env staging` targets `https://staging-studio.taufinity.io`, which sits behind Cloudflare Access. Every request needs the Access service token, and the CLI supplies it on its own:
+
+1. If `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are both set, those are used (for any Studio host you target).
+2. Otherwise, for the staging host only, the CLI reads `sitegen-cf-access-client-id` and `sitegen-cf-access-client-secret` from Secret Manager (project `content-gen-484211`) with your own `gcloud` login, once per command, with a 10-second limit. The values stay in memory: they are never written to disk, logged or sent with telemetry, and never sent to any other host, production included.
+
+If neither works you get one clear error instead of a JSON parse failure:
+
+```
+staging is behind Cloudflare Access and no service token was available: set CF_ACCESS_CLIENT_ID/CF_ACCESS_CLIENT_SECRET (eval "$(make -C ~/Documents/code/ai-site-gen staging-cf-access-env)") or log in to gcloud
+```
+
+Fix it with `gcloud auth login`, or export the variables with the `eval` shown. Every path goes through the same logic: regular commands, `auth login` / token refresh / `auth revoke`, `provision`, `dashboards` and the `mcp stdio` bridge.
+
 ## Quick Start
 
 ```bash
@@ -286,6 +306,8 @@ Config is resolved in this order (highest priority first):
 | `TAUFINITY_DEBUG` | Set to `1` to log all HTTP requests |
 | `TAUFINITY_QUIET` | Set to `1` to suppress output |
 | `TAUFINITY_DRY_RUN` | Set to `1` to print API calls without executing |
+| `TAUFINITY_ENV` | `staging` targets `https://staging-studio.taufinity.io` (same as `--env staging`) |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token. Optional for staging, where the CLI reads it with gcloud (see [Staging](#staging)) |
 
 ### Project File (`taufinity.yaml`)
 
