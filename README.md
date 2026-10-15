@@ -144,7 +144,9 @@ To update: `git pull && make install`.
 taufinity auth login
 ```
 
-Opens a browser window for device authorization. Credentials are stored at `~/.config/taufinity/credentials.json`.
+Opens a browser window for device authorization. Credentials are stored per server in `~/.config/taufinity/`: `credentials.json` for production, `credentials-<host>.json` for any other server (for example `credentials-staging-studio.taufinity.io.json` after `taufinity --env staging auth login`). Logging in to staging or a local server therefore never replaces or logs out your production session. A login that fails or is abandoned keeps the existing session.
+
+Renewal is safe with many `taufinity` processes running at once (MCP bridges in every editor session, scripts calling `auth token`): one process renews under a file lock and the others pick up its result, so the rotating refresh token is never sent twice.
 
 ## Quick Start
 

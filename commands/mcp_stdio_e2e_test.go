@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/taufinity/cli/internal/auth"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,7 +68,8 @@ func newMCPE2EUpstream(t *testing.T) (url string, bodies func() []string, close 
 
 // writeE2EHome writes a minimal CLI home directory:
 //   - config.yaml pointing at apiURL
-//   - credentials.json with a non-expiring access token (no network refresh needed)
+//   - that host's credentials file (credentials are per host) with a
+//     non-expiring access token (no network refresh needed)
 func writeE2EHome(t *testing.T, apiURL string) string {
 	t.Helper()
 	home := t.TempDir()
@@ -89,7 +91,7 @@ func writeE2EHome(t *testing.T, apiURL string) string {
 		"expires_at":              expiry.Format(time.RFC3339),
 	}
 	credsJSON, _ := json.Marshal(creds)
-	if err := os.WriteFile(filepath.Join(cfgDir, "credentials.json"), credsJSON, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, filepath.Base(auth.CredentialsPathFor(apiURL))), credsJSON, 0600); err != nil {
 		t.Fatal(err)
 	}
 

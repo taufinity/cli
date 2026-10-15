@@ -91,6 +91,7 @@ func TestClient_WithAuth(t *testing.T) {
 		AccessToken: "test-token",
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save credentials failed: %v", err)
 	}
@@ -251,6 +252,7 @@ func TestGetToken_RefreshOn401DeletesCreds(t *testing.T) {
 		AccessTokenExpiresAt: time.Now().Add(time.Minute),
 		ExpiresAt:            time.Now().Add(time.Minute),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -283,6 +285,7 @@ func TestGetToken_RefreshOn503PreservesCreds(t *testing.T) {
 		AccessTokenExpiresAt: time.Now().Add(time.Minute),
 		ExpiresAt:            time.Now().Add(time.Minute),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -319,6 +322,7 @@ func TestGetToken_RefreshOnNetworkErrorPreservesCreds(t *testing.T) {
 		AccessTokenExpiresAt: time.Now().Add(time.Minute),
 		ExpiresAt:            time.Now().Add(time.Minute),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -364,6 +368,7 @@ func TestToken_RenewsNearExpiry(t *testing.T) {
 		AccessTokenExpiresAt: time.Now().Add(time.Minute),
 		ExpiresAt:            time.Now().Add(time.Minute),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -411,6 +416,7 @@ func TestToken_NoRenewalWhenFresh(t *testing.T) {
 		AccessTokenExpiresAt: time.Now().Add(time.Hour),
 		ExpiresAt:            time.Now().Add(time.Hour),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -544,6 +550,7 @@ func TestClient_OrgHeader(t *testing.T) {
 		AccessToken: "test-token",
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save credentials failed: %v", err)
 	}
@@ -621,6 +628,7 @@ func TestClient_CFAccessHeaders(t *testing.T) {
 		AccessToken: "test-token",
 		ExpiresAt:   time.Now().Add(time.Hour),
 	}
+	bindTestHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save credentials failed: %v", err)
 	}
@@ -717,4 +725,12 @@ func TestClient_CFAccessHeaders(t *testing.T) {
 			t.Errorf("CF headers = (%q, %q), want both empty", got.cfID, got.cfSecret)
 		}
 	})
+}
+
+// bindTestHost points the auth package at url's credentials file for the
+// test, matching what the client reads (credentials are per Studio host).
+func bindTestHost(t *testing.T, url string) {
+	t.Helper()
+	auth.UseAPIURL(url)
+	t.Cleanup(func() { auth.UseAPIURL("") })
 }

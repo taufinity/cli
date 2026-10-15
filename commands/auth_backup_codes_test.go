@@ -31,11 +31,29 @@ func isolateCredentials(t *testing.T) {
 
 // withTestAPIURL points flagAPIURL at srv for the test's duration and
 // restores the previous value after.
+//
+// Credentials are per Studio host, so any credentials already seeded for
+// production are moved to srv's host, where the code under test looks.
 func withTestAPIURL(t *testing.T, srv *httptest.Server) {
 	t.Helper()
 	prev := flagAPIURL
 	flagAPIURL = srv.URL
 	t.Cleanup(func() { flagAPIURL = prev })
+	if seeded, err := auth.LoadCredentialsFor(""); err == nil {
+		seeded.BindTo(srv.URL)
+		if err := seeded.Save(); err != nil {
+			t.Fatalf("rebind seeded credentials: %v", err)
+		}
+	}
+	bindCredsHost(t, srv.URL)
+}
+
+// bindCredsHost points the auth package at url's credentials file for the
+// test, as the root command does for --api-url.
+func bindCredsHost(t *testing.T, url string) {
+	t.Helper()
+	auth.UseAPIURL(url)
+	t.Cleanup(func() { auth.UseAPIURL("") })
 }
 
 func TestRunAuthElevate_BackupCodeFlag_SendsBackupCodeNotTOTP(t *testing.T) {
