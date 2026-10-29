@@ -85,7 +85,7 @@ func newFixture(t *testing.T, handler http.HandlerFunc) *fixture {
 	target, _ := url.Parse(f.srv.URL)
 	f.res = &Resolver{
 		Getenv: func(k string) string { return f.env[k] },
-		Fetch: func(_ context.Context, name string) (string, error) {
+		Fetch: func(_ context.Context, _, name string) (string, error) {
 			f.fetches.Add(1)
 			switch name {
 			case SecretClientID:
@@ -226,7 +226,7 @@ func TestCallerRequestNotMutated(t *testing.T) {
 	}
 }
 
-const wantNoTokenMsg = `staging is behind Cloudflare Access and no service token was available: set CF_ACCESS_CLIENT_ID/CF_ACCESS_CLIENT_SECRET (eval "$(make -C ~/Documents/code/ai-site-gen staging-cf-access-env)") or log in to gcloud`
+const wantNoTokenMsg = `staging-studio.taufinity.io is behind Cloudflare Access and no service token was available: `
 
 func accessRedirect(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Location", "https://taufinity.cloudflareaccess.com/cdn-cgi/access/login/staging-studio.taufinity.io?redirect_url=%2Fapi%2Fcli%2Fdevice%2Fcode")
@@ -235,7 +235,7 @@ func accessRedirect(w http.ResponseWriter, r *http.Request) {
 
 func TestAccessRedirectGivesClearError(t *testing.T) {
 	f := newFixture(t, accessRedirect)
-	f.res.Fetch = func(context.Context, string) (string, error) {
+	f.res.Fetch = func(context.Context, string, string) (string, error) {
 		f.fetches.Add(1)
 		return "", errors.New("gcloud is not installed or not on PATH")
 	}
@@ -280,7 +280,7 @@ func TestStagingHTMLWhereJSONExpectedIsBlocked(t *testing.T) {
 	if !be.TokenSent {
 		t.Fatal("the fetched token was sent; TokenSent should be true")
 	}
-	if !strings.Contains(be.Error(), "rejected the service token") {
+	if !strings.Contains(be.Error(), "was refused (rotated or revoked?)") {
 		t.Fatalf("a rejected token needs its own message, got %q", be.Error())
 	}
 }
@@ -303,7 +303,7 @@ func TestHTMLOutsideStagingAPIIsPassedThrough(t *testing.T) {
 
 func TestFetchFailureSendsNothing(t *testing.T) {
 	f := newFixture(t, nil)
-	f.res.Fetch = func(_ context.Context, name string) (string, error) {
+	f.res.Fetch = func(_ context.Context, _, name string) (string, error) {
 		f.fetches.Add(1)
 		if name == SecretClientSecret {
 			return "", errors.New("permission denied")
@@ -316,7 +316,7 @@ func TestFetchFailureSendsNothing(t *testing.T) {
 	if id, sec := f.seen.last(); id != "" || sec != "" {
 		t.Fatal("half a token was sent after one secret failed to load")
 	}
-	if f.res.FetchError() == nil {
+	if f.res.FetchError(StagingHost) == nil {
 		t.Fatal("FetchError should report the failure")
 	}
 }

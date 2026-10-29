@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/taufinity/cli/internal/auth"
 	"github.com/taufinity/cli/internal/cfaccess"
+	"github.com/taufinity/cli/internal/jsonresp"
 )
 
 // Fake values only.
@@ -63,7 +65,9 @@ func withFakeStaging(t *testing.T, handler http.HandlerFunc) (*cfCapture, *atomi
 
 	var fetches atomic.Int32
 	res := cfaccess.NewResolver()
-	res.Fetch = func(_ context.Context, name string) (string, error) {
+	cacheDir := t.TempDir() // never the real ~/.config/taufinity
+	res.CacheDir = func() string { return cacheDir }
+	res.Fetch = func(_ context.Context, _, name string) (string, error) {
 		fetches.Add(1)
 		if name == cfaccess.SecretClientID {
 			return fakeCFID, nil
@@ -161,5 +165,47 @@ func TestAccessRedirectIsClearErrorNotDecodeError(t *testing.T) {
 	}
 	if time.Since(start) > 2*time.Second {
 		t.Fatal("an Access block went through retry backoff")
+	}
+}
+
+// Any HTML page where the API expected JSON (a proxy error page, a login wall
+// on a host the CLI does not know) is a short error naming URL, type, status
+// and title. It must not reach a JSON decoder nor be dumped whole.
+func TestHTMLFromJSONEndpointIsNonJSONError(t *testing.T) {
+	withFakeStaging(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("<html><head><title>Access denied</title></head><body>BODY-MARKER</body></html>"))
+	})
+	c := New("https://studio.taufinity.io")
+	_, err := c.PostJSON(context.Background(), "/api/cli/device/code", nil)
+	var nj *jsonresp.NonJSONError
+	if !errors.As(err, &nj) {
+		t.Fatalf("want *jsonresp.NonJSONError, got %v", err)
+	}
+	want := `expected JSON from https://studio.taufinity.io/api/cli/device/code, got text/html (HTTP 403): page title "Access denied"`
+	if err.Error() != want {
+		t.Fatalf("message = %q\nwant      %q", err.Error(), want)
+	}
+	if strings.Contains(err.Error(), "BODY-MARKER") {
+		t.Fatal("the page body leaked into the error")
+	}
+}
+
+// A file download may legitimately be HTML; GetRawWithAuth returns it as-is.
+func TestRawDownloadKeepsHTML(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	withFakeStaging(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>rendered</html>"))
+	})
+	c := New("https://studio.taufinity.io")
+	c.SetAuth("tok")
+	resp, err := c.GetRawWithAuth(context.Background(), "/api/render-jobs/1/files/article.html")
+	if err != nil {
+		t.Fatalf("GetRawWithAuth: %v", err)
+	}
+	if string(resp.Body) != "<html>rendered</html>" {
+		t.Fatalf("body = %q", resp.Body)
 	}
 }

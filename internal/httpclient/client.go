@@ -124,6 +124,7 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 	var lastErr error
 	var lastStatusCode int
 	var lastResponseBody []byte // Store last response body for error reporting
+	var lastHeaders http.Header
 	var bodyBytes []byte
 
 	// Read body once if present (for retries)
@@ -212,6 +213,7 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		// Check if we should retry based on status code
 		if c.isRetryableStatusCode(resp.StatusCode) {
 			lastResponseBody = body
+			lastHeaders = resp.Header
 			// Truncate body for logging (max 500 chars)
 			bodyPreview := string(body)
 			if len(bodyPreview) > 500 {
@@ -246,6 +248,7 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		if len(lastResponseBody) > 0 {
 			return &Response{
 				StatusCode: lastStatusCode,
+				Headers:    lastHeaders,
 				Body:       lastResponseBody,
 			}, fmt.Errorf("request failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 		}

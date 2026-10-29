@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +16,8 @@ import (
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/cfaccess"
+	"github.com/taufinity/cli/internal/jsonresp"
 	"github.com/taufinity/cli/internal/telemetry"
 )
 
@@ -518,7 +522,38 @@ func runAuthRevoke(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// printAccessStatus says, for a server behind Cloudflare Access (or when the
+// CF_ACCESS_* override is set), whether a service token is in use and where it
+// came from. It never prints the token. Silent for a plain server.
+func printAccessStatus(apiURL string) {
+	u, err := url.Parse(apiURL)
+	if err != nil {
+		return
+	}
+	host := u.Hostname()
+	res := cfaccess.Default()
+	inUse, src, fetchErr := res.Status(host)
+	if !inUse && !cfaccess.IsAutoHost(host) {
+		return
+	}
+	Print("Server: %s\n", apiURL)
+	if !inUse {
+		Print("Cloudflare Access: no service token available: %v\n", fetchErr)
+		Print("  Fix: gcloud auth login, or set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET.\n")
+		return
+	}
+	from := src.String()
+	if src == cfaccess.SourceCache || src == cfaccess.SourceGcloud {
+		if p := res.CachePath(host); p != "" {
+			from += ", cached in " + p
+		}
+	}
+	Print("Cloudflare Access: service token in use, from %s\n", from)
+}
+
 func runAuthStatus(cmd *cobra.Command, args []string) error {
+	printAccessStatus(GetAPIURL())
+
 	if !auth.HasCredentials() {
 		Print("Not logged in.\n")
 		Print("Run 'taufinity auth login' to authenticate.\n")
@@ -546,6 +581,14 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	client.SetDebug(IsDebug())
 	resp, err := client.PostJSONWithAuth(context.Background(), "/api/cli/token/validate", nil)
 	if err != nil {
+		// Not reaching the app at all (Cloudflare Access, a proxy error page)
+		// says nothing about the session; report that instead of "Invalid".
+		var nonJSON *jsonresp.NonJSONError
+		if be := cfaccess.AsBlocked(err); be != nil {
+			return be
+		} else if errors.As(err, &nonJSON) {
+			return err
+		}
 		// Token validation failed - likely revoked or invalid
 		Print("Status: Invalid\n")
 		Print("Email: %s\n", creds.Email)

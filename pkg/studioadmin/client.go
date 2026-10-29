@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/taufinity/cli/internal/cfaccess"
+	"github.com/taufinity/cli/internal/jsonresp"
 )
 
 // Client talks to the Studio admin API. Construct with New.
@@ -168,6 +169,11 @@ func (c *Client) do(ctx context.Context, method, path string, payload []byte, ou
 	respBody, status, err := c.Do(ctx, method, path, payload, extra)
 	if err != nil {
 		return err
+	}
+	// An HTML page (proxy error, login wall) is reported by URL, status and
+	// title, not decoded and not dumped whole into an APIError.
+	if htmlErr := jsonresp.Check(c.base+"/api"+path, status, "", respBody); htmlErr != nil {
+		return fmt.Errorf("studioadmin: %s %s: %w", method, path, htmlErr)
 	}
 	if status < 200 || status >= 300 {
 		return &APIError{Method: method, Path: path, Status: status, Body: string(respBody)}

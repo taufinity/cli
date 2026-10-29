@@ -40,7 +40,9 @@ func fakeStaging(t *testing.T, serverURL string) *atomic.Int32 {
 	}
 	var fetches atomic.Int32
 	res := cfaccess.NewResolver()
-	res.Fetch = func(_ context.Context, name string) (string, error) {
+	cacheDir := t.TempDir() // never the real ~/.config/taufinity
+	res.CacheDir = func() string { return cacheDir }
+	res.Fetch = func(_ context.Context, _, name string) (string, error) {
 		fetches.Add(1)
 		if name == cfaccess.SecretClientID {
 			return stagingFakeID, nil
@@ -158,5 +160,23 @@ func TestStdioBridge_ProdGetsNoToken(t *testing.T) {
 	}
 	if fetches.Load() != 0 {
 		t.Fatal("gcloud ran for a production bridge")
+	}
+}
+
+// auth status shows whether an Access token is in use on staging and where it
+// came from, never the value; production shows no Access line at all.
+func TestAuthStatusShowsAccessTokenSourceNotValue(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	fakeStaging(t, "http://127.0.0.1:1")
+
+	out := captureStdout(t, func() { printAccessStatus(StagingAPIURL) })
+	if !strings.Contains(out, "Cloudflare Access: service token in use, from gcloud (Secret Manager), cached in ") {
+		t.Fatalf("staging status = %q", out)
+	}
+	if strings.Contains(out, stagingFakeID) || strings.Contains(out, stagingFakeSecret) {
+		t.Fatalf("status printed the token: %q", out)
+	}
+	if out := captureStdout(t, func() { printAccessStatus("https://studio.taufinity.io") }); out != "" {
+		t.Fatalf("production printed an Access line: %q", out)
 	}
 }
