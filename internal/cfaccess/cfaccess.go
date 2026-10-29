@@ -354,7 +354,7 @@ func (e *FetchError) Error() string {
 	case FetchGcloudMissing:
 		return "gcloud is not installed or not on PATH (install the Google Cloud SDK, then run: gcloud auth login)"
 	case FetchNotLoggedIn:
-		return "gcloud is not logged in (run: gcloud auth login): " + e.Detail
+		return "gcloud is not logged in (run: gcloud auth login)"
 	case FetchPermissionDenied:
 		return fmt.Sprintf("your gcloud account may not read secret %s in project %s: %s", e.Secret, e.Project, e.Detail)
 	case FetchTimeout:
@@ -657,7 +657,7 @@ func (e *BlockedError) Error() string {
 		case !IsAutoHost(e.Host):
 			why += " and the CLI knows no service token for this host"
 		}
-		return fmt.Sprintf("%s is behind Cloudflare Access and no service token was available: %s. %s", host, why, fixHint)
+		return fmt.Sprintf("%s is behind Cloudflare Access and no service token was available: %s. %s", host, strings.TrimRight(why, ". "), fixHint)
 	}
 	switch {
 	case e.Source == SourceEnv:

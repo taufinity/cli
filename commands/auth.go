@@ -524,23 +524,24 @@ func runAuthRevoke(cmd *cobra.Command, args []string) error {
 
 // printAccessStatus says, for a server behind Cloudflare Access (or when the
 // CF_ACCESS_* override is set), whether a service token is in use and where it
-// came from. It never prints the token. Silent for a plain server.
-func printAccessStatus(apiURL string) {
+// came from. It never prints the token. Silent for a plain server. Reports
+// false when the server needs a token and none could be had, already explained.
+func printAccessStatus(apiURL string) (ok bool) {
 	u, err := url.Parse(apiURL)
 	if err != nil {
-		return
+		return true
 	}
 	host := u.Hostname()
 	res := cfaccess.Default()
 	inUse, src, fetchErr := res.Status(host)
 	if !inUse && !cfaccess.IsAutoHost(host) {
-		return
+		return true
 	}
 	Print("Server: %s\n", apiURL)
 	if !inUse {
 		Print("Cloudflare Access: no service token available: %v\n", fetchErr)
 		Print("  Fix: gcloud auth login, or set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET.\n")
-		return
+		return false
 	}
 	from := src.String()
 	if src == cfaccess.SourceCache || src == cfaccess.SourceGcloud {
@@ -549,10 +550,11 @@ func printAccessStatus(apiURL string) {
 		}
 	}
 	Print("Cloudflare Access: service token in use, from %s\n", from)
+	return true
 }
 
 func runAuthStatus(cmd *cobra.Command, args []string) error {
-	printAccessStatus(GetAPIURL())
+	accessOK := printAccessStatus(GetAPIURL())
 
 	if !auth.HasCredentials() {
 		Print("Not logged in.\n")
@@ -585,6 +587,10 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 		// says nothing about the session; report that instead of "Invalid".
 		var nonJSON *jsonresp.NonJSONError
 		if be := cfaccess.AsBlocked(err); be != nil {
+			if !accessOK && !be.TokenSent {
+				// The reason and the fix are printed above already.
+				return fmt.Errorf("could not reach %s: no Cloudflare Access service token", be.Host)
+			}
 			return be
 		} else if errors.As(err, &nonJSON) {
 			return err
