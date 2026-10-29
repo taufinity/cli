@@ -153,18 +153,25 @@ taufinity --env staging auth login      # or TAUFINITY_ENV=staging
 taufinity --env staging auth status
 ```
 
-`--env staging` targets `https://staging-studio.taufinity.io`, which sits behind Cloudflare Access. Every request needs the Access service token, and the CLI supplies it on its own:
+`--env staging` targets `https://staging-studio.taufinity.io`, which sits behind Cloudflare Access. Every request needs the Access service token, and the CLI supplies it on its own, so no shell setup is needed in any terminal, IDE, MCP server or agent:
 
-1. If `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are both set, those are used (for any Studio host you target).
-2. Otherwise, for the staging host only, the CLI reads `sitegen-cf-access-client-id` and `sitegen-cf-access-client-secret` from Secret Manager (project `content-gen-484211`) with your own `gcloud` login, once per command, with a 10-second limit. The values stay in memory: they are never written to disk, logged or sent with telemetry, and never sent to any other host, production included.
+1. If `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are both set, those are used (for any Studio host you target). This is an explicit override.
+2. Otherwise, for staging only, the token cached in `~/.config/taufinity/cf-access-staging-studio.taufinity.io.json` (mode 0600, next to `credentials.json`).
+3. If there is no cache yet, the CLI reads `sitegen-cf-access-client-id` and `sitegen-cf-access-client-secret` from Secret Manager (project `content-gen-484211`) with your own `gcloud` login, with a 10-second limit, and writes the cache. After that, gcloud is not needed again until the token is rotated.
 
-If neither works you get one clear error instead of a JSON parse failure:
+When Access refuses a cached token (it was rotated), the CLI deletes the cache, reads the token from gcloud again and retries the request once. The token is never logged, printed or sent with telemetry, and never sent to a host other than staging unless you set the variables yourself. Production never gets it and never triggers gcloud.
+
+`taufinity --env staging auth status` shows whether a token is in use and where it came from (environment, cache or gcloud), never the value.
+
+If no token can be had you get one clear error instead of a JSON parse failure, for example:
 
 ```
-staging is behind Cloudflare Access and no service token was available: set CF_ACCESS_CLIENT_ID/CF_ACCESS_CLIENT_SECRET (eval "$(make -C ~/Documents/code/ai-site-gen staging-cf-access-env)") or log in to gcloud
+staging-studio.taufinity.io is behind Cloudflare Access and no service token was available: gcloud is not logged in (run: gcloud auth login): .... Fix: gcloud auth login, or set CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET.
 ```
 
-Fix it with `gcloud auth login`, or export the variables with the `eval` shown. Every path goes through the same logic: regular commands, `auth login` / token refresh / `auth revoke`, `provision`, `dashboards` and the `mcp stdio` bridge.
+If a token was sent and still refused after the re-read, the error says the Access service token was refused (rotated or revoked?). Any other HTML page where the API should answer JSON (a proxy error page, a login wall) is reported as `expected JSON from <url>, got text/html (HTTP <status>)` with the page title, never the whole page.
+
+Every path goes through the same logic: regular commands, `auth login` / token refresh / `auth revoke`, `provision`, `dashboards` and the `mcp stdio` bridge.
 
 ## Quick Start
 
@@ -307,7 +314,7 @@ Config is resolved in this order (highest priority first):
 | `TAUFINITY_QUIET` | Set to `1` to suppress output |
 | `TAUFINITY_DRY_RUN` | Set to `1` to print API calls without executing |
 | `TAUFINITY_ENV` | `staging` targets `https://staging-studio.taufinity.io` (same as `--env staging`) |
-| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token. Optional for staging, where the CLI reads it with gcloud (see [Staging](#staging)) |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token override. Optional for staging, where the CLI caches it after reading it once with gcloud (see [Staging](#staging)) |
 
 ### Project File (`taufinity.yaml`)
 

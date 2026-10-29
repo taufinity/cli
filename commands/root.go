@@ -69,7 +69,7 @@ func init() {
 	// Global flags available to all commands
 	rootCmd.PersistentFlags().StringVar(&flagSite, "site", "", "Override site ID")
 	rootCmd.PersistentFlags().StringVar(&flagAPIURL, "api-url", "", "Override API URL")
-	rootCmd.PersistentFlags().StringVar(&flagEnv, "env", "", "Target environment: staging (default: production). Staging is behind Cloudflare Access: the CLI uses CF_ACCESS_CLIENT_ID/SECRET if set, else reads the service token with your gcloud login")
+	rootCmd.PersistentFlags().StringVar(&flagEnv, "env", "", "Target environment: staging (default: production). Staging is behind Cloudflare Access: the CLI uses CF_ACCESS_CLIENT_ID/SECRET if set, else its cached service token, else reads it with your gcloud login and caches it")
 	rootCmd.PersistentFlags().StringVar(&flagOrg, "org", "", "Override organization ID")
 	rootCmd.PersistentFlags().StringVar(&flagFormat, "format", "table", "Output format: table, json, yaml")
 	rootCmd.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "Minimal output, no prompts")

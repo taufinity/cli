@@ -151,8 +151,11 @@ func TestCacheWriteIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(f.dir, 0o700) })
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions; cannot provoke a failed write")
+	}
 	if err := f.res.writeCache(StagingHost, Token{ID: freshID, Secret: freshSecret}); err == nil {
-		t.Skip("directory is still writable (running as root?); cannot provoke a failed write")
+		t.Fatal("write into a read-only directory succeeded: it wrote the target in place instead of temp file + rename")
 	}
 	after, err := os.ReadFile(f.res.CachePath(StagingHost))
 	if err != nil {
