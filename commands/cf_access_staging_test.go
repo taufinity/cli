@@ -180,3 +180,11 @@ func TestAuthStatusShowsAccessTokenSourceNotValue(t *testing.T) {
 		t.Fatalf("production printed an Access line: %q", out)
 	}
 }
+
+// asAccessHost adds the httptest host (127.0.0.1) to the Access table for the
+// test: the CLI sends a service token, the env override included, only to
+// hosts in that table.
+func asAccessHost(t *testing.T) {
+	t.Helper()
+	t.Cleanup(cfaccess.AddHostForTest("127.0.0.1", cfaccess.HostSpec{}))
+}

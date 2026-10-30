@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/cfaccess"
 )
 
 func TestClient_Get(t *testing.T) {
@@ -597,6 +598,9 @@ func TestClient_OrgHeader(t *testing.T) {
 }
 
 func TestClient_CFAccessHeaders(t *testing.T) {
+	// The env token only goes to hosts in the Access table; make the httptest
+	// host one.
+	t.Cleanup(cfaccess.AddHostForTest("127.0.0.1", cfaccess.HostSpec{}))
 	type capture struct {
 		cfID     string
 		cfSecret string

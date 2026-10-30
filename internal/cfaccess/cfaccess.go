@@ -8,21 +8,20 @@
 //
 // Every Studio-bound HTTP client in the CLI routes through Transport, so there
 // is one place that decides which token, if any, rides a request. Resolver.For
-// picks it, in this order:
+// picks it, ONLY when the request host is in accessHosts (staging), in this
+// order:
 //
 //  1. CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET from the environment, when
-//     both are set. These go to whichever Studio host the client targets, the
-//     same as before this package existed: the user chose them explicitly.
-//  2. Otherwise, and ONLY when the request host is in accessHosts (staging):
-//     a. the cache file ~/.config/taufinity/cf-access-<host>.json (0600,
-//     written atomically, the same discipline as credentials.json);
-//     b. on a cache miss, Secret Manager read with the caller's own gcloud
-//     login (`gcloud secrets versions access latest`), which then fills the
-//     cache, so later commands in any shell, IDE, MCP server or agent need
-//     neither gcloud nor an exported variable.
+//     both are set: an explicit override (also over plain http, for a tunnel).
+//  2. The cache file ~/.config/taufinity/cf-access-<host>.json (0600, written
+//     atomically, the same discipline as credentials.json).
+//  3. On a cache miss, Secret Manager read with the caller's own gcloud login
+//     (`gcloud secrets versions access latest`), which then fills the cache, so
+//     later commands in any shell, IDE, MCP server or agent need neither gcloud
+//     nor an exported variable. 2 and 3 are https only.
 //
-// Hosts not in accessHosts (production included) never get a cached or
-// gcloud-fetched token and never trigger gcloud.
+// Hosts not in accessHosts (production included) never get a token from any
+// source, the environment included, and never trigger gcloud.
 //
 // When Access still blocks a request, Transport returns a *BlockedError that
 // says what to do, instead of handing an HTML page to a JSON decoder. When a
@@ -44,6 +43,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -209,16 +209,19 @@ func (r *Resolver) state(host string) *hostState {
 }
 
 // For returns the token to send to host, and where it came from. The
-// environment wins; then, for a known Access host only, the cache file, then
-// gcloud (at most once per Resolver and host, unless Refetch is called).
+// environment override comes first, then the cache file, then gcloud; all of
+// them for a known Access host only (gcloud at most once per Resolver and host,
+// unless Refetch is called). Any other host gets nothing.
 func (r *Resolver) For(host string) (Token, Source) {
-	if tok := (Token{ID: r.Getenv(EnvClientID), Secret: r.Getenv(EnvClientSecret)}); tok.valid() {
-		return tok, SourceEnv
-	}
 	host = strings.ToLower(host)
 	spec, ok := lookupHost(host)
 	if !ok {
+		// Not a known Access host: no token from any source, the env override
+		// included, so a service token never leaves the hosts it is meant for.
 		return Token{}, SourceNone
+	}
+	if tok := (Token{ID: r.Getenv(EnvClientID), Secret: r.Getenv(EnvClientSecret)}); tok.valid() {
+		return tok, SourceEnv
 	}
 
 	r.mu.Lock()
@@ -472,8 +475,8 @@ func SetForTest(r *Resolver, base http.RoundTripper) (restore func()) {
 }
 
 // Transport injects the service token and turns an Access block into a
-// *BlockedError. Use it for Studio-bound clients only: with environment
-// variables set, the token goes to whatever host the client targets.
+// *BlockedError. Use it for Studio-bound clients. A token only ever goes to a
+// host in the Access table, whatever its source.
 type Transport struct {
 	// Base performs the request. nil = the process default (http.DefaultTransport).
 	Base http.RoundTripper
@@ -520,11 +523,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req.Header.Get(HeaderClientID) != "" && req.Header.Get(HeaderClientSecret) != "" {
 		src = SourceRequest
 	} else {
-		tok, src = res.For(host)
-		// The automatic token is only sent over TLS: an http:// URL must not
-		// carry it in clear text.
-		if (src == SourceCache || src == SourceGcloud) && req.URL.Scheme != "https" {
-			tok, src = Token{}, SourceNone
+		// The automatic token (cache, gcloud) is only sent over TLS, so an
+		// http:// URL neither carries it in clear text nor runs gcloud for it.
+		// The explicit env override still applies there (e.g. a local tunnel).
+		if req.URL.Scheme == "https" {
+			tok, src = res.For(host)
+		} else {
+			tok, src = res.envFor(host)
 		}
 		if src != SourceNone {
 			out = withToken(req, tok)
@@ -650,12 +655,13 @@ func (e *BlockedError) Error() string {
 		host = "this server"
 	}
 	if !e.TokenSent {
+		if !IsAutoHost(e.Host) {
+			return fmt.Sprintf("%s is behind Cloudflare Access, and the CLI sends a service token only to the Access hosts it knows (%s), "+
+				"never to another host, CF_ACCESS_CLIENT_ID/CF_ACCESS_CLIENT_SECRET included", host, strings.Join(knownHosts(), ", "))
+		}
 		why := "CF_ACCESS_CLIENT_ID/CF_ACCESS_CLIENT_SECRET are not set"
-		switch {
-		case e.FetchErr != nil:
+		if e.FetchErr != nil {
 			why = e.FetchErr.Error()
-		case !IsAutoHost(e.Host):
-			why += " and the CLI knows no service token for this host"
 		}
 		return fmt.Sprintf("%s is behind Cloudflare Access and no service token was available: %s. %s", host, strings.TrimRight(why, ". "), fixHint)
 	}
@@ -696,8 +702,7 @@ func AsBlocked(err error) *BlockedError {
 // returns the token itself.
 func (r *Resolver) Status(host string) (inUse bool, src Source, err error) {
 	if !IsAutoHost(host) {
-		_, src = r.For(host) // only the env override applies
-		return src != SourceNone, src, nil
+		return false, SourceNone, nil // no token is ever sent there
 	}
 	tok, src := r.For(host)
 	return tok.valid(), src, r.FetchError(host)
@@ -710,4 +715,41 @@ func (r *Resolver) CachePath(host string) string {
 		return ""
 	}
 	return cacheFile(r.CacheDir(), host)
+}
+
+// envFor is For limited to the explicit env override: a known Access host
+// with both variables set gets them, anything else gets nothing.
+func (r *Resolver) envFor(host string) (Token, Source) {
+	if !IsAutoHost(host) {
+		return Token{}, SourceNone
+	}
+	if tok := (Token{ID: r.Getenv(EnvClientID), Secret: r.Getenv(EnvClientSecret)}); tok.valid() {
+		return tok, SourceEnv
+	}
+	return Token{}, SourceNone
+}
+
+// AddHostForTest adds host to the Access table, so a test can point the
+// resolver at an httptest server. Returns a restore func. Not for production.
+func AddHostForTest(host string, spec HostSpec) (restore func()) {
+	host = strings.ToLower(host)
+	prev, had := accessHosts[host]
+	accessHosts[host] = spec
+	return func() {
+		if had {
+			accessHosts[host] = prev
+		} else {
+			delete(accessHosts, host)
+		}
+	}
+}
+
+// knownHosts lists the Access table, sorted, for messages.
+func knownHosts() []string {
+	out := make([]string, 0, len(accessHosts))
+	for h := range accessHosts {
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
 }

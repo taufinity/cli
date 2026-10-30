@@ -522,8 +522,8 @@ func runAuthRevoke(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// printAccessStatus says, for a server behind Cloudflare Access (or when the
-// CF_ACCESS_* override is set), whether a service token is in use and where it
+// printAccessStatus says, for a server in the Cloudflare Access table,
+// whether a service token is in use and where it
 // came from. It never prints the token. Silent for a plain server. Reports
 // false when the server needs a token and none could be had, already explained.
 func printAccessStatus(apiURL string) (ok bool) {

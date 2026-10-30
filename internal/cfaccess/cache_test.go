@@ -380,3 +380,41 @@ func assertNoSecret(t *testing.T, s string) {
 		}
 	}
 }
+
+// The env override is explicit, but still only for hosts in the Access table:
+// a service token is never sent to production or any other host.
+func TestEnvOverrideNeverSentToUnknownHosts(t *testing.T) {
+	for _, host := range []string{"studio.taufinity.io", "my.taufinity.io", "example.com", "127.0.0.1"} {
+		t.Run(host, func(t *testing.T) {
+			f := newFixture(t, nil)
+			f.env[EnvClientID], f.env[EnvClientSecret] = envID, envSecret
+			for _, scheme := range []string{"https", "http"} {
+				if _, err := f.get(t, scheme+"://"+host+"/api/x"); err != nil {
+					t.Fatalf("get: %v", err)
+				}
+				if id, sec := f.seen.last(); id != "" || sec != "" {
+					t.Fatalf("%s://%s received the env token; it must only go to known Access hosts", scheme, host)
+				}
+			}
+		})
+	}
+	// And a known host still gets it, over http too (a local tunnel).
+	f := newFixture(t, nil)
+	f.env[EnvClientID], f.env[EnvClientSecret] = envID, envSecret
+	if _, err := f.get(t, "http://"+StagingHost+"/api/x"); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := f.seen.last(); id != envID {
+		t.Fatal("the env override no longer reaches the staging host")
+	}
+	if n := f.fetches.Load(); n != 0 {
+		t.Fatalf("gcloud ran %d times", n)
+	}
+}
+
+func TestBlockedOnUnknownHostExplainsTheTable(t *testing.T) {
+	msg := (&BlockedError{Host: "other.example"}).Error()
+	if !strings.Contains(msg, "only to the Access hosts it knows ("+StagingHost+")") {
+		t.Fatalf("message = %q", msg)
+	}
+}

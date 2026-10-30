@@ -11,10 +11,12 @@ import (
 // get through — on reads and writes alike, because the diff GETs remote state and
 // would 403 before it computed a change if only writes carried the header.
 //
-// With the environment set, the token goes to the configured host (here an
-// httptest server); the gcloud fallback is staging-only, see internal/cfaccess. These tests pin: it rides both
+// With the environment set, the token goes to the configured host when it is in
+// the Access table (here the httptest host, added with asAccessHost);
+// the gcloud fallback is staging-only, see internal/cfaccess. These tests pin: it rides both
 // paths when set; nothing is sent when unset; and it is never one-sided.
 func TestCFAccess_HeadersRideReadAndWritePaths(t *testing.T) {
+	asAccessHost(t)
 	var readID, readSecret, writeID, writeSecret string
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +52,7 @@ func TestCFAccess_HeadersRideReadAndWritePaths(t *testing.T) {
 }
 
 func TestCFAccess_NothingSentWhenUnset(t *testing.T) {
+	asAccessHost(t)
 	var sawID, sawSecret bool
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +87,7 @@ func TestCFAccess_NothingSentWhenUnset(t *testing.T) {
 // and could confuse an operator into thinking Access is handled. Send both or
 // neither.
 func TestCFAccess_HalfConfiguredSendsNothing(t *testing.T) {
+	asAccessHost(t)
 	for _, tc := range []struct {
 		name       string
 		id, secret string

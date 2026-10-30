@@ -238,6 +238,7 @@ func TestStdioBridge_ForwardsToolsList(t *testing.T) {
 }
 
 func TestStdioBridge_ForwardsCFAccessHeaders(t *testing.T) {
+	asAccessHost(t) // the env token only goes to hosts in the Access table
 	setCFEnv := func(t *testing.T, id, secret string) {
 		t.Helper()
 		oldID, hadID := os.LookupEnv("CF_ACCESS_CLIENT_ID")
