@@ -30,11 +30,16 @@ var ErrRefreshTokenRejected = errors.New("refresh token rejected; please run 'ta
 type Client struct {
 	baseURL    string
 	httpClient *httpclient.Client
-	authToken  string // Explicit auth token (overrides saved credentials)
-	orgID      string // Organization ID header (X-Organization-ID)
-	dryRun     bool
-	dryRunOut  io.Writer
-	log        *slog.Logger // nil = no debug logging
+	// refreshHTTP sends the token refresh. Its timeout and retry are sized so
+	// every attempt lands inside the server's 60s rotation grace window: a retry
+	// after a lost response re-presents the old refresh token, and outside the
+	// window the server reads that as theft and revokes all the user's sessions.
+	refreshHTTP *httpclient.Client
+	authToken   string // Explicit auth token (overrides saved credentials)
+	orgID       string // Organization ID header (X-Organization-ID)
+	dryRun      bool
+	dryRunOut   io.Writer
+	log         *slog.Logger // nil = no debug logging
 
 	// cfAccessID and cfAccessSecret are a Cloudflare Access service token, sent
 	// as CF-Access-Client-Id / CF-Access-Client-Secret on every request. They
@@ -87,9 +92,10 @@ func New(baseURL string) *Client {
 	cfg.LogRequests = false
 
 	c := &Client{
-		baseURL:    baseURL,
-		httpClient: httpclient.New(cfg),
-		dryRunOut:  os.Stdout,
+		baseURL:     baseURL,
+		httpClient:  httpclient.New(cfg),
+		refreshHTTP: httpclient.New(refreshHTTPConfig(cfg)),
+		dryRunOut:   os.Stdout,
 		// CF-Access service token from the environment. Same variable names
 		// commands/provision_client.go already reads for its own bypass.
 		cfAccessID:     os.Getenv("CF_ACCESS_CLIENT_ID"),
@@ -99,6 +105,19 @@ func New(baseURL string) *Client {
 		c.SetDebug(true)
 	}
 	return c
+}
+
+// refreshHTTPConfig derives the refresh client's config from the main one:
+// two attempts of at most 20s with a 1s pause, about 41s worst case, inside
+// the server's 60s rotation grace (auth.RefreshRotationGracePeriod in
+// ai-site-gen) and inside auth.RefreshLockMaxWait.
+func refreshHTTPConfig(cfg httpclient.Config) httpclient.Config {
+	cfg.Timeout = 20 * time.Second
+	cfg.MaxRetries = 1
+	cfg.InitialBackoff = time.Second
+	cfg.MaxBackoff = time.Second
+	cfg.JitterFraction = 0
+	return cfg
 }
 
 // SetDebug enables or disables debug request logging. When enabled, requests
@@ -510,35 +529,69 @@ func (c *Client) Token(ctx context.Context) (string, error) {
 // is expired or near expiry. The access token is short-lived (1h), so renewal
 // happens proactively via ShouldRenew rather than waiting for a 401. The ctx
 // bounds the renewal request.
+//
+// Credentials are those of this client's host (auth.LoadCredentialsFor), so a
+// client for staging never reads, renews or deletes the production session.
 func (c *Client) getToken(ctx context.Context) (string, error) {
 	// Use explicit token if set (no renewal needed).
 	if c.authToken != "" {
 		return c.authToken, nil
 	}
 
-	// Load from saved credentials.
-	creds, err := auth.LoadCredentials()
+	creds, err := auth.LoadCredentialsFor(c.baseURL)
 	if err != nil {
 		return "", err
 	}
+	if !creds.ShouldRenew() {
+		return creds.AccessToken, nil
+	}
+	return c.renew(ctx)
+}
 
-	// Renew proactively when the short-lived access token is expired or near expiry.
-	if creds.ShouldRenew() {
-		if err := c.refreshToken(ctx, creds); err != nil {
-			// Only a DEFINITIVE rejection (401: refresh token invalid/expired/
-			// revoked) clears credentials and forces a re-login. Transient
-			// failures (network error, 5xx) leave credentials in place so the
-			// next invocation can retry — a flaky server must not log the user
-			// out.
-			if errors.Is(err, ErrRefreshTokenRejected) {
-				auth.DeleteCredentials()
-				return "", fmt.Errorf("session expired, please run 'taufinity auth login'")
-			}
-			return "", fmt.Errorf("token renewal failed (credentials preserved): %w", err)
-		}
+// renew refreshes the stored session under a cross-process lock.
+//
+// Many taufinity processes share one credentials file. Under the lock the file
+// is re-read: if another process already renewed it, that pair is used and the
+// old refresh token is never sent again (the server treats a re-sent rotated
+// token as theft and revokes every CLI session of the user).
+func (c *Client) renew(ctx context.Context) (string, error) {
+	path := auth.CredentialsPathFor(c.baseURL)
+	unlock, err := auth.LockRefresh(ctx, path)
+	if err != nil {
+		return "", fmt.Errorf("token renewal failed (credentials preserved): %w", err)
+	}
+	defer unlock()
+
+	creds, err := auth.LoadCredentialsFor(c.baseURL)
+	if err != nil {
+		return "", err // e.g. logged out by another process meanwhile
+	}
+	if !creds.ShouldRenew() {
+		return creds.AccessToken, nil // another process renewed it while we waited
 	}
 
-	return creds.AccessToken, nil
+	sent := creds.RefreshToken
+	err = c.refreshToken(ctx, creds)
+	if err == nil {
+		return creds.AccessToken, nil
+	}
+	if !errors.Is(err, ErrRefreshTokenRejected) {
+		// Transient failures (network error, 5xx) leave credentials in place so
+		// the next invocation can retry; a flaky server must not log the user out.
+		return "", fmt.Errorf("token renewal failed (credentials preserved): %w", err)
+	}
+
+	// A definitive 401. Delete only if the file still holds the token that was
+	// rejected: a process without this lock (an older taufinity) may have
+	// rotated it in the meantime, and its fresh pair must survive.
+	if now, lerr := auth.LoadCredentialsFor(c.baseURL); lerr == nil && now.RefreshToken != sent {
+		if !now.ShouldRenew() {
+			return now.AccessToken, nil
+		}
+		return "", fmt.Errorf("token renewal failed (credentials preserved): the session was renewed by another process; retry")
+	}
+	_ = creds.DeleteFile()
+	return "", fmt.Errorf("session expired, please run 'taufinity auth login'")
 }
 
 // refreshToken exchanges the stored refresh token for a new access+refresh pair.
@@ -560,13 +613,13 @@ func (c *Client) refreshToken(ctx context.Context, creds *auth.Credentials) erro
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// httpClient.Do returns *httpclient.Response (body already read into Body
+	// refreshHTTP.Do returns *httpclient.Response (body already read into Body
 	// []byte). On a non-retryable rejection (e.g. 401) it returns the response
 	// with a nil error; on exhausted retries (5xx) it may return both a
 	// response AND an error; on a transport/network failure it returns a nil
 	// response and an error. Inspect the status FIRST so a 401 is classified as
 	// a definitive rejection regardless of how the transport surfaced it.
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.refreshHTTP.Do(req)
 	if resp != nil && resp.StatusCode == http.StatusUnauthorized {
 		// Definitive: the refresh token is invalid/expired/revoked. The caller
 		// (getToken) treats this — and only this — as grounds to delete creds.

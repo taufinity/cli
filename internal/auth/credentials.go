@@ -3,8 +3,11 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/taufinity/cli/internal/config"
@@ -29,11 +32,85 @@ type Credentials struct {
 	ExpiresAt            time.Time `json:"expires_at"`
 	Email                string    `json:"email,omitempty"`
 	OrganizationName     string    `json:"organization_name,omitempty"`
+
+	// path is the file these credentials were loaded from (or are bound to), so
+	// Save writes a renewed pair back to the same host's file.
+	path string
 }
 
-// credentialsPath returns the path to the credentials file.
+// DefaultHost is production Studio. Its credentials keep the original file
+// name, credentials.json, so existing logins survive the upgrade.
+const DefaultHost = "studio.taufinity.io"
+
+// Credentials are kept per Studio host. They used to be one file for every
+// host, which meant a staging login replaced the production session, and a
+// staging process (e.g. a staging MCP bridge) "renewing" the production
+// refresh token against staging got a 401 and deleted the production file.
+var (
+	hostMu        sync.RWMutex
+	currentAPIURL string // "" = production
+)
+
+// UseAPIURL sets the Studio API URL whose credentials the package-level
+// helpers (LoadCredentials, HasCredentials, DeleteCredentials, Save on fresh
+// Credentials) read and write. The CLI calls it once, after resolving
+// --api-url / --env / TAUFINITY_API_URL.
+func UseAPIURL(apiURL string) {
+	hostMu.Lock()
+	currentAPIURL = apiURL
+	hostMu.Unlock()
+}
+
+func currentURL() string {
+	hostMu.RLock()
+	defer hostMu.RUnlock()
+	return currentAPIURL
+}
+
+// CredentialsPathFor returns the credentials file for a Studio API URL:
+// credentials.json for production (or an unparseable/empty URL), and
+// credentials-<host>.json for any other host, e.g.
+// credentials-staging-studio.taufinity.io.json or credentials-localhost_8080.json.
+func CredentialsPathFor(apiURL string) string {
+	return filepath.Join(config.Dir(), credentialsFileName(apiURL))
+}
+
+func credentialsFileName(apiURL string) string {
+	host := ""
+	if u, err := url.Parse(strings.TrimSpace(apiURL)); err == nil {
+		host = strings.ToLower(u.Host)
+	}
+	if host == "" || host == DefaultHost || host == DefaultHost+":443" {
+		return "credentials.json"
+	}
+	var b strings.Builder
+	for _, r := range host {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return "credentials-" + b.String() + ".json"
+}
+
+// credentialsPath returns the credentials file for the current API URL.
 func credentialsPath() string {
-	return filepath.Join(config.Dir(), "credentials.json")
+	return CredentialsPathFor(currentURL())
+}
+
+// Path is the file these credentials are bound to.
+func (c *Credentials) Path() string {
+	if c.path == "" {
+		return credentialsPath()
+	}
+	return c.path
+}
+
+// BindTo binds fresh credentials (e.g. from a new login) to apiURL's file.
+func (c *Credentials) BindTo(apiURL string) {
+	c.path = CredentialsPathFor(apiURL)
 }
 
 // Save writes credentials to disk with secure permissions.
@@ -44,7 +121,8 @@ func credentialsPath() string {
 // a partial file or where two rotating writers could corrupt the stored
 // refresh token. The temp file is removed if anything before the rename fails.
 func (c *Credentials) Save() error {
-	dir := config.Dir()
+	target := c.Path()
+	dir := filepath.Dir(target)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
@@ -72,21 +150,35 @@ func (c *Credentials) Save() error {
 		tmp.Close()
 		return fmt.Errorf("write temp credentials: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp credentials: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp credentials: %w", err)
 	}
 
 	// Atomic replace of the target.
-	if err := os.Rename(tmpName, credentialsPath()); err != nil {
+	if err := os.Rename(tmpName, target); err != nil {
 		return fmt.Errorf("write credentials: %w", err)
 	}
+	c.path = target
 
 	return nil
 }
 
-// LoadCredentials reads credentials from disk.
+// LoadCredentials reads the credentials for the current API URL.
 func LoadCredentials() (*Credentials, error) {
-	data, err := os.ReadFile(credentialsPath())
+	return loadFrom(credentialsPath())
+}
+
+// LoadCredentialsFor reads the credentials for apiURL.
+func LoadCredentialsFor(apiURL string) (*Credentials, error) {
+	return loadFrom(CredentialsPathFor(apiURL))
+}
+
+func loadFrom(path string) (*Credentials, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("not logged in (run 'taufinity auth login')")
@@ -98,6 +190,7 @@ func LoadCredentials() (*Credentials, error) {
 	if err := json.Unmarshal(data, &creds); err != nil {
 		return nil, fmt.Errorf("parse credentials: %w", err)
 	}
+	creds.path = path
 
 	// Upgrade shim: old credential files only have ExpiresAt. Treat it as the
 	// access-token expiry so ShouldRenew works without a re-login data wipe.
@@ -108,9 +201,17 @@ func LoadCredentials() (*Credentials, error) {
 	return &creds, nil
 }
 
-// DeleteCredentials removes the credentials file.
+// DeleteCredentials removes the credentials file for the current API URL.
 func DeleteCredentials() error {
-	path := credentialsPath()
+	return deleteAt(credentialsPath())
+}
+
+// DeleteFile removes the file these credentials are bound to.
+func (c *Credentials) DeleteFile() error {
+	return deleteAt(c.Path())
+}
+
+func deleteAt(path string) error {
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil // Already deleted
@@ -120,7 +221,7 @@ func DeleteCredentials() error {
 	return nil
 }
 
-// HasCredentials returns whether credentials exist on disk.
+// HasCredentials returns whether credentials exist on disk for the current API URL.
 func HasCredentials() bool {
 	_, err := os.Stat(credentialsPath())
 	return err == nil
