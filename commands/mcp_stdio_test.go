@@ -599,6 +599,7 @@ func TestClientTokenSource_RenewsNearExpiryToken(t *testing.T) {
 		AccessTokenExpiresAt: time.Now().Add(time.Minute),
 		ExpiresAt:            time.Now().Add(time.Minute),
 	}
+	bindCredsHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -647,6 +648,7 @@ func TestProbeStartupAuth_RenewableTokenNotDegraded(t *testing.T) {
 		AccessTokenExpiresAt: time.Now().Add(-time.Minute),
 		ExpiresAt:            time.Now().Add(-time.Minute),
 	}
+	bindCredsHost(t, server.URL)
 	if err := creds.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}

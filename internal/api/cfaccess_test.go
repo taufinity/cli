@@ -113,6 +113,7 @@ func TestRefreshAndRevokeCarryStagingToken(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	capt, _ := withFakeStaging(t, jsonOK(`{"access_token":"new-a","refresh_token":"new-r","expires_at":"`+time.Now().Add(time.Hour).Format(time.RFC3339)+`"}`))
 	creds := &auth.Credentials{AccessToken: "old", RefreshToken: "r1", AccessTokenExpiresAt: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(-time.Minute)}
+	creds.BindTo("https://" + cfaccess.StagingHost) // logins are per server (#60)
 	if err := creds.Save(); err != nil {
 		t.Fatal(err)
 	}

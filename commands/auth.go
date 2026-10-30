@@ -347,7 +347,9 @@ type DeviceCodeStatusResponse struct {
 }
 
 func runAuthLogin(cmd *cobra.Command, args []string) error {
-	// Check if already logged in with valid token
+	// Check if already logged in. The existing session is kept until the new
+	// one is saved (an atomic replace), so a login that fails or is abandoned,
+	// e.g. because the server is unreachable, leaves you logged in.
 	if auth.HasCredentials() {
 		creds, err := auth.LoadCredentials()
 		if err == nil {
@@ -356,7 +358,6 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 			} else {
 				Print("Session expired, re-authenticating...\n")
 			}
-			auth.DeleteCredentials()
 		}
 	}
 
@@ -432,6 +433,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 					Email:            status.Email,
 					OrganizationName: status.OrganizationName,
 				}
+				creds.BindTo(GetAPIURL())
 				if status.ExpiresAt != nil {
 					creds.AccessTokenExpiresAt = *status.ExpiresAt
 					creds.ExpiresAt = *status.ExpiresAt
@@ -557,8 +559,13 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	accessOK := printAccessStatus(GetAPIURL())
 
 	if !auth.HasCredentials() {
-		Print("Not logged in.\n")
-		Print("Run 'taufinity auth login' to authenticate.\n")
+		if u := GetAPIURL(); u != "" && u != DefaultAPIURL {
+			// Sessions are per server; say which one this is about.
+			Print("Not logged in to %s.\n", u)
+		} else {
+			Print("Not logged in.\n")
+		}
+		Print("Run 'taufinity%s auth login' to authenticate.\n", serverFlagHint())
 		return nil
 	}
 
@@ -671,4 +678,18 @@ func reportAuthFailure(code, message string) {
 		e.Email = creds.Email
 	}
 	telemetry.Report(e)
+}
+
+// serverFlagHint returns the flag that reproduces the current target in a
+// suggested command: " --env staging" for staging, " --api-url X" for any
+// other non-production server, "" for production.
+func serverFlagHint() string {
+	switch u := GetAPIURL(); {
+	case u == "" || u == DefaultAPIURL:
+		return ""
+	case u == StagingAPIURL:
+		return " --env staging"
+	default:
+		return " --api-url " + u
+	}
 }

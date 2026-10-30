@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/taufinity/cli/internal/auth"
 	"github.com/taufinity/cli/internal/buildinfo"
 	"github.com/taufinity/cli/internal/config"
 	"github.com/taufinity/cli/internal/updatecheck"
@@ -59,6 +60,9 @@ to upload and preview your templates.`,
 
 		// Apply flag overrides (flags > env > config > default)
 		resolveAPIURL()
+		// Credentials are per Studio host: a staging login must not replace,
+		// renew or delete the production session.
+		auth.UseAPIURL(flagAPIURL)
 		resolveSite()
 
 		return nil

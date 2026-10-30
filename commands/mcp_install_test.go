@@ -55,6 +55,7 @@ func resetGlobals(t *testing.T) {
 	flagMCPInstallTransport = ""
 	flagMCPUninstallClient = "claude-desktop"
 	flagMCPUninstallLabel = "taufinity-studio"
+	auth.UseAPIURL("")
 }
 
 func TestMCPInstall_PrintsJSONBlockWithBearer(t *testing.T) {
@@ -221,6 +222,8 @@ func TestMCPInstall_StdioEmbedsLocalhostAPIURL(t *testing.T) {
 	resetGlobals(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Credentials are per host: seed them for the localhost API this test targets.
+	auth.UseAPIURL("http://localhost:8090")
 	seedCredentials(t, "tok")
 	t.Setenv("TAUFINITY_BINARY_PATH", "/usr/bin/taufinity")
 
