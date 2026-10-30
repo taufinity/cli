@@ -574,7 +574,9 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load credentials: %w", err)
 	}
 
-	if creds.IsExpired() {
+	// An expired access token with a refresh token is renewed by the validate
+	// call below; only a session that cannot be renewed is reported Expired.
+	if creds.IsExpired() && !creds.HasRefreshToken() {
 		Print("Status: Expired\n")
 		Print("Email: %s\n", creds.Email)
 		if creds.OrganizationName != "" {
@@ -601,30 +603,44 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 			return be
 		} else if errors.As(err, &nonJSON) {
 			return err
+		} else if !api.SessionEnded(err) {
+			// A network error or a renewal that failed for a transient reason
+			// says nothing about the session either; the credentials are kept.
+			return err
 		}
-		// Token validation failed - likely revoked or invalid
+		// The session cannot be renewed: the refresh token was rejected (the
+		// credentials are cleared) or none is stored.
 		Print("Status: Invalid\n")
 		Print("Email: %s\n", creds.Email)
 		if creds.OrganizationName != "" {
 			Print("Organization: %s\n", creds.OrganizationName)
 		}
-		Print("\nSession is no longer valid. Run 'taufinity auth login' to re-authenticate.\n")
+		Print("\nSession is no longer valid. Run 'taufinity%s auth login' to re-authenticate.\n", serverFlagHint())
 		return nil
 	}
 
 	if !resp.IsSuccess() {
+		// A 401 here survived one renewal and retry (see api.Client.authed).
 		Print("Status: Invalid\n")
 		Print("Email: %s\n", creds.Email)
-		Print("\nSession rejected by server. Run 'taufinity auth login' to re-authenticate.\n")
+		Print("\nSession rejected by server. Run 'taufinity%s auth login' to re-authenticate.\n", serverFlagHint())
 		return nil
 	}
 
+	// The validate call may have renewed the session; show the stored values.
+	if fresh, lerr := auth.LoadCredentials(); lerr == nil {
+		creds = fresh
+	}
 	Print("Status: Authenticated\n")
 	Print("Email: %s\n", creds.Email)
 	if creds.OrganizationName != "" {
 		Print("Organization: %s\n", creds.OrganizationName)
 	}
-	Print("Expires: %s\n", creds.ExpiresAt.Format(time.RFC3339))
+	expires := creds.AccessTokenExpiresAt
+	if expires.IsZero() {
+		expires = creds.ExpiresAt
+	}
+	Print("Expires: %s\n", expires.Format(time.RFC3339))
 	return nil
 }
 
@@ -633,14 +649,15 @@ func runAuthToken(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("not authenticated - run 'taufinity auth login' first")
 	}
 
-	// Route through the client's renewing token path so a near-expiry access
-	// token is refreshed (and rotated) before it's handed out. With a 1h access
-	// token, reading the stored token directly would frequently emit a stale or
-	// expired value into scripts.
+	// Route through the client's renewing token path, checked with the server,
+	// so a near-expiry access token, or one the server refuses before its local
+	// expiry (a rotated signing key), is renewed (and rotated) before it is
+	// handed out. With a 1h access token, reading the stored token directly
+	// would frequently emit a stale or expired value into scripts.
 	client := api.New(GetAPIURL())
 	client.SetDebug(IsDebug())
 
-	token, err := client.Token(context.Background())
+	token, err := client.ValidatedToken(context.Background())
 	if err != nil {
 		return err
 	}

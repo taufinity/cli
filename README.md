@@ -148,6 +148,8 @@ Opens a browser window for device authorization. Credentials are stored per serv
 
 Renewal is safe with many `taufinity` processes running at once (MCP bridges in every editor session, scripts calling `auth token`): one process renews under a file lock and the others pick up its result, so the rotating refresh token is never sent twice.
 
+The access token is renewed before it expires, and also when the server refuses it early (HTTP 401), for example after Studio rotates its signing key: the CLI renews the session once from the refresh token and retries the request once. `auth status`, `auth token` and the `mcp stdio` bridge do the same, so a key rotation does not log anyone out. Only a rejected refresh token, or none stored, asks for `taufinity auth login`. A token written into a client config as a fixed header (`mcp install --transport http`, `mcp print`) cannot renew itself; use the stdio bridge for long-lived sessions.
+
 ### Staging
 
 ```bash
