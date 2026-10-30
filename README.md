@@ -155,11 +155,11 @@ taufinity --env staging auth status
 
 `--env staging` targets `https://staging-studio.taufinity.io`, which sits behind Cloudflare Access. Every request needs the Access service token, and the CLI supplies it on its own, so no shell setup is needed in any terminal, IDE, MCP server or agent:
 
-1. If `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are both set, those are used (for any Studio host you target). This is an explicit override.
+1. If `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are both set, those are used. This is an explicit override, and like the other sources it only applies to the staging host.
 2. Otherwise, for staging only, the token cached in `~/.config/taufinity/cf-access-staging-studio.taufinity.io.json` (mode 0600, next to `credentials.json`).
 3. If there is no cache yet, the CLI reads `sitegen-cf-access-client-id` and `sitegen-cf-access-client-secret` from Secret Manager (project `content-gen-484211`) with your own `gcloud` login, with a 10-second limit, and writes the cache. After that, gcloud is not needed again until the token is rotated.
 
-When Access refuses a cached token (it was rotated), the CLI deletes the cache, reads the token from gcloud again and retries the request once. The token is never logged, printed or sent with telemetry, and never sent to a host other than staging unless you set the variables yourself. Production never gets it and never triggers gcloud.
+When Access refuses a cached token (it was rotated), the CLI deletes the cache, reads the token from gcloud again and retries the request once. The token is never logged, printed or sent with telemetry, and never sent to a host other than staging, not even when you set the variables yourself. Production never gets a token and never triggers gcloud.
 
 `taufinity --env staging auth status` shows whether a token is in use and where it came from (environment, cache or gcloud), never the value.
 
@@ -314,7 +314,7 @@ Config is resolved in this order (highest priority first):
 | `TAUFINITY_QUIET` | Set to `1` to suppress output |
 | `TAUFINITY_DRY_RUN` | Set to `1` to print API calls without executing |
 | `TAUFINITY_ENV` | `staging` targets `https://staging-studio.taufinity.io` (same as `--env staging`) |
-| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token override. Optional for staging, where the CLI caches it after reading it once with gcloud (see [Staging](#staging)) |
+| `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` | Cloudflare Access service token override, sent to the staging host only. Optional there: the CLI caches the token after reading it once with gcloud (see [Staging](#staging)) |
 
 ### Project File (`taufinity.yaml`)
 
