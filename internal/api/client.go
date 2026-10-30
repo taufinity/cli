@@ -276,26 +276,61 @@ func (c *Client) GetRawWithAuth(ctx context.Context, path string) (*Response, er
 }
 
 func (c *Client) getWithAuth(ctx context.Context, path string, expectJSON bool) (*Response, error) {
+	url := c.baseURL + path
+	return c.authed(ctx, "GET", url, nil, expectJSON, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		c.setOrgHeader(req)
+		return req, nil
+	})
+}
+
+// authed sends an authenticated request. build makes the request for a given
+// access token; it is called again for the retry, so a body is replayed from
+// the same bytes.
+//
+// On a 401 the stored access token may be dead before its local expiry, e.g.
+// signed with a key the server has rotated out. Then the session is renewed
+// once from the refresh token and the request retried once. A second 401 is
+// returned to the caller as is: never a loop, at most one refresh per request.
+// An explicit token (SetAuth) is never renewed.
+func (c *Client) authed(ctx context.Context, method, url string, logBody []byte, expectJSON bool, build func(token string) (*http.Request, error)) (*Response, error) {
 	token, err := c.getToken(ctx)
 	if err != nil {
 		c.logTokenError(err)
 		return nil, err
 	}
-
-	url := c.baseURL + path
-	c.logRequest("GET", url, token, nil)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	c.logRequest(method, url, token, logBody)
+	req, err := build(token)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	c.setOrgHeader(req)
-
 	resp, err := c.send(req, expectJSON)
 	if err != nil {
 		return nil, err
 	}
 	c.logResponse(resp.StatusCode, resp.Body)
+
+	if resp.StatusCode == http.StatusUnauthorized && c.authToken == "" {
+		fresh, rerr := c.RenewAfterReject(ctx, token)
+		if rerr != nil {
+			c.logTokenError(rerr)
+			return nil, rerr
+		}
+		c.logRequest(method, url, fresh, logBody)
+		req, err = build(fresh)
+		if err != nil {
+			return nil, err
+		}
+		resp, err = c.send(req, expectJSON)
+		if err != nil {
+			return nil, err
+		}
+		c.logResponse(resp.StatusCode, resp.Body)
+	}
 	return &Response{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Headers,
@@ -305,36 +340,25 @@ func (c *Client) getWithAuth(ctx context.Context, path string, expectJSON bool) 
 
 // DeleteWithAuth performs an authenticated DELETE request.
 func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, error) {
-	token, err := c.getToken(ctx)
-	if err != nil {
-		c.logTokenError(err)
-		return nil, err
-	}
-
 	if c.dryRun {
+		if _, err := c.getToken(ctx); err != nil {
+			c.logTokenError(err)
+			return nil, err
+		}
 		c.printDryRun("DELETE", path, "", nil)
 		return &Response{StatusCode: http.StatusOK}, nil
 	}
 
 	url := c.baseURL + path
-	c.logRequest("DELETE", url, token, nil)
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	c.setOrgHeader(req)
-
-	resp, err := c.do(req)
-	if err != nil {
-		return nil, err
-	}
-	c.logResponse(resp.StatusCode, resp.Body)
-	return &Response{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Headers,
-		Body:       resp.Body,
-	}, nil
+	return c.authed(ctx, "DELETE", url, nil, true, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		c.setOrgHeader(req)
+		return req, nil
+	})
 }
 
 // PostJSON performs a POST request with JSON body. Unauthenticated (no
@@ -370,8 +394,7 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response
 
 // PostJSONWithAuth performs an authenticated POST request with JSON body.
 func (c *Client) PostJSONWithAuth(ctx context.Context, path string, body any) (*Response, error) {
-	token, err := c.getToken(ctx)
-	if err != nil {
+	if _, err := c.getToken(ctx); err != nil {
 		c.logTokenError(err)
 		return nil, err
 	}
@@ -387,31 +410,21 @@ func (c *Client) PostJSONWithAuth(ctx context.Context, path string, body any) (*
 	}
 
 	url := c.baseURL + path
-	c.logRequest("POST", url, token, jsonBody)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
-	c.setOrgHeader(req)
-
-	resp, err := c.do(req)
-	if err != nil {
-		return nil, err
-	}
-	c.logResponse(resp.StatusCode, resp.Body)
-	return &Response{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Headers,
-		Body:       resp.Body,
-	}, nil
+	return c.authed(ctx, "POST", url, jsonBody, true, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+token)
+		c.setOrgHeader(req)
+		return req, nil
+	})
 }
 
 // UploadFile performs a multipart file upload.
 func (c *Client) UploadFile(ctx context.Context, path, filePath string) (*Response, error) {
-	token, err := c.getToken(ctx)
-	if err != nil {
+	if _, err := c.getToken(ctx); err != nil {
 		return nil, err
 	}
 
@@ -450,31 +463,25 @@ func (c *Client) UploadFile(ctx context.Context, path, filePath string) (*Respon
 		return nil, fmt.Errorf("close writer: %w", err)
 	}
 
-	// Create request
 	url := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &buf)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Authorization", "Bearer "+token)
-	c.setOrgHeader(req)
-
-	resp, err := c.do(req)
-	if err != nil {
-		return nil, err
-	}
-	return &Response{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Headers,
-		Body:       resp.Body,
-	}, nil
+	payload := buf.Bytes()
+	return c.authed(ctx, "POST", url, nil, true, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		req.Header.Set("Authorization", "Bearer "+token)
+		c.setOrgHeader(req)
+		return req, nil
+	})
 }
 
 // PostMultipart performs an authenticated POST request with multipart form data.
+// The body is read into memory once so a retry after a session renewal can
+// send it again.
 func (c *Client) PostMultipart(ctx context.Context, path string, body io.Reader, contentType string) (*Response, error) {
-	token, err := c.getToken(ctx)
-	if err != nil {
+	if _, err := c.getToken(ctx); err != nil {
 		return nil, err
 	}
 
@@ -484,24 +491,21 @@ func (c *Client) PostMultipart(ctx context.Context, path string, body io.Reader,
 		return &Response{StatusCode: http.StatusOK}, nil
 	}
 
+	payload, err := io.ReadAll(body)
+	if err != nil {
+		return nil, fmt.Errorf("read multipart body: %w", err)
+	}
 	url := c.baseURL + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("Authorization", "Bearer "+token)
-	c.setOrgHeader(req)
-
-	resp, err := c.do(req)
-	if err != nil {
-		return nil, err
-	}
-	return &Response{
-		StatusCode: resp.StatusCode,
-		Headers:    resp.Headers,
-		Body:       resp.Body,
-	}, nil
+	return c.authed(ctx, "POST", url, nil, true, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("Authorization", "Bearer "+token)
+		c.setOrgHeader(req)
+		return req, nil
+	})
 }
 
 // ValidateAuth checks that a usable access token can be produced, renewing it
@@ -554,13 +558,48 @@ func (c *Client) getToken(ctx context.Context) (string, error) {
 	return c.renew(ctx)
 }
 
-// renew refreshes the stored session under a cross-process lock.
+// ErrSessionRejected means the server refused the access token and it could
+// not be renewed because no refresh token is stored.
+var ErrSessionRejected = errors.New("the server rejected the session and no refresh token is stored; please run 'taufinity auth login'")
+
+// RenewAfterReject renews the session after the server refused the access
+// token rejected (HTTP 401), even though it has not expired locally: the
+// server may have rotated its signing key, which invalidates every access
+// token at once while the refresh tokens stay valid. Returns the new access
+// token. If another process already renewed the session, its token is used
+// and nothing is sent. A rejected refresh token clears the credentials and
+// asks for a login, as at expiry.
+//
+// The refresh goes to this client's host, with that host's credentials.
+func (c *Client) RenewAfterReject(ctx context.Context, rejected string) (string, error) {
+	if c.authToken != "" {
+		return "", fmt.Errorf("the server rejected the explicitly set token")
+	}
+	creds, err := auth.LoadCredentialsFor(c.baseURL)
+	if err != nil {
+		return "", err
+	}
+	if creds.AccessToken == rejected && !creds.HasRefreshToken() {
+		return "", ErrSessionRejected
+	}
+	return c.renewIf(ctx, func(cr *auth.Credentials) bool {
+		return cr.ShouldRenew() || cr.AccessToken == rejected
+	})
+}
+
+// renew refreshes the stored session when it is expired or near expiry.
+func (c *Client) renew(ctx context.Context) (string, error) {
+	return c.renewIf(ctx, (*auth.Credentials).ShouldRenew)
+}
+
+// renewIf refreshes the stored session under a cross-process lock, when need
+// says the stored pair still needs it.
 //
 // Many taufinity processes share one credentials file. Under the lock the file
 // is re-read: if another process already renewed it, that pair is used and the
 // old refresh token is never sent again (the server treats a re-sent rotated
 // token as theft and revokes every CLI session of the user).
-func (c *Client) renew(ctx context.Context) (string, error) {
+func (c *Client) renewIf(ctx context.Context, need func(*auth.Credentials) bool) (string, error) {
 	path := auth.CredentialsPathFor(c.baseURL)
 	unlock, err := auth.LockRefresh(ctx, path)
 	if err != nil {
@@ -572,8 +611,11 @@ func (c *Client) renew(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err // e.g. logged out by another process meanwhile
 	}
-	if !creds.ShouldRenew() {
+	if !need(creds) {
 		return creds.AccessToken, nil // another process renewed it while we waited
+	}
+	if !creds.HasRefreshToken() && !creds.ShouldRenew() {
+		return "", ErrSessionRejected
 	}
 
 	sent := creds.RefreshToken
@@ -597,7 +639,7 @@ func (c *Client) renew(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("token renewal failed (credentials preserved): the session was renewed by another process; retry")
 	}
 	_ = creds.DeleteFile()
-	return "", fmt.Errorf("session expired, please run 'taufinity auth login'")
+	return "", ErrSessionExpired
 }
 
 // refreshToken exchanges the stored refresh token for a new access+refresh pair.
@@ -689,16 +731,16 @@ func (c *Client) RevokeRefreshToken(refreshToken string) error {
 // ("log out everywhere"). Uses normal auth — getToken() auto-refreshes the
 // access token first if it has expired, so this works after a long gap too.
 func (c *Client) RevokeAllRefreshTokens() error {
-	token, err := c.getToken(context.Background())
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, c.baseURL+"/api/cli/token/revoke-all", nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := c.do(req)
+	ctx := context.Background()
+	url := c.baseURL + "/api/cli/token/revoke-all"
+	resp, err := c.authed(ctx, "POST", url, nil, true, func(token string) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		return req, nil
+	})
 	if err != nil {
 		return err
 	}
@@ -746,4 +788,41 @@ func (r *Response) Error() error {
 		return nil
 	}
 	return fmt.Errorf("API error: %d - %s", r.StatusCode, string(r.Body))
+}
+
+// ErrSessionExpired means the refresh token was rejected: the session is over
+// and the stored credentials have been cleared.
+var ErrSessionExpired = errors.New("session expired, please run 'taufinity auth login'")
+
+// ErrSessionRejectedByServer means the server refused the session even after
+// it was renewed once.
+var ErrSessionRejectedByServer = errors.New("the server rejected the session even after renewing it; please run 'taufinity auth login'")
+
+// SessionEnded reports whether err means only a new login helps: the refresh
+// token was rejected, none is stored, or the server refused a renewed session.
+// Transient failures (network, 5xx, a lock timeout) are not session ends.
+func SessionEnded(err error) bool {
+	return errors.Is(err, ErrSessionExpired) || errors.Is(err, ErrSessionRejected) || errors.Is(err, ErrSessionRejectedByServer)
+}
+
+// ValidatedToken is Token checked against the server: a token the server
+// refuses (e.g. signed with a rotated-out key) is renewed once and checked
+// again. Use it where a token is handed out (auth token, MCP config writers);
+// per-request paths renew on a 401 by themselves. When the server cannot be
+// reached the stored token is returned unchecked, as Token would.
+func (c *Client) ValidatedToken(ctx context.Context) (string, error) {
+	if c.dryRun {
+		return c.getToken(ctx)
+	}
+	if _, err := c.getToken(ctx); err != nil {
+		return "", err
+	}
+	resp, err := c.PostJSONWithAuth(ctx, "/api/cli/token/validate", nil)
+	switch {
+	case err != nil && SessionEnded(err):
+		return "", err
+	case err == nil && resp.StatusCode == http.StatusUnauthorized:
+		return "", ErrSessionRejectedByServer
+	}
+	return c.getToken(ctx)
 }

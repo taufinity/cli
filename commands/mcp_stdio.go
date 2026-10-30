@@ -170,15 +170,16 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 	userAgent := fmt.Sprintf("taufinity-cli/%s (mcp-stdio)", Version)
 
 	return RunStdioBridge(ctx, StdioBridgeConfig{
-		UpstreamURL:   upstreamURL,
-		TokenSource:   clientTokenSource(client),
-		OrgID:         flagOrg,
-		UserAgent:     userAgent,
-		Timeout:       flagMCPStdioTimeout,
-		MaxFrameBytes: flagMCPStdioMaxFrameBytes,
-		Stdin:         os.Stdin,
-		Stdout:        os.Stdout,
-		Stderr:        stderr,
+		UpstreamURL:      upstreamURL,
+		TokenSource:      clientTokenSource(client),
+		RenewAfterReject: clientRenewAfterReject(client),
+		OrgID:            flagOrg,
+		UserAgent:        userAgent,
+		Timeout:          flagMCPStdioTimeout,
+		MaxFrameBytes:    flagMCPStdioMaxFrameBytes,
+		Stdin:            os.Stdin,
+		Stdout:           os.Stdout,
+		Stderr:           stderr,
 	})
 }
 
@@ -411,6 +412,49 @@ func clientTokenSource(client *api.Client) TokenSource {
 	}
 }
 
+// clientRenewAfterReject renews the client's session after the upstream
+// refused the token rejected, through the same locked, per-host renewal as
+// every other path (api.Client.RenewAfterReject), and reports the new expiry.
+func clientRenewAfterReject(client *api.Client) func(ctx context.Context, rejected string) (string, time.Time, error) {
+	return func(ctx context.Context, rejected string) (string, time.Time, error) {
+		tok, err := client.RenewAfterReject(ctx, rejected)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		expiresAt := time.Now().Add(tokenRefreshLeeway)
+		if creds, lerr := auth.LoadCredentials(); lerr == nil {
+			expiresAt = creds.AccessTokenExpiresAt
+		}
+		return tok, expiresAt, nil
+	}
+}
+
+// renewAfterUnauthorized handles an upstream 401: it renews the session once
+// and swaps the cached headers, so the caller can retry the request once.
+// Reports whether a retry makes sense.
+func (b *bridge) renewAfterUnauthorized(ctx context.Context) bool {
+	if b.renew == nil {
+		return false
+	}
+	b.tokenMu.Lock()
+	rejected := b.cachedToken
+	b.tokenMu.Unlock()
+
+	token, expiresAt, err := b.renew(ctx, rejected)
+	if err != nil {
+		b.logf("upstream refused the token and renewing the session failed: %v", err)
+		return false
+	}
+	h := b.buildHeaders(token)
+	b.tokenMu.Lock()
+	b.cachedToken = token
+	b.cachedExpires = expiresAt
+	b.cachedHeaders = h
+	b.tokenMu.Unlock()
+	b.logf("upstream refused the token; session renewed, retrying the request once")
+	return true
+}
+
 // TokenSource produces a bearer token for the upstream /mcp endpoint.
 // It is called once per outbound HTTP request (via WithHTTPHeaderFunc),
 // with results cached in-memory until the token is within tokenRefreshLeeway
@@ -428,16 +472,21 @@ type TokenSource func(ctx context.Context) (token string, expiresAt time.Time, e
 // bridge. Token is a static fallback for tests and embedded callers; it
 // never expires for the bridge's purposes.
 type StdioBridgeConfig struct {
-	UpstreamURL   string
-	TokenSource   TokenSource
-	Token         string // static fallback; ignored if TokenSource is set
-	OrgID         string // if set, sends X-Organization-ID on every request
-	UserAgent     string
-	Timeout       time.Duration
-	MaxFrameBytes int // 0 → defaultMaxFrameBytes
-	Stdin         io.Reader
-	Stdout        io.Writer
-	Stderr        io.Writer
+	UpstreamURL string
+	TokenSource TokenSource
+	// RenewAfterReject, if set, renews the session once when the upstream
+	// answers 401 to a request (e.g. after a signing-key rotation, which kills
+	// access tokens before their local expiry); the request is then retried
+	// once. It receives the rejected token.
+	RenewAfterReject func(ctx context.Context, rejected string) (token string, expiresAt time.Time, err error)
+	Token            string // static fallback; ignored if TokenSource is set
+	OrgID            string // if set, sends X-Organization-ID on every request
+	UserAgent        string
+	Timeout          time.Duration
+	MaxFrameBytes    int // 0 → defaultMaxFrameBytes
+	Stdin            io.Reader
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 // tokenRefreshLeeway is how close to expiry we re-read credentials from disk.
@@ -476,6 +525,7 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 		userAgent:     cfg.UserAgent,
 		orgID:         cfg.OrgID,
 		tokenSource:   cfg.TokenSource,
+		renew:         cfg.RenewAfterReject,
 		staticToken:   cfg.Token,
 	}
 
@@ -535,6 +585,7 @@ type bridge struct {
 	orgID         string // forwarded as X-Organization-ID if non-empty
 
 	tokenSource TokenSource
+	renew       func(ctx context.Context, rejected string) (string, time.Time, error)
 	staticToken string
 
 	tokenMu        sync.Mutex // guards cachedToken/cachedExpiresAt/cachedHeaders
@@ -756,6 +807,10 @@ func (b *bridge) forwardRequest(ctx context.Context, raw []byte, frame jsonRPCFr
 	defer cancel()
 
 	resp, err := b.transport.SendRequest(reqCtx, req)
+	if err != nil && errors.Is(err, transport.ErrUnauthorized) && b.renewAfterUnauthorized(reqCtx) {
+		// One retry with the renewed token; a second 401 is reported as is.
+		resp, err = b.transport.SendRequest(reqCtx, req)
+	}
 	if err != nil {
 		code, msg, data := mapTransportError(err)
 		b.writeErrorResponse(req.ID, code, msg, data)
