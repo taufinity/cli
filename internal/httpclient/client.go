@@ -5,6 +5,7 @@ package httpclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -123,6 +124,7 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 	var lastErr error
 	var lastStatusCode int
 	var lastResponseBody []byte // Store last response body for error reporting
+	var lastHeaders http.Header
 	var bodyBytes []byte
 
 	// Read body once if present (for retries)
@@ -178,6 +180,13 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 
 		resp, err := c.client.Do(reqWithCtx)
 		if err != nil {
+			// An error that declares itself final (e.g. Cloudflare Access
+			// turning the request away) is returned as-is: retrying only
+			// repeats it, with backoff the user sits through.
+			var final interface{ NonRetryable() bool }
+			if errors.As(err, &final) && final.NonRetryable() {
+				return nil, err
+			}
 			lastErr = err
 			if c.isRetryableError(err, 0) {
 				slog.Warn("HTTP request failed, will retry",
@@ -204,6 +213,7 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		// Check if we should retry based on status code
 		if c.isRetryableStatusCode(resp.StatusCode) {
 			lastResponseBody = body
+			lastHeaders = resp.Header
 			// Truncate body for logging (max 500 chars)
 			bodyPreview := string(body)
 			if len(bodyPreview) > 500 {
@@ -238,6 +248,7 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		if len(lastResponseBody) > 0 {
 			return &Response{
 				StatusCode: lastStatusCode,
+				Headers:    lastHeaders,
 				Body:       lastResponseBody,
 			}, fmt.Errorf("request failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 		}

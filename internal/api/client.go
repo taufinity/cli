@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/cfaccess"
 	"github.com/taufinity/cli/internal/httpclient"
+	"github.com/taufinity/cli/internal/jsonresp"
 )
 
 // ErrRefreshTokenRejected is returned by refreshToken when the server
@@ -34,24 +36,13 @@ type Client struct {
 	// every attempt lands inside the server's 60s rotation grace window: a retry
 	// after a lost response re-presents the old refresh token, and outside the
 	// window the server reads that as theft and revokes all the user's sessions.
+	// It shares the Cloudflare Access transport with httpClient (see New).
 	refreshHTTP *httpclient.Client
 	authToken   string // Explicit auth token (overrides saved credentials)
 	orgID       string // Organization ID header (X-Organization-ID)
 	dryRun      bool
 	dryRunOut   io.Writer
 	log         *slog.Logger // nil = no debug logging
-
-	// cfAccessID and cfAccessSecret are a Cloudflare Access service token, sent
-	// as CF-Access-Client-Id / CF-Access-Client-Secret on every request. They
-	// let this client reach a Studio instance that sits behind Cloudflare
-	// Access (e.g. staging). Sourced from the environment only, mirroring
-	// provisionClient's identically-named fields (commands/provision_client.go).
-	// A service token is a credential and must never land in a flag. Empty
-	// when either is unset, in which case no CF-Access headers are sent and
-	// the request goes straight through (correct for any host not behind
-	// Access).
-	cfAccessID     string
-	cfAccessSecret string
 }
 
 // SetOrg sets the organization ID to include in requests.
@@ -72,18 +63,6 @@ func (c *Client) setOrgHeader(req *http.Request) {
 	}
 }
 
-// setCFAccessHeaders attaches the Cloudflare Access service token to a
-// request, but only when both halves are present. Sent on reads and writes
-// alike, since Cloudflare Access gates every request, a GET would 403 before
-// it ever reached the app if the header only rode the write path.
-func (c *Client) setCFAccessHeaders(req *http.Request) {
-	if c.cfAccessID == "" || c.cfAccessSecret == "" {
-		return
-	}
-	req.Header.Set("CF-Access-Client-Id", c.cfAccessID)
-	req.Header.Set("CF-Access-Client-Secret", c.cfAccessSecret)
-}
-
 // New creates a new API client for the given base URL.
 func New(baseURL string) *Client {
 	cfg := httpclient.DefaultConfig()
@@ -91,15 +70,17 @@ func New(baseURL string) *Client {
 	cfg.MaxRetries = 3
 	cfg.LogRequests = false
 
+	// Every request, including the unauthenticated device-code calls and the
+	// token refresh/revoke calls, goes through the Cloudflare Access transport:
+	// it adds the staging service token and turns an Access block into an
+	// actionable error. See internal/cfaccess.
+	cfg.Transport = cfaccess.NewTransport(nil)
+
 	c := &Client{
 		baseURL:     baseURL,
 		httpClient:  httpclient.New(cfg),
 		refreshHTTP: httpclient.New(refreshHTTPConfig(cfg)),
 		dryRunOut:   os.Stdout,
-		// CF-Access service token from the environment. Same variable names
-		// commands/provision_client.go already reads for its own bypass.
-		cfAccessID:     os.Getenv("CF_ACCESS_CLIENT_ID"),
-		cfAccessSecret: os.Getenv("CF_ACCESS_CLIENT_SECRET"),
 	}
 	if os.Getenv("TAUFINITY_DEBUG") == "1" {
 		c.SetDebug(true)
@@ -240,18 +221,16 @@ type Response struct {
 }
 
 // Get performs a GET request (always executed, even in dry-run). Unauthenticated
-// (no token), but still needs setCFAccessHeaders. This is what the device-code
-// login flow polls before any token exists, so it must be able to reach a
-// Cloudflare-Access-protected host too.
+// (no token). This is what the device-code login flow polls before any token
+// exists; the Cloudflare Access transport still applies, so it reaches staging.
 func (c *Client) Get(ctx context.Context, path string) (*Response, error) {
 	url := c.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	c.setCFAccessHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -262,8 +241,41 @@ func (c *Client) Get(ctx context.Context, path string) (*Response, error) {
 	}, nil
 }
 
-// GetWithAuth performs an authenticated GET request.
+// do sends a request to a JSON endpoint. An HTML page in reply (a proxy error
+// page, a login wall, the wrong URL) becomes a *jsonresp.NonJSONError naming
+// the URL, content type, status and page title, so no caller feeds it to a
+// JSON decoder or prints the whole page in an error message.
+func (c *Client) do(req *http.Request) (*httpclient.Response, error) {
+	return c.send(req, true)
+}
+
+func (c *Client) send(req *http.Request, expectJSON bool) (*httpclient.Response, error) {
+	return c.sendVia(c.httpClient, req, expectJSON)
+}
+
+// sendVia is send over a given client (the refresh uses its own, see Client).
+func (c *Client) sendVia(hc *httpclient.Client, req *http.Request, expectJSON bool) (*httpclient.Response, error) {
+	resp, err := hc.Do(req)
+	if expectJSON && resp != nil {
+		if htmlErr := jsonresp.Check(req.URL.String(), resp.StatusCode, resp.Headers.Get("Content-Type"), resp.Body); htmlErr != nil {
+			return nil, htmlErr
+		}
+	}
+	return resp, err
+}
+
+// GetWithAuth performs an authenticated GET request to a JSON endpoint.
 func (c *Client) GetWithAuth(ctx context.Context, path string) (*Response, error) {
+	return c.getWithAuth(ctx, path, true)
+}
+
+// GetRawWithAuth is GetWithAuth for a file download, whose body may be any
+// type, HTML included, so it is returned as-is.
+func (c *Client) GetRawWithAuth(ctx context.Context, path string) (*Response, error) {
+	return c.getWithAuth(ctx, path, false)
+}
+
+func (c *Client) getWithAuth(ctx context.Context, path string, expectJSON bool) (*Response, error) {
 	token, err := c.getToken(ctx)
 	if err != nil {
 		c.logTokenError(err)
@@ -278,9 +290,8 @@ func (c *Client) GetWithAuth(ctx context.Context, path string) (*Response, error
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
-	c.setCFAccessHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.send(req, expectJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -313,9 +324,8 @@ func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, er
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
-	c.setCFAccessHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +338,7 @@ func (c *Client) DeleteWithAuth(ctx context.Context, path string) (*Response, er
 }
 
 // PostJSON performs a POST request with JSON body. Unauthenticated (no
-// token), but still needs setCFAccessHeaders, see Get's doc comment.
+// token), see Get's doc comment.
 func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -346,9 +356,8 @@ func (c *Client) PostJSON(ctx context.Context, path string, body any) (*Response
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c.setCFAccessHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -386,9 +395,8 @@ func (c *Client) PostJSONWithAuth(ctx context.Context, path string, body any) (*
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
-	c.setCFAccessHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -451,9 +459,8 @@ func (c *Client) UploadFile(ctx context.Context, path, filePath string) (*Respon
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
-	c.setCFAccessHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -485,9 +492,8 @@ func (c *Client) PostMultipart(ctx context.Context, path string, body io.Reader,
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Authorization", "Bearer "+token)
 	c.setOrgHeader(req)
-	c.setCFAccessHeaders(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -619,7 +625,7 @@ func (c *Client) refreshToken(ctx context.Context, creds *auth.Credentials) erro
 	// response AND an error; on a transport/network failure it returns a nil
 	// response and an error. Inspect the status FIRST so a 401 is classified as
 	// a definitive rejection regardless of how the transport surfaced it.
-	resp, err := c.refreshHTTP.Do(req)
+	resp, err := c.sendVia(c.refreshHTTP, req, true)
 	if resp != nil && resp.StatusCode == http.StatusUnauthorized {
 		// Definitive: the refresh token is invalid/expired/revoked. The caller
 		// (getToken) treats this — and only this — as grounds to delete creds.
@@ -673,7 +679,7 @@ func (c *Client) RevokeRefreshToken(refreshToken string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if _, err := c.httpClient.Do(req); err != nil {
+	if _, err := c.do(req); err != nil {
 		return err
 	}
 	return nil
@@ -692,7 +698,7 @@ func (c *Client) RevokeAllRefreshTokens() error {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.do(req)
 	if err != nil {
 		return err
 	}

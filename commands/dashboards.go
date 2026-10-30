@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/taufinity/cli/internal/cfaccess"
 )
 
 // Dashboard specs live as JSON files alongside the dbt views that back them.
@@ -251,6 +254,10 @@ func loadSpec(path string) (dashboardSpec, error) {
 	return spec, nil
 }
 
+// dashboardsHTTP reaches Studio through the Cloudflare Access transport, so
+// dashboard commands work against staging too.
+var dashboardsHTTP = cfaccess.NewClient(60 * time.Second)
+
 // apiCall performs an HTTP call against the Studio admin API using the
 // X-API-Key header. Returns the response body or an error.
 func apiCall(method, url, apiKey string, body []byte) ([]byte, int, error) {
@@ -266,7 +273,7 @@ func apiCall(method, url, apiKey string, body []byte) ([]byte, int, error) {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := dashboardsHTTP.Do(req)
 	if err != nil {
 		return nil, 0, err
 	}

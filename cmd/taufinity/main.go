@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/taufinity/cli/commands"
+	"github.com/taufinity/cli/internal/cfaccess"
 	"github.com/taufinity/cli/internal/pixl"
 	"github.com/taufinity/cli/internal/telemetry"
 	"github.com/taufinity/cli/internal/terms"
@@ -20,6 +21,11 @@ func main() {
 	terms.ShowOnce(os.Stderr)
 
 	if err := commands.Execute(); err != nil {
+		// A Cloudflare Access block carries its own instructions; print those,
+		// not the transport wrapping ("request failed: Post \"https://...\": ...").
+		if be := cfaccess.AsBlocked(err); be != nil {
+			err = be
+		}
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}

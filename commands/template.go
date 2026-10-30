@@ -357,7 +357,7 @@ func pollJobCompletion(client *api.Client, jobID string, timeout time.Duration) 
 }
 
 func downloadFile(client *api.Client, jobID, filename, destPath string) error {
-	resp, err := client.GetWithAuth(context.Background(), fmt.Sprintf("/api/render-jobs/%s/files/%s", jobID, filename))
+	resp, err := client.GetRawWithAuth(context.Background(), fmt.Sprintf("/api/render-jobs/%s/files/%s", jobID, filename))
 	if err != nil {
 		return err
 	}
