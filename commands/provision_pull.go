@@ -119,6 +119,10 @@ type playbookDetailRemote struct {
 	Enabled          bool    `json:"enabled"`
 	AgentTriggerable bool    `json:"agent_triggerable"`
 	AgentInputSchema string  `json:"agent_input_schema"`
+	// Internal must be readable here or diffPlaybookFields cannot compare it,
+	// and a field it cannot compare is skipped — which made a YAML that only
+	// set internal: true diff as NOOP and never get written at all.
+	Internal bool `json:"internal"`
 }
 
 func pullProvisionPlaybooks(c *provisionClient, orgID uint, outDir string, dryRun bool) error {
