@@ -352,6 +352,7 @@ func diffPlaybookFields(payload map[string]interface{}, remote playbookDetailRem
 		"enabled":            remote.Enabled,
 		"agent_triggerable":  remote.AgentTriggerable,
 		"agent_input_schema": remote.AgentInputSchema,
+		"internal":           remote.Internal,
 	}
 
 	keys := make([]string, 0, len(payload))
