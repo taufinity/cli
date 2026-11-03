@@ -62,6 +62,15 @@ type playbookConfig struct {
 	Enabled          *bool   `yaml:"enabled,omitempty"`
 	AgentTriggerable *bool   `yaml:"agent_triggerable,omitempty"`
 	AgentInputSchema string  `yaml:"agent_input_schema,omitempty"`
+	// Internal marks a building block another playbook calls (a foreach_item
+	// sub-playbook) rather than something a person starts. Studio hides an
+	// internal playbook from the Playbooks page and from agent tool listings;
+	// it stays fully runnable, because sub-playbook resolution matches on slug
+	// and never consults either list.
+	//
+	// Pointer so an absent key leaves the live value alone, rather than
+	// resetting it to false on every apply.
+	Internal *bool `yaml:"internal,omitempty"`
 	// MaxConsecutiveFailures is how many consecutive failed runs the scheduler
 	// tolerates before it auto-pauses the playbook and notifies org admins.
 	// Server default is 3.
@@ -552,6 +561,9 @@ func playbookCreatePayload(cfg playbookConfig) map[string]interface{} {
 	if cfg.BrandContext != nil {
 		out["brand_context"] = cfg.BrandContext
 	}
+	if cfg.Internal != nil {
+		out["internal"] = *cfg.Internal
+	}
 	// Sent only when declared; the server applies it only when > 0, so omitting
 	// leaves its default of 3 in place for every playbook that does not care.
 	if cfg.MaxConsecutiveFailures != nil {
@@ -586,6 +598,9 @@ func playbookUpdatePayload(cfg playbookConfig, knowledgeTagIDs []uint) map[strin
 	}
 	if cfg.AgentInputSchema != "" {
 		out["agent_input_schema"] = cfg.AgentInputSchema
+	}
+	if cfg.Internal != nil {
+		out["internal"] = *cfg.Internal
 	}
 	// Sent only when the YAML declares it. The server's update handler applies
 	// brand_context only when non-nil, so omitting the key leaves existing live
