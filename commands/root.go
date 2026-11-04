@@ -311,6 +311,19 @@ func GetOrg() string {
 	return ""
 }
 
+// orgSource names where GetOrg's value came from, in the same order.
+func orgSource() string {
+	switch {
+	case flagOrg != "":
+		return "--org"
+	case os.Getenv("TAUFINITY_ORG") != "":
+		return "TAUFINITY_ORG"
+	case cfg != nil && cfg.Org != "":
+		return "config"
+	}
+	return ""
+}
+
 // IsQuiet returns whether quiet mode is enabled.
 func IsQuiet() bool {
 	return flagQuiet || os.Getenv("TAUFINITY_QUIET") == "1"

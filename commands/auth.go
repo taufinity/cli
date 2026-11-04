@@ -636,6 +636,12 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	if creds.OrganizationName != "" {
 		Print("Organization: %s\n", creds.OrganizationName)
 	}
+	// Organization above is the org the login landed on. When an org is
+	// pinned, org-scoped commands and the MCP bridge use that one instead,
+	// and saying only the login org would name the wrong target.
+	if org, src := GetOrg(), orgSource(); org != "" {
+		Print("Default org: %s (%s)\n", org, src)
+	}
 	expires := creds.AccessTokenExpiresAt
 	if expires.IsZero() {
 		expires = creds.ExpiresAt

@@ -151,6 +151,78 @@ func TestMCPInstall_WritesStdioEntryByDefaultForClaudeDesktop(t *testing.T) {
 	}
 }
 
+// Claude Code got the HTTP shape by default, which embeds the access token as a
+// fixed header that is never renewed: the server stopped answering about an
+// hour later with "login expired" while `auth status` said Authenticated. It
+// now gets the bridge, and a default org pinned with `config set org` lands in
+// the bridge args, so the entry targets that org without a flag.
+func TestMCPInstall_ClaudeCodeDefaultsToStdioWithConfigOrg(t *testing.T) {
+	resetGlobals(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TAUFINITY_ORG", "")
+	seedCredentials(t, "never-embed-me")
+	t.Setenv("TAUFINITY_BINARY_PATH", "/opt/taufinity/bin/taufinity")
+	if err := os.MkdirAll(filepath.Join(home, ".config", "taufinity"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".config", "taufinity", "config.yaml"), []byte("org: \"12\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(t.TempDir(), "claude.json")
+	t.Setenv("TAUFINITY_CLAUDE_CODE_CONFIG", cfgPath)
+
+	rootCmd.SetArgs([]string{
+		"--api-url", "https://studio.taufinity.io",
+		"mcp", "install", "--client", "claude-code", "--label", "taufinity-test",
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	if strings.Contains(string(raw), "never-embed-me") {
+		t.Fatalf("access token embedded in Claude Code config: %s", raw)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("written config not valid JSON: %v", err)
+	}
+	tau := got["mcpServers"].(map[string]any)["taufinity-test"].(map[string]any)
+	if tau["command"] != "/opt/taufinity/bin/taufinity" {
+		t.Errorf("command = %v, want the stdio bridge", tau["command"])
+	}
+	args, _ := tau["args"].([]any)
+	want := []string{"--org", "12", "mcp", "stdio"}
+	if len(args) != len(want) {
+		t.Fatalf("args = %v, want %v", args, want)
+	}
+	for i, w := range want {
+		if args[i] != w {
+			t.Errorf("args[%d] = %v, want %q", i, args[i], w)
+		}
+	}
+}
+
+func TestResolveTransport_Defaults(t *testing.T) {
+	for client, want := range map[string]string{
+		"claude-desktop": "stdio",
+		"claude-code":    "stdio",
+		"cursor":         "stdio",
+		"vscode":         "http",
+		"antigravity":    "http",
+		"print":          "http",
+	} {
+		got, err := resolveTransport(client, "")
+		if err != nil || got != want {
+			t.Errorf("resolveTransport(%q, \"\") = %q, %v; want %q", client, got, err, want)
+		}
+	}
+}
+
 func TestMCPInstall_HTTPTransportOverrideEmbedsBearer(t *testing.T) {
 	resetGlobals(t)
 	home := t.TempDir()
