@@ -560,6 +560,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	drain(resp)
 
 	be := &BlockedError{Host: host, TokenSent: src != SourceNone, Source: src}
+	describe(be, req, resp)
 	switch src {
 	case SourceNone:
 		be.FetchErr = res.FetchError(host)
@@ -586,6 +587,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if !blocked(req, resp) {
 			return resp, nil
 		}
+		// The retry's response is the one to describe: it is the block that
+		// stands, and the first one is already gone.
+		describe(be, req, resp)
 		drain(resp)
 		be.Source, be.Refetched = SourceGcloud, true
 		return nil, be
@@ -621,6 +625,28 @@ func blocked(req *http.Request, resp *http.Response) bool {
 	return false
 }
 
+// describe records what the blocked response looked like, so the message can
+// say whether Access turned the request away or it never got that far. Only the
+// four fields BlockedError documents: a body could hold anything and the request
+// headers hold the token.
+func describe(be *BlockedError, req *http.Request, resp *http.Response) {
+	if req != nil {
+		be.Method = req.Method
+	}
+	if resp == nil {
+		return
+	}
+	be.Status = resp.StatusCode
+	if mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err == nil {
+		be.ContentType = mt
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		if u, err := url.Parse(loc); err == nil {
+			be.LocationHost = u.Hostname()
+		}
+	}
+}
+
 func isAccessLoginHost(h string) bool {
 	h = strings.ToLower(h)
 	return h == "cloudflareaccess.com" || strings.HasSuffix(h, ".cloudflareaccess.com")
@@ -640,6 +666,16 @@ const fixHint = "Fix: gcloud auth login, or set CF_ACCESS_CLIENT_ID and CF_ACCES
 
 // BlockedError says Cloudflare Access turned a request away, and how to fix it.
 // It never contains a token value.
+//
+// It also records what the response looked like, because the message alone sends
+// the reader to the wrong place. On 2026-11-05 a provision apply reported the
+// Access token as "refused (rotated or revoked?), even freshly read from Secret
+// Manager" while the token was fine: reads through the same client and the same
+// token succeeded in that very run, and only the POST was turned away. Finding
+// that out took a detour through Secret Manager fingerprints and the Access
+// policy. The method, the status, the redirect's host and the content type are
+// what distinguish a refused token from a request that never reached Studio, and
+// all four are known at the moment the error is built.
 type BlockedError struct {
 	Host       string
 	TokenSent  bool   // a token went out and Access still refused it
@@ -647,6 +683,35 @@ type BlockedError struct {
 	Refetched  bool   // the token was re-read from gcloud and still refused
 	FetchErr   error  // why no token was available, when none was sent
 	RefetchErr error  // why re-reading a refused cached token failed
+
+	// What the blocked response was. Deliberately only these four: no body, no
+	// cookies, and no request headers, since those carry the token itself.
+	Method       string // the request method, so a method-specific block is visible
+	Status       int    // the response status code
+	LocationHost string // host of the Location header on a redirect, if any
+	ContentType  string // media type of the response, if any
+}
+
+// why describes the blocked response in the shape it was seen, for the end of
+// the message. Empty when nothing was recorded, so older callers read as before.
+func (e *BlockedError) why() string {
+	var parts []string
+	if e.Method != "" {
+		parts = append(parts, e.Method)
+	}
+	if e.Status != 0 {
+		parts = append(parts, fmt.Sprintf("answered %d", e.Status))
+	}
+	if e.LocationHost != "" {
+		parts = append(parts, "redirected to "+e.LocationHost)
+	}
+	if e.ContentType != "" {
+		parts = append(parts, "content type "+e.ContentType)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 func (e *BlockedError) Error() string {
@@ -668,15 +733,15 @@ func (e *BlockedError) Error() string {
 	switch {
 	case e.Source == SourceEnv:
 		return fmt.Sprintf("%s is behind Cloudflare Access and refused the service token from CF_ACCESS_CLIENT_ID/CF_ACCESS_CLIENT_SECRET (rotated or revoked?): "+
-			"check those variables, or unset them so the CLI reads the current token with gcloud", host)
+			"check those variables, or unset them so the CLI reads the current token with gcloud%s", host, e.why())
 	case e.RefetchErr != nil:
-		return fmt.Sprintf("%s is behind Cloudflare Access and refused the cached service token, and reading a fresh one failed: %s. %s",
-			host, e.RefetchErr.Error(), fixHint)
+		return fmt.Sprintf("%s is behind Cloudflare Access and refused the cached service token, and reading a fresh one failed: %s. %s%s",
+			host, e.RefetchErr.Error(), fixHint, e.why())
 	case e.Refetched || e.Source == SourceGcloud:
 		return fmt.Sprintf("%s is behind Cloudflare Access and the Access service token was refused (rotated or revoked?), "+
-			"even freshly read from Secret Manager: check the token in the Access policy for %s", host, host)
+			"even freshly read from Secret Manager: check the token in the Access policy for %s%s", host, host, e.why())
 	default:
-		return fmt.Sprintf("%s is behind Cloudflare Access and refused the service token from %s (rotated or revoked?)", host, e.Source)
+		return fmt.Sprintf("%s is behind Cloudflare Access and refused the service token from %s (rotated or revoked?)%s", host, e.Source, e.why())
 	}
 }
 
