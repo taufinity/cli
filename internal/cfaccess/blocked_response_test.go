@@ -102,6 +102,7 @@ func TestBlockedErrorNamesTheResponse(t *testing.T) {
 	})
 
 	// An error built without a response still reads as it did before.
+	// (The success case below is why this file exists at all.)
 	t.Run("no response recorded reads as before", func(t *testing.T) {
 		be := &BlockedError{Host: StagingHost, TokenSent: true, Source: SourceGcloud}
 		msg := be.Error()

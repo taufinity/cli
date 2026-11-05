@@ -609,6 +609,16 @@ func drain(resp *http.Response) {
 // Transport returns before the http.Client could follow such a redirect, so
 // the login page is never fetched.
 func blocked(req *http.Request, resp *http.Response) bool {
+	// A success is the origin answering, never Access turning us away: Access
+	// answers with a redirect to its login or with its own error page. Without
+	// this, a 2xx carrying a stray text/html content type reads as a block. That
+	// is not hypothetical: Studio answers 204 No Content to an admin settings
+	// write, with a text/html content type on it, and on 2026-11-05 that made
+	// `provision apply` write the first setting, call the Access token refused,
+	// and abort with the rest of the apply undone.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return false
+	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		if loc := resp.Header.Get("Location"); loc != "" {
 			if u, err := url.Parse(loc); err == nil && isAccessLoginHost(u.Hostname()) {
