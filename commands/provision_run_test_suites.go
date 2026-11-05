@@ -32,6 +32,7 @@ type testSuiteRun struct {
 	Status      string `json:"status"`
 	PassedCount int    `json:"passed_count"`
 	FailedCount int    `json:"failed_count"`
+	ErrorCount  int    `json:"error_count"`
 	TotalCount  int    `json:"total_count"`
 	Error       string `json:"error,omitempty"`
 }
@@ -137,8 +138,8 @@ func runTestSuites(c *provisionClient, orgID uint, orgSlug, priority string, tim
 		if err := pollUntilDone(c, orgID, triggered.UUID, timeout, &results[i].run); err != nil {
 			results[i].err = err
 			fmt.Println("ERROR")
-		} else if results[i].run.FailedCount > 0 {
-			fmt.Printf("FAIL (%d/%d)\n", results[i].run.FailedCount, results[i].run.TotalCount)
+		} else if !results[i].run.allPassed() {
+			fmt.Printf("FAIL (%d/%d passed)\n", results[i].run.PassedCount, results[i].run.TotalCount)
 		} else {
 			fmt.Printf("PASS (%d/%d)\n", results[i].run.PassedCount, results[i].run.TotalCount)
 		}
@@ -155,8 +156,10 @@ func runTestSuites(c *provisionClient, orgID uint, orgSlug, priority string, tim
 		case r.run.Status != "completed":
 			fmt.Printf("  FAIL  %s — run ended with status %q\n", r.name, r.run.Status)
 			anyFailed = true
-		case r.run.FailedCount > 0:
-			fmt.Printf("  FAIL  %s — %d/%d cases failed\n", r.name, r.run.FailedCount, r.run.TotalCount)
+		case !r.run.allPassed():
+			fmt.Printf("  FAIL  %s — %d/%d cases passed (%d failed, %d errored, %d without a result)\n",
+				r.name, r.run.PassedCount, r.run.TotalCount, r.run.FailedCount, r.run.ErrorCount,
+				r.run.TotalCount-r.run.PassedCount-r.run.FailedCount-r.run.ErrorCount)
 			anyFailed = true
 		default:
 			fmt.Printf("  PASS  %s — %d/%d cases passed\n", r.name, r.run.PassedCount, r.run.TotalCount)
@@ -167,6 +170,15 @@ func runTestSuites(c *provisionClient, orgID uint, orgSlug, priority string, tim
 		return fmt.Errorf("one or more test suites failed")
 	}
 	return nil
+}
+
+// allPassed reports whether every case of a completed run passed. A case the
+// server could not execute counts in error_count rather than failed_count, and
+// a run can also carry fewer verdicts than cases; neither is a pass. Checking
+// failed_count alone let a must suite with ten errored cases out of fifteen
+// read as PASS.
+func (r testSuiteRun) allPassed() bool {
+	return r.TotalCount > 0 && r.PassedCount == r.TotalCount && r.FailedCount == 0 && r.ErrorCount == 0
 }
 
 // pollUntilDone polls the run until it reaches a terminal status or the timeout
