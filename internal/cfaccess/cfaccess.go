@@ -609,14 +609,20 @@ func drain(resp *http.Response) {
 // Transport returns before the http.Client could follow such a redirect, so
 // the login page is never fetched.
 func blocked(req *http.Request, resp *http.Response) bool {
-	// A success is the origin answering, never Access turning us away: Access
-	// answers with a redirect to its login or with its own error page. Without
-	// this, a 2xx carrying a stray text/html content type reads as a block. That
-	// is not hypothetical: Studio answers 204 No Content to an admin settings
-	// write, with a text/html content type on it, and on 2026-11-05 that made
-	// `provision apply` write the first setting, call the Access token refused,
-	// and abort with the rest of the apply undone.
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	// A status that carries no body can only be the origin answering: there is
+	// nothing for an Access page to be, so a content type on it describes
+	// nothing. Without this, a bodyless success with a stray text/html header
+	// reads as a block. Not hypothetical: Studio answers 204 No Content to an
+	// admin settings write and puts text/html on it, and on 2026-11-05 that made
+	// `provision apply` write the first setting, report the Access token as
+	// refused, and abort with the rest of the apply undone.
+	//
+	// Deliberately only the bodyless statuses, not all of 2xx. A 200 carrying an
+	// HTML page on an API path is still worth catching here, and on the
+	// provision path it is the only place it would be caught: provision calls
+	// studioadmin.Do, which returns the body and status unexamined, while only
+	// the typed path runs it past jsonresp.Check.
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusResetContent {
 		return false
 	}
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {

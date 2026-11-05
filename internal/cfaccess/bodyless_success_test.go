@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-func TestSuccessIsNeverABlock(t *testing.T) {
+func TestBodylessSuccessIsNeverABlock(t *testing.T) {
 	// The exact shape that caused it: 204, html content type, api path, staging.
 	t.Run("204 with a text/html content type", func(t *testing.T) {
 		f := newFixture(t, func(w http.ResponseWriter, r *http.Request) {
@@ -29,17 +29,29 @@ func TestSuccessIsNeverABlock(t *testing.T) {
 		}
 	})
 
-	// The whole 2xx range, since the reason is "the origin answered", not "204".
-	t.Run("other successes with html", func(t *testing.T) {
-		for _, code := range []int{http.StatusOK, http.StatusCreated, http.StatusAccepted} {
-			f := newFixture(t, func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/html")
-				w.WriteHeader(code)
-				_, _ = w.Write([]byte("<html></html>"))
-			})
-			if _, err := f.get(t, "https://"+StagingHost+"/api/x"); err != nil {
-				t.Errorf("status %d: %v", code, err)
-			}
+	// 205 for the same reason as 204: no body, so a content type says nothing.
+	t.Run("205 with a text/html content type", func(t *testing.T) {
+		f := newFixture(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusResetContent)
+		})
+		if _, err := f.get(t, "https://"+StagingHost+"/api/x"); err != nil {
+			t.Fatalf("205 carries no body either: %v", err)
+		}
+	})
+
+	// A 200 that really does carry an HTML page stays a block. On the provision
+	// path this is the only place it is caught, because studioadmin.Do hands the
+	// body back unexamined.
+	t.Run("a 200 html page is still a block", func(t *testing.T) {
+		f := newFixture(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("<html>login</html>"))
+		})
+		_, err := f.get(t, "https://"+StagingHost+"/api/x")
+		if AsBlocked(err) == nil {
+			t.Fatalf("an HTML page where JSON was expected is still a block, got %v", err)
 		}
 	})
 
