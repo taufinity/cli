@@ -170,6 +170,38 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 		return 0, fmt.Errorf("marshal payload: %w", err)
 	}
 
+	// A name that matches more than one provider is refused rather than
+	// resolved. Matching by name is the fallback when the spec has no slug and
+	// no id, and it silently picks whichever row the API listed first, which is
+	// not something the spec states and not something the operator sees.
+	//
+	// WVS org 18 had four enabled providers all named "WVS BQ Tracking", three
+	// pointing at the staging dataset and one at production's. Provisioning
+	// updated one of them on every apply and left the rest, and the platform's
+	// own lookup takes First() with no ordering, so which dataset a quote's
+	// analytics went to was decided by row order. Nobody could see that from the
+	// spec, and the spec is the thing people read.
+	//
+	// Only the name path is ambiguous this way: a slug or an id names one row.
+	if cfg.Slug == "" && cfg.ID == 0 {
+		var byName []providerItem
+		for _, existing := range items {
+			if strings.EqualFold(existing.Name, cfg.Name) {
+				byName = append(byName, existing)
+			}
+		}
+		if len(byName) > 1 {
+			ids := make([]string, 0, len(byName))
+			for _, m := range byName {
+				ids = append(ids, fmt.Sprintf("id=%d", m.ID))
+			}
+			return 0, fmt.Errorf("provider %q matches %d providers in this org (%s): "+
+				"add `id:` or `slug:` to the spec so it names one, or remove the duplicates. "+
+				"Refusing to guess which one the spec means",
+				cfg.Name, len(byName), strings.Join(ids, ", "))
+		}
+	}
+
 	// Match existing provider: slug (when both sides have one) → id → name.
 	// When cfg has a slug but the existing provider doesn't yet (bootstrap case),
 	// fall through to id/name so the first run writes the slug into the PUT
