@@ -27,10 +27,15 @@ type providerConfig struct {
 	// Slug is a stable, env-independent identifier. When set, provision matches
 	// the provider by slug instead of id/name — robust across environments where
 	// the numeric id differs and names may be ambiguous.
-	Slug          string   `yaml:"slug,omitempty"`
-	Description   string   `yaml:"description"`
-	ProviderType  string   `yaml:"provider_type"`
-	Category      string   `yaml:"category"`
+	Slug         string `yaml:"slug,omitempty"`
+	Description  string `yaml:"description"`
+	ProviderType string `yaml:"provider_type"`
+	Category     string `yaml:"category"`
+	// EndpointURL may contain the token {env}, which resolves to "staging" or
+	// "prod" per environment at apply time, so one committed spec can serve
+	// both ("project.feedback_{env}"). The file keeps the token; only the
+	// payload is resolved. See provision_provider_env_token.go for why, and for
+	// why no other field honours it.
 	EndpointURL   string   `yaml:"endpoint_url"`
 	HTTPMethod    string   `yaml:"http_method"`
 	AllowedTables []string `yaml:"allowed_tables"`
@@ -308,6 +313,9 @@ func applyProviders(c *provisionClient, dir, repoRoot string, orgID uint) (uint,
 		if err := resolveTablePages(repoRoot, &cfg, c.dryRun); err != nil {
 			return 0, nil, fmt.Errorf("provider: %w", err)
 		}
+		if err := resolveProviderEnvToken(&cfg, c.base); err != nil {
+			return 0, nil, fmt.Errorf("provider: %w", err)
+		}
 		if cfg.SkipUpsert {
 			fmt.Printf("provision: skipping provider %q (skip_upsert=true, id=%d)\n", cfg.Name, cfg.ID)
 			primaryID = uint(cfg.ID)
@@ -343,6 +351,9 @@ func applyProviders(c *provisionClient, dir, repoRoot string, orgID uint) (uint,
 			var cfg providerConfig
 			mustReadYAML(pf, &cfg)
 			if err := resolveTablePages(repoRoot, &cfg, c.dryRun); err != nil {
+				return 0, nil, fmt.Errorf("provider %s: %w", e.Name(), err)
+			}
+			if err := resolveProviderEnvToken(&cfg, c.base); err != nil {
 				return 0, nil, fmt.Errorf("provider %s: %w", e.Name(), err)
 			}
 			if cfg.SkipUpsert {
