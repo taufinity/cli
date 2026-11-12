@@ -45,7 +45,7 @@ Do not edit or remove items. Add work you discover under "## Discovered" as `- [
 - [x] **T19**: Update the outdated sentence at docs/reviews/2026-11-12-review-command-cto-review.md:136: it still refers to a 'Gemini second opinion' section that no longer exists.
   - verified
 - [x] **T20**: Update the outdated P3 finding at docs/reviews/2026-11-12-review-command-cto-review.md:44-46. It says unquoted assignments are not masked and that the README says 'quoted values'. The README now says values are masked 'quoted or not', and the independent review (line 155) says unquoted masking was fixed.
-  - added by the verifier
+  - verified
 
 ## Discovered
 
