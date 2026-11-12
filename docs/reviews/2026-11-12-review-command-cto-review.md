@@ -41,9 +41,11 @@ configuration or infrastructure changes.
 - **P3, the masked count is the sum over the diff and the file contents**, so one secret in a
   changed file is counted twice ("masked 2 secret value(s)"). Disposition: **accepted**: the
   specification defines the payload total that way, and over-counting is the safe direction.
-- **P3, unquoted assignments (`password: hunter2hunter2` in YAML) are not masked.** The rule is
-  specified as quoted values of 8 or more characters. Disposition: **accepted**; the README now
-  says "quoted values", and the exclusion list keeps the usual secret files out entirely.
+- **P3, unquoted assignments (`password: hunter2hunter2` in YAML) were not masked.** The first
+  version masked quoted values only. Disposition: **fixed**: the independent review (see
+  "Independent second opinion") raised it as F1; unquoted values of 8 or more characters, URL
+  credentials and bearer tokens are now masked (`TestMaskUnquotedAndURLCredentials`), and the
+  README says values are masked "quoted or not".
 - **P3, file path names are not masked** (a path that itself contains a token). Disposition:
   **accepted**: the diff headers are masked, the `files` keys are identifiers.
 - Disk: nothing is written. The only file the command creates is the hook the user asks for.
