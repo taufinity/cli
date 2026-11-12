@@ -25,6 +25,7 @@ var bannerPageHTML []byte
 type bannerState struct {
 	Report  *bannerReport `json:"report"`
 	Failure string        `json:"failure"`
+	Charge  string        `json:"charge"`
 	Version int           `json:"version"`
 }
 
@@ -118,7 +119,7 @@ func (s *bannerServer) Fail(msg string) {
 func (s *bannerServer) state() bannerState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return bannerState{Report: s.report, Failure: s.failure, Version: s.version}
+	return bannerState{Report: s.report, Charge: s.report.chargeText(), Failure: s.failure, Version: s.version}
 }
 
 func (s *bannerServer) broadcast(event, data string) {

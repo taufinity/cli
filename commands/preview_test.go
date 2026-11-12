@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ type fakeBanner struct {
 	zipNames []string
 	rows     []map[string]string
 	gotRows  bool
+	keys     []string // template_key of every call
 	calls    int32
 	status   int // non-zero: answer this status instead
 	body     string
@@ -69,6 +71,7 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 	mr := multipart.NewReader(r.Body, params["boundary"])
 	f.mu.Lock()
 	f.zipNames, f.rows, f.gotRows = nil, nil, false
+	key := ""
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
@@ -83,11 +86,14 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 					f.zipNames = append(f.zipNames, zf.Name)
 				}
 			}
+		case "template_key":
+			key = string(data)
 		case "rows":
 			f.gotRows = true
 			_ = json.Unmarshal(data, &f.rows)
 		}
 	}
+	f.keys = append(f.keys, key)
 	status, body, rep, html := f.status, f.body, f.report, f.html
 	f.mu.Unlock()
 	if status != 0 {
@@ -465,7 +471,7 @@ func TestBannerPreviewInit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "titel;logo_url;prijs\n‹titel›;;9,95\n"
+		want := "titel;logo_url;prijs\n;;9,95\n"
 		if string(b) != want {
 			t.Fatalf("got %q want %q", b, want)
 		}
@@ -473,21 +479,43 @@ func TestBannerPreviewInit(t *testing.T) {
 			t.Fatal("init sends no rows")
 		}
 	})
-	t.Run("placeholders_without_values", func(t *testing.T) {
+	t.Run("missing_values_stay_empty", func(t *testing.T) {
 		rep := &bannerReport{Fields: []bannerName{"titel", "bestand_file"}, Rows: []bannerRow{{Label: "voorbeeld"}}}
 		b, _ := bannerInitCSV(rep)
-		if string(b) != "titel;bestand_file\n‹titel›;\n" {
+		if string(b) != "titel;bestand_file\n;\n" {
 			t.Fatalf("got %q", b)
 		}
 	})
-	t.Run("server_default_preserved", func(t *testing.T) {
+	t.Run("partial_values_preserved", func(t *testing.T) {
 		rep := &bannerReport{
 			Fields: []bannerName{"titel", "logo_url", "prijs"},
 			Rows: []bannerRow{{Label: "voorbeeld", Values: map[string]string{
 				"titel": "Zomeraanbieding", "logo_url": "data:image/svg+xml,x"}}},
 		}
 		b, _ := bannerInitCSV(rep)
-		if want := "titel;logo_url;prijs\nZomeraanbieding;;‹prijs›\n"; string(b) != want {
+		if want := "titel;logo_url;prijs\nZomeraanbieding;;\n"; string(b) != want {
+			t.Fatalf("got %q want %q", b, want)
+		}
+	})
+	t.Run("uses_server_values", func(t *testing.T) {
+		f := newFakeBanner(t)
+		f.report.Rows[0].Values = map[string]string{"titel": "Zomer", "prijs": "1,00"}
+		dir := templateDir(t, nil)
+		if err := runBannerInit(ctx, f.source(t, dir), false); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(filepath.Join(dir, "voorbeeld.csv"))
+		if want := "titel;logo_url;prijs\nZomer;;1,00\n"; string(b) != want {
+			t.Fatalf("got %q want %q", b, want)
+		}
+	})
+	t.Run("file_fields_left_empty", func(t *testing.T) {
+		rep := &bannerReport{
+			Fields: []bannerName{"a_url", "b_file", "c"},
+			Rows:   []bannerRow{{Label: "voorbeeld", Values: map[string]string{"a_url": "data:x", "b_file": "y.png", "c": "ja"}}},
+		}
+		b, _ := bannerInitCSV(rep)
+		if want := "a_url;b_file;c\n;;ja\n"; string(b) != want {
 			t.Fatalf("got %q want %q", b, want)
 		}
 	})
@@ -643,6 +671,208 @@ func TestBannerPreviewWatch(t *testing.T) {
 		}
 		if _, body := httpGet(t, base+"/rows/0/index.html"); body != "y" {
 			t.Fatalf("server did not switch folders: %q", body)
+		}
+	})
+}
+
+func TestBannerPreviewTemplateKey(t *testing.T) {
+	ctx := context.Background()
+	fill := func(t *testing.T, f *fakeBanner, dir string) {
+		t.Helper()
+		res, err := f.source(t, dir).Fill(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.RemoveAll(res.Dir)
+	}
+	t.Run("created_once_and_reused", func(t *testing.T) {
+		f := newFakeBanner(t)
+		dir := templateDir(t, nil)
+		fill(t, f, dir)
+		raw, err := os.ReadFile(filepath.Join(dir, ".taufinity", "preview.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]string
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		key := doc["template_key"]
+		if !regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`).MatchString(key) || len(doc) != 1 {
+			t.Fatalf("doc: %v", doc)
+		}
+		fill(t, f, dir)
+		raw2, _ := os.ReadFile(filepath.Join(dir, ".taufinity", "preview.json"))
+		if string(raw2) != string(raw) {
+			t.Fatal("key file changed")
+		}
+		other := templateDir(t, nil)
+		fill(t, f, other)
+		if f.keys[2] == key {
+			t.Fatal("two folders share a key")
+		}
+	})
+	t.Run("sent_with_every_fill", func(t *testing.T) {
+		f := newFakeBanner(t)
+		dir := templateDir(t, nil)
+		fill(t, f, dir)
+		fill(t, f, dir)
+		fill(t, f, dir)
+		if len(f.keys) != 3 || f.keys[0] == "" || f.keys[0] != f.keys[1] || f.keys[1] != f.keys[2] {
+			t.Fatalf("keys: %q", f.keys)
+		}
+	})
+	t.Run("not_in_template_zip", func(t *testing.T) {
+		f := newFakeBanner(t)
+		dir := templateDir(t, map[string]string{"style.css": "a{}"})
+		os.MkdirAll(filepath.Join(dir, ".taufinity"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".taufinity", "other.txt"), []byte("x"), 0o644)
+		fill(t, f, dir)
+		fill(t, f, dir) // the key file exists now
+		for _, n := range f.zipNames {
+			if strings.Contains(n, ".taufinity") {
+				t.Fatalf("zip has %s: %v", n, f.zipNames)
+			}
+		}
+		if len(f.zipNames) < 2 {
+			t.Fatalf("zip: %v", f.zipNames)
+		}
+	})
+}
+
+func TestBannerPreviewCharge(t *testing.T) {
+	ctx := context.Background()
+	old := time.Local
+	time.Local = time.FixedZone("test", 3600) // UTC+1
+	t.Cleanup(func() { time.Local = old })
+	const until = "2026-11-12T16:46:00Z" // 17:46 local
+
+	t.Run("prints_first_charge", func(t *testing.T) {
+		f := newFakeBanner(t)
+		f.report.Charge = &bannerCharge{Credits: 1, SessionUntil: until}
+		src := f.source(t, templateDir(t, nil))
+		var lines []string
+		src.Say = func(l string) { lines = append(lines, l) }
+		res, err := src.Fill(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.RemoveAll(res.Dir)
+		if len(lines) != 1 || lines[0] != "1 credit voor deze template, sessie tot 17:46" {
+			t.Fatalf("lines: %q", lines)
+		}
+	})
+	t.Run("quiet_within_session", func(t *testing.T) {
+		f := newFakeBanner(t)
+		f.report.Charge = &bannerCharge{Credits: 1, SessionUntil: until}
+		src := f.source(t, templateDir(t, nil))
+		var lines []string
+		src.Say = func(l string) { lines = append(lines, l) }
+		fill := func() {
+			res, err := src.Fill(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.RemoveAll(res.Dir)
+		}
+		fill()
+		f.report.Charge = &bannerCharge{Credits: 0, SessionUntil: until}
+		fill()
+		fill()
+		fill()
+		want := []string{
+			"1 credit voor deze template, sessie tot 17:46",
+			"binnen de sessie tot 17:46, geen extra credit",
+		}
+		if strings.Join(lines, "|") != strings.Join(want, "|") {
+			t.Fatalf("lines: %q", lines)
+		}
+	})
+	t.Run("page_shows_charge", func(t *testing.T) {
+		rep := simpleReport()
+		rep.Charge = &bannerCharge{Credits: 0, SessionUntil: until}
+		_, base, _ := startBanner(t, rep, map[string]string{"rows/0/index.html": "x"})
+		_, page := httpGet(t, base+"/")
+		if !strings.Contains(page, `id="charge"`) {
+			t.Fatal("page has no #charge element")
+		}
+		_, st := httpGet(t, base+"/api/state")
+		var state struct {
+			Charge string `json:"charge"`
+		}
+		if err := json.Unmarshal([]byte(st), &state); err != nil {
+			t.Fatal(err)
+		}
+		if state.Charge != "binnen de sessie tot 17:46, geen extra credit" {
+			t.Fatalf("charge: %q", state.Charge)
+		}
+		if !strings.Contains(page, `$("charge").textContent = state.charge`) {
+			t.Fatal("page does not render state.charge")
+		}
+	})
+}
+
+func TestBannerPreviewWatchFollowsUpload(t *testing.T) {
+	t.Run("ignored_file_does_not_refill", func(t *testing.T) {
+		dir := templateDir(t, nil)
+		os.WriteFile(filepath.Join(dir, ".taufinityignore"), []byte("*.psd\nbron/\n"), 0o644)
+		os.MkdirAll(filepath.Join(dir, "bron"), 0o755)
+		var n int32
+		startWatch(t, dir, "", func() { atomic.AddInt32(&n, 1) })
+		os.WriteFile(filepath.Join(dir, "ontwerp.psd"), []byte("x"), 0o644)
+		os.WriteFile(filepath.Join(dir, "bron", "schets.png"), []byte("x"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 0 {
+			t.Fatalf("a file the ZIP leaves out must not refill, got %d", got)
+		}
+		os.WriteFile(filepath.Join(dir, "style.css"), []byte("y"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 1 {
+			t.Fatalf("a file that goes up must refill, got %d", got)
+		}
+	})
+
+	t.Run("ignore_file_change_refills_and_applies", func(t *testing.T) {
+		dir := templateDir(t, nil)
+		var n int32
+		startWatch(t, dir, "", func() { atomic.AddInt32(&n, 1) })
+		os.WriteFile(filepath.Join(dir, ".taufinityignore"), []byte("*.psd\n"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 1 {
+			t.Fatalf("changing the ignore rules must refill once, got %d", got)
+		}
+		os.WriteFile(filepath.Join(dir, "nieuw.psd"), []byte("x"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 1 {
+			t.Fatalf("the new rule must apply at once, got %d", got)
+		}
+	})
+
+	t.Run("new_change_cancels_inflight_refill", func(t *testing.T) {
+		started := make(chan struct{}, 2)
+		cancelled := make(chan struct{}, 1)
+		var finished int32
+		trigger := latestOnly(context.Background(), func(ctx context.Context) {
+			started <- struct{}{}
+			select {
+			case <-ctx.Done():
+				cancelled <- struct{}{}
+			case <-time.After(300 * time.Millisecond):
+				atomic.AddInt32(&finished, 1)
+			}
+		})
+		trigger()
+		<-started
+		trigger()
+		select {
+		case <-cancelled:
+		case <-time.After(time.Second):
+			t.Fatal("the stale refill was not cancelled")
+		}
+		<-started
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&finished); got != 1 {
+			t.Fatalf("only the latest refill completes, got %d", got)
 		}
 	})
 }

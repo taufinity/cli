@@ -39,6 +39,7 @@
   <button id="overview-toggle" type="button">Alle regels</button>
   <span id="size-label" class="muted"></span>
   <span id="ready-badge" hidden></span>
+  <span id="charge" class="muted"></span>
 </header>
 <main>
   <section id="single">
@@ -192,6 +193,7 @@
     $("overview").hidden = view !== "all";
     if (view === "all") renderOverview(); else renderSingle();
     renderReport();
+    $("charge").textContent = state.charge || "";
     renderFailure();
     writeHash();
   }

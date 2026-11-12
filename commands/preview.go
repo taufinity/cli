@@ -54,7 +54,7 @@ REGEL
 
 VOORBEELDBESTAND
   --init         schrijf voorbeeld.csv naast het sjabloon: de kop met alle
-                 velden en een regel met ‹naam›-plaatshouders. Velden die
+                 velden en een regel met de waarden van de voorbeeldregel van de server. Velden die
                  eindigen op _url of _file blijven leeg. Overschrijft niets zonder --force.
 
 VERVERSEN
@@ -62,6 +62,23 @@ VERVERSEN
   opnieuw ingevuld en herlaadt de pagina, met dezelfde regel en weergave. Een
   fout laat de laatste goede banner staan onder een melding. --no-watch zet dit
   uit. Ctrl-C stopt en ruimt de tijdelijke mappen op.
+
+PRIJS
+  1 credit per ontwikkelaar, per sjabloon, per uur bekijken. De sessie loopt 60
+  minuten vanaf de eerste keer invullen; opslaan daarna in dat uur is gratis.
+  Na het invullen toont de terminal "1 credit voor deze template, sessie tot
+  HH:MM" of "binnen de sessie tot HH:MM, geen extra credit" (lokale tijd), en
+  de pagina toont dezelfde tekst. De regel verschijnt alleen als hij verandert.
+
+SLEUTEL
+  Bij het eerste gebruik maakt dit commando .taufinity/preview.json in de
+  sjabloonmap, met een willekeurige template_key. Bewaar dit bestand bij het
+  sjabloon zodat de sleutel gelijk blijft; er staat geen geheim in. De map
+  .taufinity/ gaat nooit mee in de zip.
+
+OPSLAG
+  Studio bewaart het sjabloon zelf nooit: het leeft alleen in het geheugen
+  voor de duur van één verzoek.
 
 HOE HET WERKT
   Het invullen gebeurt op de server met dezelfde code als bij een echte render.
@@ -153,18 +170,18 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 	}
 	sess := &bannerSession{Fill: src.Fill, Srv: srv, Warn: func(m string) { fmt.Fprintln(os.Stderr, m) }}
 	Print("Wijzigingen worden bewaakt; Ctrl-C om te stoppen.\n")
-	err = watchBanner(ctx, dir, dataPath, bannerDebounce, func() {
-		if sess.Refresh(ctx) == nil {
+	err = watchBanner(ctx, dir, dataPath, bannerDebounce, latestOnly(ctx, func(c context.Context) {
+		if sess.Refresh(c) == nil {
 			Print("Ververst.\n")
 		}
-	})
+	}))
 	Print("Gestopt.\n")
 	return err
 }
 
 // bannerInitCSV is the content of voorbeeld.csv: semicolon separated, the
 // header with every field, one row with the values the server generated for the
-// "voorbeeld" row (defaults), ‹naam› placeholders where it sent none. Fields ending in _url or
+// "voorbeeld" row, copied as they are (a missing or empty value stays empty). Fields ending in _url or
 // _file stay empty: a generated placeholder image is no use in a sheet.
 func bannerInitCSV(rep *bannerReport) ([]byte, error) {
 	var sb strings.Builder
@@ -186,10 +203,7 @@ func bannerInitCSV(rep *bannerReport) ([]byte, error) {
 		case strings.HasSuffix(name, "_url"), strings.HasSuffix(name, "_file"):
 			vals[i] = ""
 		default:
-			vals[i] = "‹" + name + "›"
-			if v, ok := sample[name]; ok && v != "" {
-				vals[i] = v
-			}
+			vals[i] = sample[name]
 		}
 	}
 	if err := w.Write(header); err != nil {

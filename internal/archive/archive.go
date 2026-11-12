@@ -22,6 +22,10 @@ var HardcodedIgnorePatterns = []string{
 	".svn",
 	".hg",
 
+	// Local CLI state (template key of `taufinity preview`), never uploaded
+	".taufinity",
+	".taufinity/**",
+
 	// Environment and secrets
 	".env",
 	".env*",
