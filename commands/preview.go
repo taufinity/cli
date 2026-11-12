@@ -170,11 +170,11 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 	}
 	sess := &bannerSession{Fill: src.Fill, Srv: srv, Warn: func(m string) { fmt.Fprintln(os.Stderr, m) }}
 	Print("Wijzigingen worden bewaakt; Ctrl-C om te stoppen.\n")
-	err = watchBanner(ctx, dir, dataPath, bannerDebounce, func() {
-		if sess.Refresh(ctx) == nil {
+	err = watchBanner(ctx, dir, dataPath, bannerDebounce, latestOnly(ctx, func(c context.Context) {
+		if sess.Refresh(c) == nil {
 			Print("Ververst.\n")
 		}
-	})
+	}))
 	Print("Gestopt.\n")
 	return err
 }

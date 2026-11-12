@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	ignore "github.com/sabhiram/go-gitignore"
+
+	"github.com/taufinity/cli/internal/archive"
 )
 
 const bannerDebounce = 250 * time.Millisecond
@@ -26,6 +29,15 @@ func isEditorTempFile(name string) bool {
 		return true
 	}
 	return false
+}
+
+// ignoreFiles are the files whose change changes what goes into the template ZIP.
+var ignoreFiles = map[string]bool{".gitignore": true, ".dockerignore": true, ".taufinityignore": true, "taufinity.yaml": true}
+
+// uploadMatcher is the same ignore matcher the template ZIP is built with
+// (internal/archive.CreateZip), so a file that never goes up never triggers a refill.
+func uploadMatcher(dir string) *ignore.GitIgnore {
+	return ignore.CompileIgnoreLines(archive.CollectIgnorePatterns(dir)...)
 }
 
 func skipWatchDir(name string) bool {
@@ -70,15 +82,27 @@ func watchBanner(ctx context.Context, dir, dataFile string, debounce time.Durati
 			_ = w.Add(filepath.Dir(absData)) // data file outside the folder
 		}
 	}
+	matcher := uploadMatcher(dir)
 	relevant := func(name string) bool {
 		abs, _ := filepath.Abs(name)
 		if isEditorTempFile(abs) {
 			return false
 		}
-		if abs == absData || strings.HasPrefix(abs, absDir+string(os.PathSeparator)) {
+		if abs == absData {
+			return true // the data file counts even when an ignore rule would leave it out of the ZIP
+		}
+		if !strings.HasPrefix(abs, absDir+string(os.PathSeparator)) {
+			return false
+		}
+		if ignoreFiles[filepath.Base(abs)] {
+			matcher = uploadMatcher(dir) // the rules changed: what goes up may have changed too
 			return true
 		}
-		return false
+		rel, err := filepath.Rel(absDir, abs)
+		if err != nil {
+			return false
+		}
+		return !matcher.MatchesPath(filepath.ToSlash(rel))
 	}
 
 	var timer *time.Timer
@@ -119,6 +143,23 @@ func watchBanner(ctx context.Context, dir, dataFile string, debounce time.Durati
 			timer, timerC = nil, nil
 			onChange()
 		}
+	}
+}
+
+// latestOnly runs refresh for every change, cancelling the one still in flight:
+// a save during an upload makes that upload stale, so it is dropped rather than
+// waited for (as Vite and Shopify's theme dev do). Refreshes still never overlap
+// (bannerSession.mu); a cancelled one returns without an error message.
+func latestOnly(parent context.Context, refresh func(ctx context.Context)) func() {
+	var mu sync.Mutex
+	cancel := context.CancelFunc(func() {})
+	return func() {
+		mu.Lock()
+		cancel()
+		ctx, c := context.WithCancel(parent)
+		cancel = c
+		mu.Unlock()
+		go refresh(ctx)
 	}
 }
 

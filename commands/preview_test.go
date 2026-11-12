@@ -811,3 +811,68 @@ func TestBannerPreviewCharge(t *testing.T) {
 		}
 	})
 }
+
+func TestBannerPreviewWatchFollowsUpload(t *testing.T) {
+	t.Run("ignored_file_does_not_refill", func(t *testing.T) {
+		dir := templateDir(t, nil)
+		os.WriteFile(filepath.Join(dir, ".taufinityignore"), []byte("*.psd\nbron/\n"), 0o644)
+		os.MkdirAll(filepath.Join(dir, "bron"), 0o755)
+		var n int32
+		startWatch(t, dir, "", func() { atomic.AddInt32(&n, 1) })
+		os.WriteFile(filepath.Join(dir, "ontwerp.psd"), []byte("x"), 0o644)
+		os.WriteFile(filepath.Join(dir, "bron", "schets.png"), []byte("x"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 0 {
+			t.Fatalf("a file the ZIP leaves out must not refill, got %d", got)
+		}
+		os.WriteFile(filepath.Join(dir, "style.css"), []byte("y"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 1 {
+			t.Fatalf("a file that goes up must refill, got %d", got)
+		}
+	})
+
+	t.Run("ignore_file_change_refills_and_applies", func(t *testing.T) {
+		dir := templateDir(t, nil)
+		var n int32
+		startWatch(t, dir, "", func() { atomic.AddInt32(&n, 1) })
+		os.WriteFile(filepath.Join(dir, ".taufinityignore"), []byte("*.psd\n"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 1 {
+			t.Fatalf("changing the ignore rules must refill once, got %d", got)
+		}
+		os.WriteFile(filepath.Join(dir, "nieuw.psd"), []byte("x"), 0o644)
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&n); got != 1 {
+			t.Fatalf("the new rule must apply at once, got %d", got)
+		}
+	})
+
+	t.Run("new_change_cancels_inflight_refill", func(t *testing.T) {
+		started := make(chan struct{}, 2)
+		cancelled := make(chan struct{}, 1)
+		var finished int32
+		trigger := latestOnly(context.Background(), func(ctx context.Context) {
+			started <- struct{}{}
+			select {
+			case <-ctx.Done():
+				cancelled <- struct{}{}
+			case <-time.After(300 * time.Millisecond):
+				atomic.AddInt32(&finished, 1)
+			}
+		})
+		trigger()
+		<-started
+		trigger()
+		select {
+		case <-cancelled:
+		case <-time.After(time.Second):
+			t.Fatal("the stale refill was not cancelled")
+		}
+		<-started
+		time.Sleep(400 * time.Millisecond)
+		if got := atomic.LoadInt32(&finished); got != 1 {
+			t.Fatalf("only the latest refill completes, got %d", got)
+		}
+	})
+}

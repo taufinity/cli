@@ -308,6 +308,12 @@ precies wat een render krijgt, minus de capture. `--row 3` toont een regel uit d
 (kopregel = regel 1). Zie `taufinity preview --help`. Voor sjablonen van artikelen van
 een site is er `taufinity template preview`.
 
+**Bewaken.** Na een wijziging wacht het commando 250 ms tot het stil is en vult dan
+opnieuw. Wat niet meegaat in de zip naar Studio (`.gitignore`, `.taufinityignore`,
+`.dockerignore`, de vaste uitsluitingen zoals `.env`) start ook geen nieuwe vulling, net
+als tijdelijke bestanden van editors (`.swp`, `~`, `.DS_Store`) en `.git`/`node_modules`.
+Sla je op terwijl een vulling nog onderweg is, dan vervalt die en telt alleen de nieuwste.
+
 **Prijs.** 1 credit per ontwikkelaar, per sjabloon, per uur bekijken. De sessie loopt 60
 minuten vanaf de eerste keer invullen; opslaan daarna in dat uur kost niets. Na elke
 keer invullen toont de terminal de stand ("1 credit voor deze template, sessie tot
