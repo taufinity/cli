@@ -11,7 +11,7 @@ Do not edit or remove items. Add work you discover under "## Discovered" as `- [
 - [x] **T2**: More secret files excluded from every upload: credentials*.json (the CLI's own credentials-<host>.json), .npmrc, .netrc, .pypirc, id_rsa*, id_ed25519*, id_ecdsa*, .aws/, .ssh/, .gcloud/, *.tfvars, *.tfstate, *-sa.json and service-account*.json, plus every .gitignore from the folder up to the git root (when inside a git repo). Test TestZipExcludesSecrets with subtests cli_credentials, npmrc_netrc, ssh_keys, aws_dir, tfvars, parent_gitignore.
   - verified
 - [x] **T3**: The preview never re-sends a template on its own: no retry on 500 or on a client timeout; at most one retry on 502/503/504 after the server's Retry-After (default 2 s, at most 30 s); after a 429 or 503 the watcher's refills pause until Retry-After has passed (one Dutch line saying until when). Make "no retries" expressible in internal/httpclient (MaxRetries 0 must mean zero, with an explicit option so other clients keep their default). Test TestBannerPreviewRetries with subtests no_retry_on_500, no_retry_on_timeout, one_retry_on_503_after_retry_after, refills_pause_after_429.
-  - reopened (1): verifier: internal/httpclient/client.go:241-245 retries on any error while reading the response body, including a Client.Timeout that fires mid-body. NoTransportRetry does not stop this. The preview client can therefore re-send the template (up to 32 MB) after a client timeout, which the criterion forbids. The test only covers a timeout before the headers. Next: In DoWithContext, return the error …
+  - verified
 - [x] **T4**: Bound the answer: the response body is read with a 64 MB cap (larger: a Dutch error, nothing written), at most 5,000 files, report.json at most 4 MB with at most 60 rows and width/height at most 4096 each; anything else is refused as a broken answer. Test TestBannerPreviewAnswerBounds with subtests body_over_cap, too_many_files, report_too_many_rows, report_absurd_size.
   - verified
 - [x] **T5**: Watcher bounds: addTree skips every folder the upload's ignore rules exclude; at most 2,000 watched folders (beyond that a Dutch warning and watching stops adding); every w.Add failure is reported once in Dutch (no silent partial watching). Test TestBannerPreviewWatchBounds with subtests ignored_dir_not_watched, cap_warns, add_failure_reported.
@@ -24,6 +24,8 @@ Do not edit or remove items. Add work you discover under "## Discovered" as `- [
   - verified
 - [x] **T9**: Write .taufinity/preview.json atomically (temp file plus rename, created with O_EXCL so two CLIs end with one key). Test TestBannerPreviewTemplateKey subtest concurrent_creation_one_key (20 goroutines create at once, all read the same key, the file is always valid JSON).
   - verified
+- [ ] **T10**: Make fakeBanner.callCount read f.calls with atomic.LoadInt32 (handle increments it with atomic.AddInt32 but callCount reads it plainly under f.mu), so the retry tests stay clean under go test -race.
+  - added by the verifier
 
 ## Discovered
 
