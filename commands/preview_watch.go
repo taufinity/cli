@@ -30,7 +30,7 @@ func isEditorTempFile(name string) bool {
 
 func skipWatchDir(name string) bool {
 	switch name {
-	case ".git", "node_modules", ".hg", ".svn":
+	case ".git", "node_modules", ".hg", ".svn", ".taufinity":
 		return true
 	}
 	return false

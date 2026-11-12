@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,7 @@ type fakeBanner struct {
 	zipNames []string
 	rows     []map[string]string
 	gotRows  bool
+	keys     []string // template_key of every call
 	calls    int32
 	status   int // non-zero: answer this status instead
 	body     string
@@ -69,6 +71,7 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 	mr := multipart.NewReader(r.Body, params["boundary"])
 	f.mu.Lock()
 	f.zipNames, f.rows, f.gotRows = nil, nil, false
+	key := ""
 	for {
 		p, err := mr.NextPart()
 		if err != nil {
@@ -83,11 +86,14 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 					f.zipNames = append(f.zipNames, zf.Name)
 				}
 			}
+		case "template_key":
+			key = string(data)
 		case "rows":
 			f.gotRows = true
 			_ = json.Unmarshal(data, &f.rows)
 		}
 	}
+	f.keys = append(f.keys, key)
 	status, body, rep, html := f.status, f.body, f.report, f.html
 	f.mu.Unlock()
 	if status != 0 {
@@ -491,6 +497,28 @@ func TestBannerPreviewInit(t *testing.T) {
 			t.Fatalf("got %q want %q", b, want)
 		}
 	})
+	t.Run("uses_server_values", func(t *testing.T) {
+		f := newFakeBanner(t)
+		f.report.Rows[0].Values = map[string]string{"titel": "Zomer", "prijs": "1,00"}
+		dir := templateDir(t, nil)
+		if err := runBannerInit(ctx, f.source(t, dir), false); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := os.ReadFile(filepath.Join(dir, "voorbeeld.csv"))
+		if want := "titel;logo_url;prijs\nZomer;;1,00\n"; string(b) != want {
+			t.Fatalf("got %q want %q", b, want)
+		}
+	})
+	t.Run("file_fields_left_empty", func(t *testing.T) {
+		rep := &bannerReport{
+			Fields: []bannerName{"a_url", "b_file", "c"},
+			Rows:   []bannerRow{{Label: "voorbeeld", Values: map[string]string{"a_url": "data:x", "b_file": "y.png", "c": "ja"}}},
+		}
+		b, _ := bannerInitCSV(rep)
+		if want := "a_url;b_file;c\n;;ja\n"; string(b) != want {
+			t.Fatalf("got %q want %q", b, want)
+		}
+	})
 	t.Run("refuses_overwrite", func(t *testing.T) {
 		f := newFakeBanner(t)
 		dir := templateDir(t, map[string]string{"voorbeeld.csv": "mijn;data\n"})
@@ -643,6 +671,143 @@ func TestBannerPreviewWatch(t *testing.T) {
 		}
 		if _, body := httpGet(t, base+"/rows/0/index.html"); body != "y" {
 			t.Fatalf("server did not switch folders: %q", body)
+		}
+	})
+}
+
+func TestBannerPreviewTemplateKey(t *testing.T) {
+	ctx := context.Background()
+	fill := func(t *testing.T, f *fakeBanner, dir string) {
+		t.Helper()
+		res, err := f.source(t, dir).Fill(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.RemoveAll(res.Dir)
+	}
+	t.Run("created_once_and_reused", func(t *testing.T) {
+		f := newFakeBanner(t)
+		dir := templateDir(t, nil)
+		fill(t, f, dir)
+		raw, err := os.ReadFile(filepath.Join(dir, ".taufinity", "preview.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc map[string]string
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		key := doc["template_key"]
+		if !regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`).MatchString(key) || len(doc) != 1 {
+			t.Fatalf("doc: %v", doc)
+		}
+		fill(t, f, dir)
+		raw2, _ := os.ReadFile(filepath.Join(dir, ".taufinity", "preview.json"))
+		if string(raw2) != string(raw) {
+			t.Fatal("key file changed")
+		}
+		other := templateDir(t, nil)
+		fill(t, f, other)
+		if f.keys[2] == key {
+			t.Fatal("two folders share a key")
+		}
+	})
+	t.Run("sent_with_every_fill", func(t *testing.T) {
+		f := newFakeBanner(t)
+		dir := templateDir(t, nil)
+		fill(t, f, dir)
+		fill(t, f, dir)
+		fill(t, f, dir)
+		if len(f.keys) != 3 || f.keys[0] == "" || f.keys[0] != f.keys[1] || f.keys[1] != f.keys[2] {
+			t.Fatalf("keys: %q", f.keys)
+		}
+	})
+	t.Run("not_in_template_zip", func(t *testing.T) {
+		f := newFakeBanner(t)
+		dir := templateDir(t, map[string]string{"style.css": "a{}"})
+		os.MkdirAll(filepath.Join(dir, ".taufinity"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".taufinity", "other.txt"), []byte("x"), 0o644)
+		fill(t, f, dir)
+		fill(t, f, dir) // the key file exists now
+		for _, n := range f.zipNames {
+			if strings.Contains(n, ".taufinity") {
+				t.Fatalf("zip has %s: %v", n, f.zipNames)
+			}
+		}
+		if len(f.zipNames) < 2 {
+			t.Fatalf("zip: %v", f.zipNames)
+		}
+	})
+}
+
+func TestBannerPreviewCharge(t *testing.T) {
+	ctx := context.Background()
+	old := time.Local
+	time.Local = time.FixedZone("test", 3600) // UTC+1
+	t.Cleanup(func() { time.Local = old })
+	const until = "2026-11-12T16:46:00Z" // 17:46 local
+
+	t.Run("prints_first_charge", func(t *testing.T) {
+		f := newFakeBanner(t)
+		f.report.Charge = &bannerCharge{Credits: 1, SessionUntil: until}
+		src := f.source(t, templateDir(t, nil))
+		var lines []string
+		src.Say = func(l string) { lines = append(lines, l) }
+		res, err := src.Fill(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.RemoveAll(res.Dir)
+		if len(lines) != 1 || lines[0] != "1 credit voor deze template, sessie tot 17:46" {
+			t.Fatalf("lines: %q", lines)
+		}
+	})
+	t.Run("quiet_within_session", func(t *testing.T) {
+		f := newFakeBanner(t)
+		f.report.Charge = &bannerCharge{Credits: 1, SessionUntil: until}
+		src := f.source(t, templateDir(t, nil))
+		var lines []string
+		src.Say = func(l string) { lines = append(lines, l) }
+		fill := func() {
+			res, err := src.Fill(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.RemoveAll(res.Dir)
+		}
+		fill()
+		f.report.Charge = &bannerCharge{Credits: 0, SessionUntil: until}
+		fill()
+		fill()
+		fill()
+		want := []string{
+			"1 credit voor deze template, sessie tot 17:46",
+			"binnen de sessie tot 17:46, geen extra credit",
+		}
+		if strings.Join(lines, "|") != strings.Join(want, "|") {
+			t.Fatalf("lines: %q", lines)
+		}
+	})
+	t.Run("page_shows_charge", func(t *testing.T) {
+		rep := simpleReport()
+		rep.Charge = &bannerCharge{Credits: 0, SessionUntil: until}
+		_, base, _ := startBanner(t, rep, map[string]string{"rows/0/index.html": "x"})
+		_, page := httpGet(t, base+"/")
+		if !strings.Contains(page, `id="charge"`) {
+			t.Fatal("page has no #charge element")
+		}
+		_, st := httpGet(t, base+"/api/state")
+		var state struct {
+			Charge string `json:"charge"`
+		}
+		if err := json.Unmarshal([]byte(st), &state); err != nil {
+			t.Fatal(err)
+		}
+		if state.Charge != "binnen de sessie tot 17:46, geen extra credit" {
+			t.Fatalf("charge: %q", state.Charge)
+		}
+		if !strings.Contains(page, `$("charge").textContent = state.charge`) {
+			t.Fatal("page does not render state.charge")
 		}
 	})
 }

@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/archive"
@@ -66,13 +68,37 @@ type bannerRow struct {
 	Values map[string]string `json:"values,omitempty"`
 }
 
+// bannerCharge is what the server booked for this fill.
+type bannerCharge struct {
+	Credits      int    `json:"credits"`
+	SessionUntil string `json:"session_until"`
+}
+
 type bannerReport struct {
-	Entry    string       `json:"entry"`
-	Width    int          `json:"width"`
-	Height   int          `json:"height"`
-	Fields   []bannerName `json:"fields"`
-	Optional []bannerName `json:"optional"`
-	Rows     []bannerRow  `json:"rows"`
+	Entry    string        `json:"entry"`
+	Width    int           `json:"width"`
+	Height   int           `json:"height"`
+	Fields   []bannerName  `json:"fields"`
+	Optional []bannerName  `json:"optional"`
+	Rows     []bannerRow   `json:"rows"`
+	Charge   *bannerCharge `json:"charge,omitempty"`
+}
+
+// chargeText is the one Dutch line about the price of this fill, with the end
+// of the session in local time (HH:MM). Empty when the server sent no charge.
+func (r *bannerReport) chargeText() string {
+	if r == nil || r.Charge == nil {
+		return ""
+	}
+	until, err := time.Parse(time.RFC3339, r.Charge.SessionUntil)
+	if err != nil {
+		return ""
+	}
+	hm := until.Local().Format("15:04")
+	if r.Charge.Credits == 1 {
+		return "1 credit voor deze template, sessie tot " + hm
+	}
+	return "binnen de sessie tot " + hm + ", geen extra credit"
 }
 
 // bannerResult is one successful fill: the report and the folder it was
@@ -90,11 +116,35 @@ type bannerSource struct {
 	DataFlag string
 	Row      int
 	NoRows   bool // --init: never send rows
+
+	Say        func(line string) // prints the charge line; nil = Print
+	mu         sync.Mutex
+	lastCharge string
+}
+
+// noteCharge prints the charge line, but only when it differs from the last
+// one printed: a refresh inside the session stays quiet.
+func (s *bannerSource) noteCharge(rep *bannerReport) {
+	text := rep.chargeText()
+	s.mu.Lock()
+	changed := text != "" && text != s.lastCharge
+	if changed {
+		s.lastCharge = text
+	}
+	s.mu.Unlock()
+	if !changed {
+		return
+	}
+	if s.Say != nil {
+		s.Say(text)
+	} else {
+		Print("%s\n", text)
+	}
 }
 
 // buildBannerRequest makes the multipart body: the zipped folder and, when
 // there are rows, their JSON.
-func buildBannerRequest(dir string, rows []map[string]string) (*bytes.Buffer, string, error) {
+func buildBannerRequest(dir, templateKey string, rows []map[string]string) (*bytes.Buffer, string, error) {
 	var zipBuf bytes.Buffer
 	if _, err := archive.CreateZip(dir, &zipBuf); err != nil {
 		return nil, "", fmt.Errorf("map inpakken: %w", err)
@@ -113,6 +163,11 @@ func buildBannerRequest(dir string, rows []map[string]string) (*bytes.Buffer, st
 	}
 	if _, err := part.Write(zipBuf.Bytes()); err != nil {
 		return nil, "", err
+	}
+	if templateKey != "" {
+		if err := w.WriteField("template_key", templateKey); err != nil {
+			return nil, "", err
+		}
 	}
 	if len(rows) > 0 {
 		js, err := json.Marshal(rows)
@@ -237,7 +292,11 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 			return nil, err
 		}
 	}
-	body, ct, err := buildBannerRequest(s.Dir, rows)
+	key, err := templateKeyFor(s.Dir)
+	if err != nil {
+		return nil, err
+	}
+	body, ct, err := buildBannerRequest(s.Dir, key, rows)
 	if err != nil {
 		return nil, err
 	}
@@ -261,5 +320,6 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
+	s.noteCharge(rep)
 	return &bannerResult{Dir: dir, Report: rep}, nil
 }

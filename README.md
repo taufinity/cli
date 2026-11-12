@@ -308,6 +308,22 @@ precies wat een render krijgt, minus de capture. `--row 3` toont een regel uit d
 (kopregel = regel 1). Zie `taufinity preview --help`. Voor sjablonen van artikelen van
 een site is er `taufinity template preview`.
 
+**Prijs.** 1 credit per ontwikkelaar, per sjabloon, per uur bekijken. De sessie loopt 60
+minuten vanaf de eerste keer invullen; opslaan daarna in dat uur kost niets. Na elke
+keer invullen toont de terminal de stand ("1 credit voor deze template, sessie tot
+17:46" of "binnen de sessie tot 17:46, geen extra credit"), en de pagina toont dezelfde
+tekst. De tijd is lokale tijd.
+
+**`.taufinity/preview.json`.** Bij het eerste gebruik maakt het commando in de
+sjabloonmap `.taufinity/preview.json` met een willekeurige `template_key`. Bewaar dit
+bestand bij het sjabloon (bijvoorbeeld in git), dan blijft de sleutel gelijk en telt
+een nieuwe sessie niet dubbel. Er staat geen geheim in. De map `.taufinity/` gaat nooit
+mee in de zip naar Studio.
+
+**Opslag.** Studio bewaart het sjabloon zelf nooit: het leeft alleen in het geheugen
+voor de duur van één verzoek. Bewaard blijft alleen de regel voor de afrekening
+(organisatie, ontwikkelaar, sleutel, credits, tijd).
+
 ## Configuration
 
 Config is resolved in this order (highest priority first):
