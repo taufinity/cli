@@ -132,9 +132,9 @@ configuration or infrastructure changes.
 
 - **P3, attribution compliance.** The changed code, tests, README and this report were checked
   for any mention of an assistant, a model vendor or generated-content notices, and the README
-  heading that named one was renamed ("From an MCP client"). Disposition: **fixed**. The only
-  heading in this report that names a review tool is the "Gemini second opinion" section the
-  checklist itself requires.
+  heading that named one was renamed ("From an MCP client"). Disposition: **fixed**. No heading
+  in this report names a model, vendor or review tool; the "Independent second opinion"
+  section describes the reviewer only as an independent subagent.
 
 - **P3, shallow CI checkouts have no merge-base with the base branch.** The command then exits 2
   naming what was tried and suggesting `--base`. Disposition: **fixed in the docs** (README CI
