@@ -471,7 +471,7 @@ func TestBannerPreviewInit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "titel;logo_url;prijs\n‹titel›;;9,95\n"
+		want := "titel;logo_url;prijs\n;;9,95\n"
 		if string(b) != want {
 			t.Fatalf("got %q want %q", b, want)
 		}
@@ -479,21 +479,21 @@ func TestBannerPreviewInit(t *testing.T) {
 			t.Fatal("init sends no rows")
 		}
 	})
-	t.Run("placeholders_without_values", func(t *testing.T) {
+	t.Run("missing_values_stay_empty", func(t *testing.T) {
 		rep := &bannerReport{Fields: []bannerName{"titel", "bestand_file"}, Rows: []bannerRow{{Label: "voorbeeld"}}}
 		b, _ := bannerInitCSV(rep)
-		if string(b) != "titel;bestand_file\n‹titel›;\n" {
+		if string(b) != "titel;bestand_file\n;\n" {
 			t.Fatalf("got %q", b)
 		}
 	})
-	t.Run("server_default_preserved", func(t *testing.T) {
+	t.Run("partial_values_preserved", func(t *testing.T) {
 		rep := &bannerReport{
 			Fields: []bannerName{"titel", "logo_url", "prijs"},
 			Rows: []bannerRow{{Label: "voorbeeld", Values: map[string]string{
 				"titel": "Zomeraanbieding", "logo_url": "data:image/svg+xml,x"}}},
 		}
 		b, _ := bannerInitCSV(rep)
-		if want := "titel;logo_url;prijs\nZomeraanbieding;;‹prijs›\n"; string(b) != want {
+		if want := "titel;logo_url;prijs\nZomeraanbieding;;\n"; string(b) != want {
 			t.Fatalf("got %q want %q", b, want)
 		}
 	})

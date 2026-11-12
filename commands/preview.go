@@ -181,7 +181,7 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 
 // bannerInitCSV is the content of voorbeeld.csv: semicolon separated, the
 // header with every field, one row with the values the server generated for the
-// "voorbeeld" row (defaults), ‹naam› placeholders where it sent none. Fields ending in _url or
+// "voorbeeld" row, copied as they are (a missing or empty value stays empty). Fields ending in _url or
 // _file stay empty: a generated placeholder image is no use in a sheet.
 func bannerInitCSV(rep *bannerReport) ([]byte, error) {
 	var sb strings.Builder
@@ -203,10 +203,7 @@ func bannerInitCSV(rep *bannerReport) ([]byte, error) {
 		case strings.HasSuffix(name, "_url"), strings.HasSuffix(name, "_file"):
 			vals[i] = ""
 		default:
-			vals[i] = "‹" + name + "›"
-			if v, ok := sample[name]; ok && v != "" {
-				vals[i] = v
-			}
+			vals[i] = sample[name]
 		}
 	}
 	if err := w.Write(header); err != nil {
