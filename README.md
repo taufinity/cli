@@ -320,7 +320,7 @@ taufinity review --whole src/api      # the current content of these files, chan
 | Code | Meaning |
 | ---- | ------- |
 | 0 | No finding at or above `--fail-on`, or nothing to review |
-| 1 | A finding at or above `--fail-on` |
+| 1 | A finding at or above `--fail-on`, or a `request_changes` verdict that reports no critical or high finding (the counts are incomplete, so the gate fails rather than passes; not with `--fail-on none`) |
 | 2 | An error or a refusal (not switched on, budget reached, not signed in, no result) |
 
 The review text goes to stdout. Progress and a one-line summary (counts per severity, verdict, "partial" when the review stopped early) go to stderr. `--json` prints only the final result line as JSON on stdout. `--repo <name>` overrides the repository name, which defaults to `owner/name` from the origin remote, else the folder name. `--dry-run` shows what would be sent (mode, base, repo, file count, sizes, skipped files, masked count) and sends nothing.
