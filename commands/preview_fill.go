@@ -60,6 +60,10 @@ type bannerRow struct {
 	Unused   []bannerName    `json:"unused"`
 	Warnings []string        `json:"warnings"`
 	Error    *bannerRowError `json:"error"`
+	// Values holds the sample values the server generated for this row (field
+	// name to value, template defaults included). Optional: a server that does
+	// not send it makes --init fall back to ‹naam› placeholders.
+	Values map[string]string `json:"values,omitempty"`
 }
 
 type bannerReport struct {

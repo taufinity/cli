@@ -44,7 +44,7 @@ func newFakeBanner(t *testing.T) *fakeBanner {
 			Entry: "index.html", Width: 300, Height: 250,
 			Fields: []bannerName{"titel", "logo_url", "prijs"},
 			Rows: []bannerRow{
-				{Index: 0, Label: "voorbeeld"},
+				{Index: 0, Label: "voorbeeld", Values: map[string]string{"prijs": "9,95", "logo_url": "data:image/svg+xml,x"}},
 				{Index: 1, Label: "leeg"},
 			},
 		},
@@ -465,7 +465,7 @@ func TestBannerPreviewInit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "titel;logo_url;prijs\n‹titel›;;‹prijs›\n"
+		want := "titel;logo_url;prijs\n‹titel›;;9,95\n"
 		if string(b) != want {
 			t.Fatalf("got %q want %q", b, want)
 		}
@@ -478,6 +478,17 @@ func TestBannerPreviewInit(t *testing.T) {
 		b, _ := bannerInitCSV(rep)
 		if string(b) != "titel;bestand_file\n‹titel›;\n" {
 			t.Fatalf("got %q", b)
+		}
+	})
+	t.Run("server_default_preserved", func(t *testing.T) {
+		rep := &bannerReport{
+			Fields: []bannerName{"titel", "logo_url", "prijs"},
+			Rows: []bannerRow{{Label: "voorbeeld", Values: map[string]string{
+				"titel": "Zomeraanbieding", "logo_url": "data:image/svg+xml,x"}}},
+		}
+		b, _ := bannerInitCSV(rep)
+		if want := "titel;logo_url;prijs\nZomeraanbieding;;‹prijs›\n"; string(b) != want {
+			t.Fatalf("got %q want %q", b, want)
 		}
 	})
 	t.Run("refuses_overwrite", func(t *testing.T) {
