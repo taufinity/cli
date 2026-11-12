@@ -60,12 +60,6 @@ type bannerRow struct {
 	Unused   []bannerName    `json:"unused"`
 	Warnings []string        `json:"warnings"`
 	Error    *bannerRowError `json:"error"`
-	// Values holds the sample values the server generated for this row (field
-	// name -> value: the default, or the ‹naam› placeholder). The base contract
-	// has no per-field values, so this is an agreed extension of report.json:
-	// the "voorbeeld" row carries "values". --init writes them; when the server
-	// sends none, --init falls back to ‹naam› placeholders itself.
-	Values map[string]string `json:"values,omitempty"`
 }
 
 type bannerReport struct {

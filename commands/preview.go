@@ -54,10 +54,8 @@ REGEL
 
 VOORBEELDBESTAND
   --init         schrijf voorbeeld.csv naast het sjabloon: de kop met alle
-                 velden en een regel met de voorbeeldwaarden die de server
-                 maakt (report.json, regel "voorbeeld", veld "values"; zonder
-                 die waarden komt er ‹naam› te staan). Velden die eindigen op
-                 _url of _file blijven leeg. Overschrijft niets zonder --force.
+                 velden en een regel met ‹naam›-plaatshouders. Velden die
+                 eindigen op _url of _file blijven leeg. Overschrijft niets zonder --force.
 
 VERVERSEN
   Standaard wordt de map en het gegevensbestand bewaakt: na 250 ms rust wordt
@@ -165,19 +163,10 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 }
 
 // bannerInitCSV is the content of voorbeeld.csv: semicolon separated, the
-// header with every field, one row of example values. Fields ending in _url or
+// header with every field, one row of ‹naam› placeholders (report.json carries
+// no per-field values, so defaults cannot be known to the CLI). Fields ending in _url or
 // _file stay empty: a generated placeholder image is no use in a sheet.
 func bannerInitCSV(rep *bannerReport) ([]byte, error) {
-	var row *bannerRow
-	for i := range rep.Rows {
-		if rep.Rows[i].Label == "voorbeeld" {
-			row = &rep.Rows[i]
-			break
-		}
-	}
-	if row == nil {
-		row = &rep.Rows[0]
-	}
 	var sb strings.Builder
 	w := csv.NewWriter(&sb)
 	w.Comma = ';'
@@ -189,8 +178,6 @@ func bannerInitCSV(rep *bannerReport) ([]byte, error) {
 		switch {
 		case strings.HasSuffix(name, "_url"), strings.HasSuffix(name, "_file"):
 			vals[i] = ""
-		case row.Values != nil:
-			vals[i] = row.Values[name]
 		default:
 			vals[i] = "‹" + name + "›"
 		}

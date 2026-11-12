@@ -44,7 +44,7 @@ func newFakeBanner(t *testing.T) *fakeBanner {
 			Entry: "index.html", Width: 300, Height: 250,
 			Fields: []bannerName{"titel", "logo_url", "prijs"},
 			Rows: []bannerRow{
-				{Index: 0, Label: "voorbeeld", Values: map[string]string{"titel": "Hallo", "prijs": "9,95"}},
+				{Index: 0, Label: "voorbeeld"},
 				{Index: 1, Label: "leeg"},
 			},
 		},
@@ -416,7 +416,7 @@ func TestBannerPreviewPage(t *testing.T) {
 	t.Run("scrubber_driver_behaviour", func(t *testing.T) {
 		node, err := exec.LookPath("node")
 		if err != nil {
-			t.Skip("node not installed")
+			t.Fatalf("node is needed for this test: %v", err)
 		}
 		i := strings.Index(page, "/* driver:start */")
 		j := strings.Index(page, "/* driver:end */")
@@ -465,7 +465,7 @@ func TestBannerPreviewInit(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "titel;logo_url;prijs\nHallo;;9,95\n"
+		want := "titel;logo_url;prijs\n‹titel›;;‹prijs›\n"
 		if string(b) != want {
 			t.Fatalf("got %q want %q", b, want)
 		}
