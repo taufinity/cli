@@ -239,6 +239,11 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		}
 		resp.Body.Close()
 		if err != nil {
+			if c.config.NoTransportRetry {
+				// a timeout or reset in the middle of the answer: the request was
+				// already sent, so it is never sent again
+				return nil, fmt.Errorf("request failed: %w", err)
+			}
 			lastErr = err
 			lastStatusCode = resp.StatusCode
 			continue

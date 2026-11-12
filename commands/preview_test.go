@@ -42,6 +42,7 @@ type fakeBanner struct {
 	answer     []byte        // non-nil: send this as the 200 answer
 	delay      time.Duration // sleep before answering
 	retryAfter string        // Retry-After header on a status answer
+	stallBody  bool          // send headers and half a body, then stall
 	zipSizes   []int         // compressed size of the template of every call
 }
 
@@ -105,6 +106,18 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 	if delay > 0 {
 		time.Sleep(delay)
+	}
+	f.mu.Lock()
+	stall := f.stallBody
+	f.mu.Unlock()
+	if stall {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(200)
+		w.Write([]byte("PK"))
+		w.(http.Flusher).Flush()
+		time.Sleep(600 * time.Millisecond)
+		return
 	}
 	if status != 0 {
 		if retryAfter != "" {

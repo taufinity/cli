@@ -73,6 +73,21 @@ func TestBannerPreviewRetries(t *testing.T) {
 			t.Fatalf("template sent %d times", n)
 		}
 	})
+	t.Run("no_retry_on_timeout_mid_body", func(t *testing.T) {
+		f := newFakeBanner(t)
+		f.stallBody = true
+		src := f.source(t, templateDir(t, nil))
+		c := api.NewPreviewWithTimeout(f.srv.URL, 150*time.Millisecond)
+		c.SetAuth("test-token")
+		src.Client = c
+		if _, err := src.Fill(ctx); err == nil {
+			t.Fatal("expected a timeout")
+		}
+		time.Sleep(900 * time.Millisecond)
+		if n := f.callCount(); n != 1 {
+			t.Fatalf("template sent %d times", n)
+		}
+	})
 	t.Run("one_retry_on_503_after_retry_after", func(t *testing.T) {
 		f := newFakeBanner(t)
 		f.status, f.body, f.retryAfter = 503, `{"error":"even wachten"}`, "1"

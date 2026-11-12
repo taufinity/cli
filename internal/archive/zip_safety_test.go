@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -60,7 +59,7 @@ func TestZipSkipsSymlinks(t *testing.T) {
 
 	t.Run("file_link_outside_skipped", func(t *testing.T) {
 		if err := os.Symlink(filepath.Join(outside, "creds.json.txt"), filepath.Join(dir, "logo.png")); err != nil {
-			t.Skip("no symlinks")
+			t.Fatalf("symlink: %v", err)
 		}
 		var warns []string
 		names := zipNames(t, dir, ZipOptions{Warn: func(m string) { warns = append(warns, m) }})
@@ -73,7 +72,7 @@ func TestZipSkipsSymlinks(t *testing.T) {
 	})
 	t.Run("dir_link_skipped", func(t *testing.T) {
 		if err := os.Symlink(filepath.Join(outside, "dir"), filepath.Join(dir, "linked")); err != nil {
-			t.Skip("no symlinks")
+			t.Fatalf("symlink: %v", err)
 		}
 		names := zipNames(t, dir, ZipOptions{Warn: func(string) {}})
 		for _, n := range names {
@@ -139,9 +138,6 @@ func TestZipExcludesSecrets(t *testing.T) {
 		check(t, dir, "prod.tfvars", "terraform.tfstate")
 	})
 	t.Run("parent_gitignore", func(t *testing.T) {
-		if _, err := exec.LookPath("git"); err != nil {
-			t.Skip("no git")
-		}
 		repo := t.TempDir()
 		if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
 			t.Fatal(err)
