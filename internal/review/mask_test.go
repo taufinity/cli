@@ -46,3 +46,30 @@ func TestMask(t *testing.T) {
 		}
 	})
 }
+
+func TestMaskUnquotedAndURLCredentials(t *testing.T) {
+	for _, in := range []string{
+		"+DB_PASSWORD=hunter2hunter2",                   // gitleaks:allow -- clearly fake test value
+		"+password: hunter2hunter2",                     // gitleaks:allow -- clearly fake test value
+		"+export API_TOKEN=abcd1234efgh5678",            // gitleaks:allow -- clearly fake test value
+		"+postgres://u:pw12345678@host/db",              // gitleaks:allow -- clearly fake test value
+		"+Authorization: Bearer abcdef0123456789abcdef", // gitleaks:allow -- clearly fake test value
+	} {
+		out, n := Mask(in)
+		if n == 0 || strings.Contains(out, "hunter2hunter2") || strings.Contains(out, "abcd1234efgh5678") ||
+			strings.Contains(out, "pw12345678") || strings.Contains(out, "abcdef0123456789abcdef") {
+			t.Errorf("not masked: %q -> %q (%d)", in, out, n)
+		}
+	}
+	if out, n := Mask("token = f(x)\nsecret := load()"); n != 0 {
+		t.Errorf("code masked: %q", out)
+	}
+}
+
+func TestExcludedPathCaseInsensitiveEnv(t *testing.T) {
+	for _, p := range []string{".ENV", "cfg/.Env.local", "ID_RSA"} {
+		if !excludedPath(p) {
+			t.Errorf("%s not excluded", p)
+		}
+	}
+}

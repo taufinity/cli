@@ -70,6 +70,10 @@ func runReviewInstallHook(cmd *cobra.Command, args []string) error {
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		return err
 	}
+	// Replace, never write through, an existing file or symlink.
+	if err := os.Remove(hook); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.WriteFile(hook, []byte(reviewHookScript), 0o755); err != nil {
 		return err
 	}

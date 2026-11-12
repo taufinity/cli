@@ -150,9 +150,9 @@ configuration or infrastructure changes.
 - Documentation: README section "Code review before you push" covers both modes, paths, exit
   codes, the hook, staging, CI, what is never sent, cost as a percentage and the switch.
 
-## Gemini second opinion
+## Independent second opinion
 
-GEMINI: NOT RUN, GEMINI_API_KEY missing from the harness environment
+Verdict: request_changes (from a fresh reviewer subagent that did not write the code). Findings: 5 (1 high, 1 medium, 3 low). Three were fixed with tests (unquoted secret masking, symlink hook, case-insensitive exclusions) and two were accepted with a reason (the README was reworded for the API URL one). See docs/reviews/2026-11-12-review-command-independent-review.md.
 
 Source: agent manager (153142e6)
 Why: code review slice 1b CLI command

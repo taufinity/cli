@@ -27,6 +27,17 @@ var secretPatterns = []*regexp.Regexp{
 // name may itself be quoted (JSON, YAML flow style).
 var assignment = regexp.MustCompile(`(?i)([A-Za-z0-9_.\-]*(?:password|passwd|secret|token|api_key|apikey)[A-Za-z0-9_.\-]*["']?\s*(?::=|=|:)\s*)(["'])([^"'\r\n]{8,})(["'])`)
 
+// unquotedAssignment: the same names with an unquoted value of 8 or more
+// characters (shell, ini, properties, unquoted YAML). Stops at whitespace,
+// quotes, brackets and separators so code such as `token = f(x)` is left alone.
+var unquotedAssignment = regexp.MustCompile("(?i)([A-Za-z0-9_.\\-]*(?:password|passwd|secret|token|api_key|apikey)[A-Za-z0-9_.\\-]*\\s*(?::=|=|:)[ \\t]*)([^\\s\"'`,;(){}<>\\[\\]]{8,})")
+
+// urlCredentials: user:password@ inside a URL.
+var urlCredentials = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.\-]*://[^\s/:@"']+:)([^\s/@"']+)(@)`)
+
+// bearer: an Authorization style bearer or basic credential.
+var bearer = regexp.MustCompile(`(?i)(\b(?:bearer|basic)\s+)([A-Za-z0-9._~+/=-]{16,})`)
+
 // Mask replaces secret values in s with [MASKED] and returns the result and
 // the number of replacements. It never returns or logs the values.
 func Mask(s string) (string, int) {
@@ -45,5 +56,23 @@ func Mask(s string) (string, int) {
 		n++
 		return sub[1] + sub[2] + maskedValue + sub[4]
 	})
+	s = unquotedAssignment.ReplaceAllStringFunc(s, func(m string) string {
+		sub := unquotedAssignment.FindStringSubmatch(m)
+		if strings.Contains(sub[2], maskedValue) {
+			return m
+		}
+		n++
+		return sub[1] + maskedValue
+	})
+	for _, re := range []*regexp.Regexp{urlCredentials, bearer} {
+		s = re.ReplaceAllStringFunc(s, func(m string) string {
+			sub := re.FindStringSubmatch(m)
+			if strings.Contains(sub[2], maskedValue) {
+				return m
+			}
+			n++
+			return sub[1] + maskedValue + strings.Join(sub[3:], "")
+		})
+	}
 	return s, n
 }

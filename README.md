@@ -340,7 +340,7 @@ The hook runs `taufinity review --fail-on critical` and works in git worktrees. 
 taufinity review --env staging
 ```
 
-`--env staging`, `--api-url` and `--org` work as for every other command. Reviews are sent to `<Studio URL>/api/code-review/reviews` and nowhere else; there is no option to send them to another host. Code is only sent over https (plain http only to localhost).
+`--env staging`, `--api-url` and `--org` work as for every other command. Reviews are sent to `<Studio URL>/api/code-review/reviews` and nowhere else. `<Studio URL>` is the API URL you configured (default, `--env` or `--api-url`), so only point it at a Studio you trust. Code is only sent over https (plain http only to localhost).
 
 ### CI
 
@@ -361,7 +361,7 @@ The key is sent as `X-API-Key` and is never printed, not even with `--debug`. De
 - Binary files and files over 1 MiB.
 - Files ignored by git.
 
-Each skipped file is listed on stderr with the reason. Secrets in what is sent are replaced by `[MASKED]` (cloud and API keys, tokens, JWTs, private key blocks, and quoted values of 8 or more characters assigned to names such as `password`, `secret` or `token`); the number masked is printed, never the values. The CLI writes no code or review to disk.
+Each skipped file is listed on stderr with the reason. Secrets in what is sent are replaced by `[MASKED]` (cloud and API keys, tokens, JWTs, private key blocks, URL credentials, bearer tokens, and values of 8 or more characters, quoted or not, assigned to names such as `password`, `secret` or `token`); the number masked is printed, never the values. The CLI writes no code or review to disk.
 
 ### Cost
 

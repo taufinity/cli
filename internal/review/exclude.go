@@ -53,10 +53,10 @@ func excludedPath(p string) bool {
 		}
 	}
 	base := parts[len(parts)-1]
-	if base == ".env" || strings.HasPrefix(base, ".env.") || strings.HasPrefix(base, "id_rsa") || lockFiles[base] {
+	lower := strings.ToLower(base)
+	if lower == ".env" || strings.HasPrefix(lower, ".env.") || strings.HasPrefix(lower, "id_rsa") || lockFiles[base] {
 		return true
 	}
-	lower := strings.ToLower(base)
 	for _, s := range excludedSuffixes {
 		if strings.HasSuffix(lower, s) {
 			return true

@@ -109,3 +109,24 @@ func TestInstallHook(t *testing.T) {
 		}
 	})
 }
+
+func TestInstallHookForceReplacesSymlink(t *testing.T) {
+	dir := newReviewTestRepo(t)
+	hooks := filepath.Join(dir, ".git", "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "other")
+	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(hooks, "pre-push")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runReviewIn(t, dir, "review", "install-hook", "--force"); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(target); string(b) != "keep" {
+		t.Errorf("symlink target overwritten: %q", b)
+	}
+}
