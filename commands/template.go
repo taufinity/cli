@@ -37,6 +37,9 @@ var templatePreviewCmd = &cobra.Command{
 	Short: "Preview a template render",
 	Long: `Upload local templates and preview a rendered article.
 
+This is for ARTICLE templates of sites. For BANNER templates use
+'taufinity preview'.
+
 This command:
 1. Creates an archive of local template files (respecting .gitignore)
 2. Uploads the archive to the API

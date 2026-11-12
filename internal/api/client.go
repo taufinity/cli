@@ -65,10 +65,26 @@ func (c *Client) setOrgHeader(req *http.Request) {
 
 // New creates a new API client for the given base URL.
 func New(baseURL string) *Client {
+	return newClient(baseURL, nil)
+}
+
+// NewNoRateLimitRetry is New, except a 429 is returned at once instead of being
+// retried with backoff. For interactive calls (the banner preview) where the
+// server's own rate-limit message should reach the user within a moment.
+func NewNoRateLimitRetry(baseURL string) *Client {
+	return newClient(baseURL, func(cfg *httpclient.Config) {
+		cfg.RetryStatusCodes = []int{500, 502, 503, 504, 529}
+	})
+}
+
+func newClient(baseURL string, tweak func(*httpclient.Config)) *Client {
 	cfg := httpclient.DefaultConfig()
 	// CLI-friendly timeouts
 	cfg.MaxRetries = 3
 	cfg.LogRequests = false
+	if tweak != nil {
+		tweak(&cfg)
+	}
 
 	// Every request, including the unauthenticated device-code calls and the
 	// token refresh/revoke calls, goes through the Cloudflare Access transport:

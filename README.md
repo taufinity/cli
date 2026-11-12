@@ -295,6 +295,19 @@ Flags:
 - `--api-url URL` — override the upstream (defaults to `$TAUFINITY_API_URL`, then config, then `https://studio.taufinity.io`).
 - `--timeout DURATION` — per-request timeout (default 5m, accommodates BigQuery-backed tools).
 
+## Banner templates bekijken
+
+```bash
+cd mijn-banner-sjabloon
+taufinity preview --init   # schrijft voorbeeld.csv met alle velden
+taufinity preview          # opent de banner in de browser, ververst bij elke wijziging
+```
+
+Het invullen gebeurt op de server met dezelfde code als een echte render, dus je ziet
+precies wat een render krijgt, minus de capture. `--row 3` toont een regel uit de CSV
+(kopregel = regel 1). Zie `taufinity preview --help`. Voor sjablonen van artikelen van
+een site is er `taufinity template preview`.
+
 ## Configuration
 
 Config is resolved in this order (highest priority first):
