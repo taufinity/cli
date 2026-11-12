@@ -279,7 +279,7 @@ func (r reviewRun) execute(ctx context.Context) (reviewOutcome, error) {
 		return out, &studioRefusal{Status: 401, Code: "unauthorized", Message: "You are not signed in."}
 	}
 
-	resp, err := r.client.PostStream(ctx, reviewPath, body)
+	resp, err := r.client.PostStreamOnce(ctx, reviewPath, body)
 	if err != nil {
 		if api.SessionEnded(err) {
 			return out, &studioRefusal{Status: 401, Code: "unauthorized", Message: err.Error()}

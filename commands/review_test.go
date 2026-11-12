@@ -424,6 +424,30 @@ func TestReviewRefusals(t *testing.T) {
 		})
 	}
 
+	t.Run("stored_login_401_is_one_post", func(t *testing.T) {
+		t.Setenv(api.APIKeyEnv, "")
+		dir := newReviewTestRepo(t)
+		f := newFakeStudio(t, `{"error":"unauthorized","message":"Authentication required."}`)
+		f.reviewStatus = 401
+		seedRotatedSession(t, f.srv.URL)
+		_, errOut, err := runReviewIn(t, dir, "--api-url", f.srv.URL, "review")
+		if exitCode(err) != 2 {
+			t.Fatalf("exit %d", exitCode(err))
+		}
+		reviews := 0
+		for _, r := range f.posts() {
+			if r.Path == "/api/code-review/reviews" {
+				reviews++
+			}
+		}
+		if reviews != 1 {
+			t.Fatalf("Studio saw %d review POSTs with a stored login, want exactly 1", reviews)
+		}
+		if !strings.Contains(errOut, "Hint: run `taufinity auth login` (add --env staging for staging)") {
+			t.Errorf("stderr:\n%s", errOut)
+		}
+	})
+
 	t.Run("non_json_body_shows_status", func(t *testing.T) {
 		useAPIKey(t)
 		page := "<html><body>Bad Gateway " + strings.Repeat("x", 400) + "TAIL-MARKER</body></html>"

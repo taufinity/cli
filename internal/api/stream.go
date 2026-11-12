@@ -39,6 +39,18 @@ func streamClient() *http.Client {
 // refused before anything runs. Debug logging records the body's size only,
 // never its content, and never the key or the token.
 func (c *Client) PostStream(ctx context.Context, path string, body []byte) (*http.Response, error) {
+	return c.postStream(ctx, path, body, true)
+}
+
+// PostStreamOnce is PostStream that never sends the request twice: a 401 is
+// returned as it is. The session is still renewed after a 401, so that the
+// next run works, but the request itself is not replayed. The review command
+// uses it so that Studio sees exactly one POST per run.
+func (c *Client) PostStreamOnce(ctx context.Context, path string, body []byte) (*http.Response, error) {
+	return c.postStream(ctx, path, body, false)
+}
+
+func (c *Client) postStream(ctx context.Context, path string, body []byte, replay bool) (*http.Response, error) {
 	if c.dryRun {
 		return nil, errors.New("PostStream called in dry-run mode")
 	}
@@ -79,6 +91,13 @@ func (c *Client) PostStream(ctx context.Context, path string, body []byte) (*htt
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized && c.authToken == "" {
+		if !replay {
+			// Renew for the next run; keep this response, unread.
+			if _, rerr := c.RenewAfterReject(ctx, token); rerr != nil {
+				c.logTokenError(rerr)
+			}
+			return resp, nil
+		}
 		_ = resp.Body.Close()
 		fresh, rerr := c.RenewAfterReject(ctx, token)
 		if rerr != nil {

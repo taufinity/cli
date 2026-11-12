@@ -33,10 +33,11 @@ configuration or infrastructure changes.
   on `git diff`. Disposition: **fixed**. Every git call passes `core.fsmonitor=false` and the
   content diff uses `--no-ext-diff --no-textconv`. Covered by the collection tests, which run
   every path through this helper.
-- **P3, the settings call with a stored login logs the first 12 characters of the bearer token
-  with `--debug`.** This is the behaviour of the shared `GetWithAuth` helper for every command.
-  Disposition: **accepted**, out of scope for this slice; the review POST and the API key path do
-  not log any part of a credential.
+- **P2, the shared debug logger printed the first 12 characters of the bearer token** (used by
+  the settings call and every other authenticated request). Printing any part of a credential is
+  not acceptable. Disposition: **fixed**: the logger now writes `Bearer (redacted)`. Proven by
+  `TestPostStream/debug_never_logs_any_part_of_the_bearer_token` (stored login, debug on, through
+  `GetWithKeyOrAuth`, the call `reviewBudgetLine` makes).
 - **P3, the masked count is the sum over the diff and the file contents**, so one secret in a
   changed file is counted twice ("masked 2 secret value(s)"). Disposition: **accepted**: the
   specification defines the payload total that way, and over-counting is the safe direction.
@@ -102,6 +103,12 @@ configuration or infrastructure changes.
   `TestPostStream/no_retry_on_429`, `no_retry_on_503` and `TestReviewRefusals` (exactly one POST
   per refusal). The only repeat is the single session renewal after a 401, which is refused
   before anything runs (`TestPostStream/renews_once_on_401`, `second_401_is_returned`).
+- **P2, a stored login that gets a 401 sent the review twice** (renew, then replay), so Studio
+  could see two POSTs. Disposition: **fixed**: the review command uses `PostStreamOnce`, which
+  returns the 401 without replaying the request (the session is renewed for the next run). Proven
+  by `TestReviewRefusals/stored_login_401_is_one_post` (stored login, exactly one review POST,
+  exit 2, login hint) and `TestPostStream/once_variant_never_replays`. `PostStream` keeps its
+  single renew-and-retry for other callers (`renews_once_on_401`).
 - No client timeout beyond the context; the read is line by line with no 64 KiB token limit
   (`TestReadStream/line_over_4mib`).
 - **P2, memory before the limit check.** The 1.5 MiB limit was checked after everything had been
@@ -122,6 +129,12 @@ configuration or infrastructure changes.
   (`diff_too_large`), and failing locally saves the request.
 
 ### Other findings
+
+- **P3, attribution compliance.** The changed code, tests, README and this report were checked
+  for any mention of an assistant, a model vendor or generated-content notices, and the README
+  heading that named one was renamed ("From an MCP client"). Disposition: **fixed**. The only
+  heading in this report that names a review tool is the "Gemini second opinion" section the
+  checklist itself requires.
 
 - **P3, shallow CI checkouts have no merge-base with the base branch.** The command then exits 2
   naming what was tried and suggesting `--base`. Disposition: **fixed in the docs** (README CI

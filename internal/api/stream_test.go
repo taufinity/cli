@@ -76,6 +76,45 @@ func TestPostStream(t *testing.T) {
 		}
 	})
 
+	t.Run("once_variant_never_replays", func(t *testing.T) {
+		isolatedHome(t)
+		t.Setenv(APIKeyEnv, "")
+		s := newRotatedServer(t)
+		seedSession(t, s.srv.URL, oldAccess, oldRefresh)
+		resp, err := New(s.srv.URL).PostStreamOnce(ctx, "/api/x", []byte(`{}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 401 || s.apiHits.Load() != 1 {
+			t.Fatalf("status=%d hits=%d, want one 401", resp.StatusCode, s.apiHits.Load())
+		}
+	})
+
+	t.Run("debug_never_logs_any_part_of_the_bearer_token", func(t *testing.T) {
+		isolatedHome(t)
+		t.Setenv(APIKeyEnv, "")
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		defer srv.Close()
+		const tok = "stored-login-token-abcdefghijklmnop" // gitleaks:allow -- clearly fake test value
+		seedSession(t, srv.URL, tok, newRefresh)
+		var logs bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		defer slog.SetDefault(prev)
+		c := New(srv.URL)
+		c.SetDebug(true)
+		if _, err := c.GetWithKeyOrAuth(ctx, "/api/code-review/settings"); err != nil {
+			t.Fatal(err)
+		}
+		if out := logs.String(); strings.Contains(out, "stored-login") || strings.Contains(out, tok[:6]) || !strings.Contains(out, "redacted") {
+			t.Errorf("debug output:\n%s", out)
+		}
+	})
+
 	t.Run("second_401_is_returned", func(t *testing.T) {
 		isolatedHome(t)
 		t.Setenv(APIKeyEnv, "")

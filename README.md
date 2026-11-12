@@ -367,7 +367,7 @@ Each skipped file is listed on stderr with the reason. Secrets in what is sent a
 
 Studio keeps the cost of reviews against your organisation. The CLI never prints an amount: after each review it shows how much of the organisation's budget is used, for example `Code review budget used: 6% today, 2% this month`. Amounts are for system admins in Studio.
 
-### From Claude
+### From an MCP client
 
 `taufinity mcp stdio` adds a tool, `review_local_changes` (arguments `paths`, `whole`, `base`, `staged`), that runs the same review on the repository in its working directory and returns the review, the counts and the budget line.
 
