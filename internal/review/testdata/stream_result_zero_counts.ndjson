@@ -1,0 +1,3 @@
+{"type":"accepted","request_id":"3c2aa265-5e42-446d-8a3c-46ac82cc6b49"}
+{"stage":"reviewing","type":"progress"}
+{"counts":{"critical":0,"high":0,"low":0,"medium":0},"findings":[],"markdown":"## Summary\nBroken.\n\n## Critical/High Priority Issues\n\n1. **Off-by-one** (Critical)\n\n## Detailed Findings\n\n### Off-by-one\n**Severity:** Critical\n**File:** div.go:6\n**Issue:** panics\n**Recommendation:** use <\n","partial":false,"type":"result","verdict":"request_changes"}

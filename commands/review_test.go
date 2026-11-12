@@ -265,6 +265,33 @@ func TestReviewCommand(t *testing.T) {
 		}
 	})
 
+	// Production on 2026-11-12: verdict request_changes, every count 0, no
+	// findings, a Critical in the markdown. The service lost the counts; the
+	// gate must not pass on that.
+	zeroCounts := readFixture(t, "stream_result_zero_counts.ndjson")
+	for _, failOn := range []string{"critical", "high", "medium"} {
+		t.Run("request_changes_without_counts_fails_"+failOn, func(t *testing.T) {
+			useAPIKey(t)
+			f := newFakeStudio(t, zeroCounts)
+			_, errOut, err := runReviewIn(t, newReviewTestRepo(t), "--api-url", f.srv.URL, "review", "--fail-on", failOn)
+			if exitCode(err) != 1 {
+				t.Fatalf("exit %d, want 1\n%s", exitCode(err), errOut)
+			}
+			if !strings.Contains(errOut, "no critical or high finding") {
+				t.Errorf("stderr does not say why it failed:\n%s", errOut)
+			}
+		})
+	}
+
+	t.Run("request_changes_without_counts_fail_on_none_exit_0", func(t *testing.T) {
+		useAPIKey(t)
+		f := newFakeStudio(t, zeroCounts)
+		_, _, err := runReviewIn(t, newReviewTestRepo(t), "--api-url", f.srv.URL, "review", "--fail-on", "none")
+		if exitCode(err) != 0 {
+			t.Fatalf("exit %d", exitCode(err))
+		}
+	})
+
 	t.Run("fail_on_invalid_exit_2", func(t *testing.T) {
 		useAPIKey(t)
 		f := newFakeStudio(t, result)

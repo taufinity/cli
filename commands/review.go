@@ -78,7 +78,8 @@ Never sent: .env files, keys and certificates, databases, node_modules, vendor,
 dist, build, minified files, source maps, lock files, binaries and files over
 1 MiB. Secrets found in what is sent are replaced by [MASKED].
 
-Exit codes: 0 no finding at or above --fail-on, 1 a finding at or above it,
+Exit codes: 0 no finding at or above --fail-on, 1 a finding at or above it
+(or a request_changes verdict that reports no critical or high finding),
 2 an error or refusal. In CI set TAUFINITY_API_KEY.
 
 Examples:
@@ -214,6 +215,9 @@ func runReview(cmd *cobra.Command, args []string) error {
 	fmt.Fprintln(os.Stderr, reviewSummary(t))
 	if out.Budget != "" && !IsQuiet() {
 		fmt.Fprintln(os.Stderr, out.Budget)
+	}
+	if reviewFailOn != "none" && unexplainedRequestChanges(t) {
+		fmt.Fprintln(os.Stderr, "The verdict asks for changes but the result reports no critical or high finding, so the counts above are incomplete. Failing --fail-on to be safe: read the review.")
 	}
 	if exceedsFailOn(t, reviewFailOn) {
 		return &ExitError{Code: 1}
@@ -406,7 +410,28 @@ func exceedsFailOn(t review.Terminal, failOn string) bool {
 			return true
 		}
 	}
-	return false
+	return unexplainedRequestChanges(t)
+}
+
+// unexplainedRequestChanges reports a request_changes verdict with no critical
+// or high finding behind it. The service only asks for changes when it saw one,
+// so the counts were lost on the way: on 2026-11-12 production sent all zeros
+// next to a Critical in the markdown. A gate fails on that rather than passes.
+func unexplainedRequestChanges(t review.Terminal) bool {
+	if !strings.EqualFold(t.Verdict, "request_changes") {
+		return false
+	}
+	for _, f := range t.Findings {
+		if severityRank[strings.ToLower(f.Severity)] >= severityRank["high"] {
+			return false
+		}
+	}
+	for sev, n := range t.Counts {
+		if n > 0 && severityRank[strings.ToLower(sev)] >= severityRank["high"] {
+			return false
+		}
+	}
+	return true
 }
 
 // reviewSummary is the one-line summary: counts per severity, verdict, and
