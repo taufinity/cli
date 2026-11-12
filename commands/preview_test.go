@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -399,8 +400,9 @@ func TestBannerPreviewPage(t *testing.T) {
 		}
 	})
 	t.Run("scrubber_driver_order", func(t *testing.T) {
-		seek := strings.Index(page, "__taufinitySeek")
-		gs := strings.Index(page, "gsap")
+		script := page[strings.Index(page, "<script>"):]
+		seek := strings.Index(script, "__taufinitySeek")
+		gs := strings.Index(script, "gsap")
 		if seek < 0 || gs < 0 || seek > gs {
 			t.Fatalf("__taufinitySeek must come before gsap (%d, %d)", seek, gs)
 		}
@@ -409,6 +411,44 @@ func TestBannerPreviewPage(t *testing.T) {
 		}
 		if !strings.Contains(page, "__taufinityDuration") {
 			t.Fatal("duration hook missing")
+		}
+	})
+	t.Run("scrubber_driver_behaviour", func(t *testing.T) {
+		node, err := exec.LookPath("node")
+		if err != nil {
+			t.Skip("node not installed")
+		}
+		i := strings.Index(page, "/* driver:start */")
+		j := strings.Index(page, "/* driver:end */")
+		if i < 0 || j < i {
+			t.Fatal("driver block missing")
+		}
+		js := page[i:j] + `
+var log = [];
+function tl(d) { return { pause: function () { log.push("pause"); }, seek: function (t) { log.push("seek:" + t); }, duration: function () { return d; } }; }
+function run(name, win, want) {
+  var drv = findDriver(win);
+  var got = drv === null ? null : { kind: drv.kind, duration: drv.duration };
+  if (drv) { log = []; drv.seek(2.5); got.log = log.join(","); }
+  if (JSON.stringify(got) !== JSON.stringify(want)) { console.log("FAIL " + name + ": " + JSON.stringify(got) + " != " + JSON.stringify(want)); process.exitCode = 1; }
+}
+var calls = [];
+run("seek wins over timeline", { __taufinitySeek: function (t) { calls.push(t); }, gsap: { globalTimeline: tl(4) } }, { kind: "seek", duration: 4, log: "" });
+run("seek, no duration -> 10", { __taufinitySeek: function () {} }, { kind: "seek", duration: 10, log: "" });
+run("seek + __taufinityDuration", { __taufinitySeek: function () {}, __taufinityDuration: 7, gsap: { globalTimeline: tl(4) } }, { kind: "seek", duration: 7, log: "" });
+run("duration as function", { __taufinitySeek: function () {}, __taufinityDuration: function () { return 6; } }, { kind: "seek", duration: 6, log: "" });
+run("timeline pause then seek", { gsap: { globalTimeline: tl(3.5) } }, { kind: "timeline", duration: 3.5, log: "pause,seek:2.5" });
+run("timeline + __taufinityDuration", { __taufinityDuration: 5, gsap: { globalTimeline: tl(3.5) } }, { kind: "timeline", duration: 5, log: "pause,seek:2.5" });
+run("timeline zero duration -> 10", { gsap: { globalTimeline: tl(0) } }, { kind: "timeline", duration: 10, log: "pause,seek:2.5" });
+run("none", {}, null);
+run("gsap without timeline", { gsap: {} }, null);
+run("__taufinityDuration alone is no driver", { __taufinityDuration: 5 }, null);
+if (calls.length !== 1 || calls[0] !== 2.5) { console.log("custom seek not called with t"); process.exitCode = 1; }
+`
+		cmd := exec.Command(node, "-e", js)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
 		}
 	})
 }

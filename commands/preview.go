@@ -54,8 +54,10 @@ REGEL
 
 VOORBEELDBESTAND
   --init         schrijf voorbeeld.csv naast het sjabloon: de kop met alle
-                 velden en een regel met de voorbeeldwaarden. Overschrijft niets
-                 zonder --force.
+                 velden en een regel met de voorbeeldwaarden die de server
+                 maakt (report.json, regel "voorbeeld", veld "values"; zonder
+                 die waarden komt er ‹naam› te staan). Velden die eindigen op
+                 _url of _file blijven leeg. Overschrijft niets zonder --force.
 
 VERVERSEN
   Standaard wordt de map en het gegevensbestand bewaakt: na 250 ms rust wordt

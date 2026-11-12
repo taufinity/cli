@@ -230,29 +230,37 @@
   });
 
   /* animation scrubber: __taufinitySeek first, then the global timeline, else nothing */
+  /* driver:start */
   function findDriver(win) {
-    if (typeof win.__taufinitySeek === "function") {
-      return { seek: function (t) { win.__taufinitySeek(t); }, duration: durationOf(win, null) };
+    var seekFn = typeof win.__taufinitySeek === "function";
+    var tl = globalTimelineOf(win);
+    if (seekFn) {
+      return { kind: "seek", seek: function (t) { win.__taufinitySeek(t); }, duration: durationOf(win, tl) };
     }
-    var g = win.gsap;
-    if (g && g.globalTimeline) {
+    if (tl) {
       return {
-        seek: function (t) { g.globalTimeline.pause(); g.globalTimeline.seek(t); },
-        duration: durationOf(win, g.globalTimeline)
+        kind: "timeline",
+        seek: function (t) { tl.pause(); tl.seek(t); },
+        duration: durationOf(win, tl)
       };
     }
     return null;
   }
+  function globalTimelineOf(win) {
+    var g = win.gsap;
+    return g && g.globalTimeline ? g.globalTimeline : null;
+  }
   function durationOf(win, tl) {
     var d = win.__taufinityDuration;
     if (typeof d === "function") { try { d = d(); } catch (e) { d = null; } }
-    if (typeof d === "number" && d > 0) return d;
+    if (typeof d === "number" && d > 0 && isFinite(d)) return d;
     if (tl && typeof tl.duration === "function") {
       var td = tl.duration();
       if (td > 0 && isFinite(td)) return td;
     }
     return 10;
   }
+  /* driver:end */
   function setupScrubber(win) {
     var drv = null;
     try { drv = findDriver(win); } catch (e) { drv = null; }
