@@ -309,7 +309,7 @@ taufinity review --base origin/develop
 taufinity review --whole src/api      # the current content of these files, changed or not
 ```
 
-**Diff mode (default).** The base is the upstream of the current branch, else `origin/main`, else `main`; override it with `--base <ref>`. The working tree is compared with the merge-base of that ref and HEAD, so committed and uncommitted changes are both included, plus new files that are not ignored. `--staged` compares the index instead. Paths are git pathspecs relative to the current directory. When nothing changed (under the paths), the command says so and exits 0 without calling Studio.
+**Diff mode (default).** The base is the upstream of the current branch, else `origin/main`, else `main`; override it with `--base <ref>`. The working tree is compared with the merge-base of that ref and HEAD, so committed and uncommitted changes are both included, plus new files that are not ignored. `--staged` compares the index instead. `--head <rev>` reviews only the commits up to that revision, leaving uncommitted and untracked files out. Paths are git pathspecs relative to the current directory. When nothing changed (under the paths), the command says so and exits 0 without calling Studio.
 
 **Whole mode.** `--whole` reviews the current content of the files under the paths you give (at least one is required). A review over 1.5 MiB after exclusions is refused locally: narrow the paths.
 
@@ -332,7 +332,7 @@ taufinity review install-hook         # writes .git/hooks/pre-push
 taufinity review install-hook --force # replace an existing hook
 ```
 
-The hook runs `taufinity review --fail-on critical` and works in git worktrees. The push stops when the review finds a critical issue. If the review cannot run (offline, not signed in, code review not switched on), the hook says so and lets the push go. Skip it once with `git push --no-verify`.
+The hook reviews what is being pushed, not your working tree. For each pushed ref, git gives the hook the local commit and the remote's current commit, and the hook runs `taufinity review --fail-on critical --head <local sha> --base <remote sha>`: the commits in that range, without uncommitted or untracked files. A new branch (or a remote commit you have not fetched) is compared with the default base: the upstream, `origin/main` or `main`. Deleting a remote branch reviews nothing. The hook works in git worktrees. The push stops when the review finds a critical issue. If the review cannot run (offline, not signed in, code review not switched on), the hook says so and lets the push go. Skip it once with `git push --no-verify`.
 
 ### Staging
 
@@ -356,8 +356,17 @@ The key is sent as `X-API-Key` and is never printed, not even with `--debug`. De
 
 ### What is never sent
 
-- Files that must stay on your machine: `.env` and `.env.*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `*.sqlite`, `*.db`, `*.dump`, `*.sql.gz`.
+These files are never read and never sent, wherever they are in the repository:
+
+- Env and credential files: `.env`, `*.env`, `.env.*`, `.env-*`, `.envrc`, `.netrc`, `_netrc`, `.pgpass`, `.npmrc`, `.pypirc`, `.git-credentials`, `.dockercfg`, `.docker/config.json`, `credentials.json`.
+- Keys and certificates: SSH private keys `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*` (with their `.pub`), `*.ppk`, and `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`.
+- Terraform state and variables: `*.tfstate`, `*.tfstate.backup`, `*.tfvars`, `*.tfvars.json`.
+- Local databases: `*.sqlite`, `*.db`, `*.dump`, `*.sql.gz`.
 - Generated and vendored files: `node_modules`, `vendor`, `dist` and `build` at the repository root, `*.min.js`, `*.min.css`, `*.map`, and the lock files `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `Cargo.lock`, `composer.lock`.
+
+Also never sent:
+
+- Google service-account key files: any `*.json` with `"type": "service_account"` and a `private_key`. They have no fixed name, so these are recognised by their content, which is read locally and not sent.
 - Binary files and files over 1 MiB.
 - Files ignored by git.
 

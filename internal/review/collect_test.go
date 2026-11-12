@@ -251,3 +251,105 @@ func TestCollectWhole(t *testing.T) {
 		}
 	})
 }
+
+// TestCollectHead covers --head, which the pre-push hook uses: only the
+// commits up to the given revision are reviewed, never the working tree.
+func TestCollectHead(t *testing.T) {
+	ctx := context.Background()
+
+	// pushRepo: main has README.md; feat has two commits (one.txt, two.txt),
+	// then an uncommitted edit to one.txt and an untracked wip.txt.
+	pushRepo := func(t *testing.T) (dir, first string) {
+		dir = newRepo(t)
+		gitRun(t, dir, "checkout", "-q", "-b", "feat")
+		writeFile(t, dir, "one.txt", "committed one\n")
+		commitAll(t, dir, "one")
+		first = gitRun(t, dir, "rev-parse", "HEAD")
+		writeFile(t, dir, "two.txt", "committed two\n")
+		commitAll(t, dir, "two")
+		writeFile(t, dir, "one.txt", "committed one\nUNCOMMITTED\n")
+		writeFile(t, dir, "wip.txt", "UNTRACKED\n")
+		return dir, first
+	}
+
+	t.Run("leaves_out_uncommitted_and_untracked", func(t *testing.T) {
+		dir, _ := pushRepo(t)
+		head := gitRun(t, dir, "rev-parse", "HEAD")
+		p, err := Collect(ctx, dir, Options{Head: head})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"+++ b/one.txt", "+++ b/two.txt"} {
+			if !strings.Contains(p.Diff, want) {
+				t.Errorf("diff lacks %q:\n%s", want, p.Diff)
+			}
+		}
+		if strings.Contains(p.Diff, "UNCOMMITTED") || strings.Contains(p.Diff, "UNTRACKED") {
+			t.Errorf("working tree content in the diff:\n%s", p.Diff)
+		}
+		if p.Files["one.txt"] != "committed one\n" {
+			t.Errorf("one.txt must be the committed content, got %q", p.Files["one.txt"])
+		}
+		if _, ok := p.Files["wip.txt"]; ok {
+			t.Error("an untracked file was sent")
+		}
+		if p.HeadSHA != head || p.BaseRef != "main" {
+			t.Errorf("HeadSHA=%q BaseRef=%q", p.HeadSHA, p.BaseRef)
+		}
+	})
+
+	t.Run("range_from_the_remote_sha", func(t *testing.T) {
+		dir, first := pushRepo(t)
+		p, err := Collect(ctx, dir, Options{Head: "HEAD", Base: first})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(p.Diff, "one.txt") || !strings.Contains(p.Diff, "+++ b/two.txt") {
+			t.Errorf("want only the commit after the remote sha:\n%s", p.Diff)
+		}
+	})
+
+	t.Run("a_branch_that_is_not_checked_out", func(t *testing.T) {
+		dir, _ := pushRepo(t)
+		gitRun(t, dir, "branch", "other", "main")
+		gitRun(t, dir, "stash", "-q", "-u")
+		gitRun(t, dir, "checkout", "-q", "other")
+		writeFile(t, dir, "other.txt", "other\n")
+		commitAll(t, dir, "other")
+		gitRun(t, dir, "checkout", "-q", "feat")
+		p, err := Collect(ctx, dir, Options{Head: "other", Base: "main"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(p.Diff, "+++ b/other.txt") || strings.Contains(p.Diff, "two.txt") {
+			t.Errorf("want only the other branch's commit:\n%s", p.Diff)
+		}
+	})
+
+	t.Run("deleted_file_in_range", func(t *testing.T) {
+		dir, _ := pushRepo(t)
+		gitRun(t, dir, "rm", "-q", "README.md")
+		commitAll(t, dir, "rm")
+		p, err := Collect(ctx, dir, Options{Head: "HEAD"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(p.Diff, "-hello") {
+			t.Errorf("deletion missing:\n%s", p.Diff)
+		}
+	})
+
+	t.Run("refuses_bad_combinations", func(t *testing.T) {
+		dir, _ := pushRepo(t)
+		for name, o := range map[string]Options{
+			"staged":  {Head: "HEAD", Staged: true},
+			"whole":   {Head: "HEAD", Whole: true, Paths: []string{"."}},
+			"option":  {Head: "--output=/tmp/x"},
+			"unknown": {Head: "nope"},
+		} {
+			if _, err := Collect(ctx, dir, o); err == nil {
+				t.Errorf("%s: expected an error", name)
+			}
+		}
+	})
+}

@@ -51,6 +51,7 @@ var (
 	reviewWhole  bool
 	reviewBase   string
 	reviewStaged bool
+	reviewHead   string
 	reviewFailOn string
 	reviewJSON   bool
 	reviewRepo   string
@@ -69,14 +70,27 @@ stdout, progress and a one-line summary on stderr.
 Default: the working tree (committed and uncommitted changes, plus new files
 that are not ignored) compared with the merge-base of the current branch's
 upstream, else origin/main, else main. --staged compares the index instead,
---base picks another ref. Paths limit the review to those files or folders.
+--base picks another ref. --head <rev> reviews only the commits up to that
+revision, leaving uncommitted and untracked files out (the pre-push hook uses
+it). Paths limit the review to those files or folders.
 
 --whole reviews the current content of the files under the given paths,
 changed or not.
 
-Never sent: .env files, keys and certificates, databases, node_modules, vendor,
-dist, build, minified files, source maps, lock files, binaries and files over
-1 MiB. Secrets found in what is sent are replaced by [MASKED].
+Never read or sent:
+  env and credential files: .env, *.env, .env.*, .env-*, .envrc, .netrc,
+    _netrc, .pgpass, .npmrc, .pypirc, .git-credentials, .dockercfg,
+    .docker/config.json, credentials.json
+  keys and certificates: id_rsa*, id_dsa*, id_ecdsa*, id_ed25519*, *.ppk,
+    *.pem, *.key, *.p12, *.pfx, *.jks, *.keystore
+  Terraform state and variables: *.tfstate, *.tfstate.backup, *.tfvars,
+    *.tfvars.json
+  databases: *.sqlite, *.db, *.dump, *.sql.gz
+  generated output: node_modules, vendor, dist, build, *.min.js, *.min.css,
+    *.map, lock files
+Also never sent: Google service-account key JSON (recognised by content),
+binaries and files over 1 MiB. Secrets found in what is sent are replaced by
+[MASKED].
 
 Exit codes: 0 no finding at or above --fail-on, 1 a finding at or above it
 (or a request_changes verdict that reports no critical or high finding),
@@ -98,6 +112,7 @@ func init() {
 	f.BoolVar(&reviewWhole, "whole", false, "Review the current content of the files under the given paths, changed or not")
 	f.StringVar(&reviewBase, "base", "", "Compare against this ref instead of the upstream, origin/main or main")
 	f.BoolVar(&reviewStaged, "staged", false, "Review the staged changes instead of the working tree")
+	f.StringVar(&reviewHead, "head", "", "Review only the commits up to this revision, without uncommitted or untracked files")
 	f.StringVar(&reviewFailOn, "fail-on", "critical", "Exit 1 when a finding has at least this severity: critical, high, medium or none")
 	f.BoolVar(&reviewJSON, "json", false, "Print only the final result line as JSON on stdout")
 	f.StringVar(&reviewRepo, "repo", "", "Repository name to report (default: owner/name of origin, else the folder name)")
@@ -122,6 +137,7 @@ type reviewParams struct {
 	Whole  bool
 	Staged bool
 	Base   string
+	Head   string
 	Repo   string
 }
 
@@ -172,7 +188,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	defer stop()
 
 	run := reviewRun{
-		params: reviewParams{Paths: args, Whole: reviewWhole, Staged: reviewStaged, Base: reviewBase, Repo: reviewRepo},
+		params: reviewParams{Paths: args, Whole: reviewWhole, Staged: reviewStaged, Base: reviewBase, Head: reviewHead, Repo: reviewRepo},
 		dir:    dir,
 		client: newReviewClient(),
 		log:    os.Stderr,
@@ -244,7 +260,7 @@ func (r reviewRun) logf(format string, args ...any) {
 
 func (r reviewRun) execute(ctx context.Context) (reviewOutcome, error) {
 	p := r.params
-	payload, err := review.Collect(ctx, r.dir, review.Options{Base: p.Base, Staged: p.Staged, Whole: p.Whole, Paths: p.Paths})
+	payload, err := review.Collect(ctx, r.dir, review.Options{Base: p.Base, Staged: p.Staged, Whole: p.Whole, Head: p.Head, Paths: p.Paths})
 	if err != nil {
 		return reviewOutcome{}, err
 	}

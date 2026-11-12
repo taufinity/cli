@@ -47,7 +47,13 @@ func revParse(ctx context.Context, dir, ref string) string {
 // branch that has fallen behind its base does not show the base's own commits
 // as removals.
 func ResolveBase(ctx context.Context, dir, explicit string) (ref, mergeBase string, err error) {
-	if revParse(ctx, dir, "HEAD") == "" {
+	return resolveBaseFor(ctx, dir, explicit, "HEAD")
+}
+
+// resolveBaseFor is ResolveBase with the merge-base taken against head (a
+// commit hash) instead of HEAD.
+func resolveBaseFor(ctx context.Context, dir, explicit, head string) (ref, mergeBase string, err error) {
+	if revParse(ctx, dir, head) == "" {
 		return "", "", fmt.Errorf("the repository has no commits yet, so there is nothing to compare against")
 	}
 
@@ -79,7 +85,7 @@ func ResolveBase(ctx context.Context, dir, explicit string) (ref, mergeBase stri
 	}
 
 	for _, c := range candidates {
-		out, merr := git(ctx, dir, "merge-base", "HEAD", c)
+		out, merr := git(ctx, dir, "merge-base", head, c)
 		if merr != nil {
 			continue // unrelated histories: try the next candidate
 		}

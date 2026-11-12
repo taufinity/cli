@@ -17,7 +17,11 @@ type Options struct {
 	Base   string // explicit base ref; empty = resolve (see ResolveBase)
 	Staged bool   // diff the index instead of the working tree
 	Whole  bool   // review current content instead of a change
-	Paths  []string
+	// Head reviews the commits up to this revision instead of the working
+	// tree: uncommitted and untracked files are left out. The pre-push hook
+	// passes the local sha of each pushed ref.
+	Head  string
+	Paths []string
 }
 
 // Skipped is a file that was left out, and why.
@@ -65,7 +69,20 @@ func Collect(ctx context.Context, dir string, o Options) (Payload, error) {
 			return Payload{}, errors.New("--whole needs at least one path, for example: taufinity review --whole src/")
 		}
 	}
-	if out, herr := git(ctx, dir, "rev-parse", "--verify", "--quiet", "HEAD"); herr == nil {
+	if o.Head != "" {
+		switch {
+		case o.Whole || o.Staged:
+			return Payload{}, errors.New("--head reviews commits; it cannot be combined with --whole or --staged")
+		case strings.HasPrefix(o.Head, "-"):
+			// Like --base, the value could reach git as an option.
+			return Payload{}, fmt.Errorf("head %q is not a revision", o.Head)
+		}
+		sha := revParse(ctx, dir, o.Head)
+		if sha == "" {
+			return Payload{}, fmt.Errorf("head %q does not resolve to a commit", o.Head)
+		}
+		o.Head, p.HeadSHA = sha, sha
+	} else if out, herr := git(ctx, dir, "rev-parse", "--verify", "--quiet", "HEAD"); herr == nil {
 		p.HeadSHA = strings.TrimSpace(string(out))
 	}
 	if out, berr := git(ctx, dir, "branch", "--show-current"); berr == nil {
@@ -85,7 +102,11 @@ func Collect(ctx context.Context, dir string, o Options) (Payload, error) {
 			return Payload{}, err
 		}
 	} else {
-		ref, mergeBase, rerr := ResolveBase(ctx, dir, o.Base)
+		head := "HEAD"
+		if o.Head != "" {
+			head = o.Head
+		}
+		ref, mergeBase, rerr := resolveBaseFor(ctx, dir, o.Base, head)
 		if rerr != nil {
 			return Payload{}, rerr
 		}
@@ -117,11 +138,19 @@ type blob struct {
 
 func collectDiff(ctx context.Context, dir, top, mergeBase string, o Options, p *Payload, diff *strings.Builder) error {
 	var tl tally
-	nameArgs := []string{"diff", "--name-status", "-z", "--no-renames", "--no-ext-diff"}
-	if o.Staged {
-		nameArgs = append(nameArgs, "--cached")
+	// What mergeBase is compared with: a commit, the index or the working tree.
+	var against []string
+	switch {
+	case o.Head != "":
+		against = []string{mergeBase, o.Head}
+	case o.Staged:
+		against = []string{"--cached", mergeBase}
+	default:
+		against = []string{mergeBase}
 	}
-	nameArgs = append(nameArgs, mergeBase, "--")
+	nameArgs := []string{"diff", "--name-status", "-z", "--no-renames", "--no-ext-diff"}
+	nameArgs = append(nameArgs, against...)
+	nameArgs = append(nameArgs, "--")
 	nameArgs = append(nameArgs, o.Paths...)
 	out, err := git(ctx, dir, nameArgs...)
 	if err != nil {
@@ -148,6 +177,8 @@ func collectDiff(ctx context.Context, dir, top, mergeBase string, o Options, p *
 			continue
 		case c.deleted:
 			b, rerr = gitBlob(ctx, dir, mergeBase+":"+c.path)
+		case o.Head != "":
+			b, rerr = gitBlob(ctx, dir, o.Head+":"+c.path)
 		case o.Staged:
 			b, rerr = gitBlob(ctx, dir, ":"+c.path)
 		default:
@@ -183,10 +214,8 @@ func collectDiff(ctx context.Context, dir, top, mergeBase string, o Options, p *
 		end := min(start+pathChunk, len(tracked))
 		args := []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
 			"--src-prefix=a/", "--dst-prefix=b/"}
-		if o.Staged {
-			args = append(args, "--cached")
-		}
-		args = append(args, mergeBase, "--")
+		args = append(args, against...)
+		args = append(args, "--")
 		for _, t := range tracked[start:end] {
 			args = append(args, ":(top,literal)"+t)
 		}
@@ -201,8 +230,8 @@ func collectDiff(ctx context.Context, dir, top, mergeBase string, o Options, p *
 		}
 	}
 
-	if o.Staged {
-		return nil // untracked files are not in the index
+	if o.Staged || o.Head != "" {
+		return nil // untracked files are in neither the index nor a commit
 	}
 	untracked, err := listFiles(ctx, dir, o.Paths, "--others")
 	if err != nil {
@@ -245,6 +274,11 @@ func listFiles(ctx context.Context, dir string, paths []string, which ...string)
 // an entry of Files, after the exclusions.
 func appendNewFiles(top string, files []string, p *Payload, diff *strings.Builder, tl tally) error {
 	for _, f := range files {
+		if excludedPath(f) {
+			// Before the read: an excluded file is never opened.
+			p.Skipped = append(p.Skipped, Skipped{Path: f, Reason: ReasonExcluded})
+			continue
+		}
 		b, special, err := diskBlob(filepath.Join(top, filepath.FromSlash(f)))
 		switch {
 		case errors.Is(err, os.ErrNotExist):
