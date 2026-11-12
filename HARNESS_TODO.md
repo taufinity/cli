@@ -24,7 +24,7 @@ Do not edit or remove items. Add work you discover under "## Discovered" as `- [
   - verified
 - [x] **T9**: Write .taufinity/preview.json atomically (temp file plus rename, created with O_EXCL so two CLIs end with one key). Test TestBannerPreviewTemplateKey subtest concurrent_creation_one_key (20 goroutines create at once, all read the same key, the file is always valid JSON).
   - verified
-- [ ] **T10**: Make fakeBanner.callCount read f.calls with atomic.LoadInt32 (handle increments it with atomic.AddInt32 but callCount reads it plainly under f.mu), so the retry tests stay clean under go test -race.
+- [x] **T10**: Make fakeBanner.callCount read f.calls with atomic.LoadInt32 (handle increments it with atomic.AddInt32 but callCount reads it plainly under f.mu), so the retry tests stay clean under go test -race.
   - added by the verifier
 
 ## Discovered

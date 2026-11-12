@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,9 +133,7 @@ func TestBannerPreviewRetries(t *testing.T) {
 }
 
 func (f *fakeBanner) callCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return int(f.calls)
+	return int(atomic.LoadInt32(&f.calls))
 }
 
 func TestBannerPreviewAnswerBounds(t *testing.T) {
