@@ -38,6 +38,11 @@ type fakeBanner struct {
 	body     string
 	report   bannerReport
 	html     string
+
+	answer     []byte        // non-nil: send this as the 200 answer
+	delay      time.Duration // sleep before answering
+	retryAfter string        // Retry-After header on a status answer
+	zipSizes   []int         // compressed size of the template of every call
 }
 
 func newFakeBanner(t *testing.T) *fakeBanner {
@@ -80,6 +85,7 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(p)
 		switch p.FormName() {
 		case "template":
+			f.zipSizes = append(f.zipSizes, len(data))
 			zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 			if err == nil {
 				for _, zf := range zr.File {
@@ -95,11 +101,23 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	f.keys = append(f.keys, key)
 	status, body, rep, html := f.status, f.body, f.report, f.html
+	answer, delay, retryAfter := f.answer, f.delay, f.retryAfter
 	f.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
 	if status != 0 {
+		if retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
+		return
+	}
+	if answer != nil {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(answer)
 		return
 	}
 	var buf bytes.Buffer
@@ -117,7 +135,7 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fakeBanner) source(t *testing.T, dir string) *bannerSource {
-	c := api.NewNoRateLimitRetry(f.srv.URL)
+	c := api.NewPreview(f.srv.URL)
 	c.SetAuth("test-token")
 	return &bannerSource{Client: c, Dir: dir}
 }
@@ -306,20 +324,20 @@ func httpGet(t *testing.T, url string) (int, string) {
 
 func TestBannerPreviewServer(t *testing.T) {
 	t.Run("serves_page_and_files", func(t *testing.T) {
-		_, base, _ := startBanner(t, simpleReport(), map[string]string{
+		srv, base, _ := startBanner(t, simpleReport(), map[string]string{
 			"rows/0/index.html": "<html><head></head><body>hoi</body></html>",
 			"rows/0/a/b.css":    "b{}",
 		})
 		if code, body := httpGet(t, base+"/"); code != 200 || !strings.Contains(body, "row-picker") {
 			t.Fatalf("page: %d", code)
 		}
-		if code, body := httpGet(t, base+"/rows/0/a/b.css"); code != 200 || body != "b{}" {
+		if code, body := httpGet(t, srv.BannerOrigin()+"/rows/0/a/b.css"); code != 200 || body != "b{}" {
 			t.Fatalf("file: %d %q", code, body)
 		}
-		if code, _ := httpGet(t, base+"/rows/0/nope.css"); code != 404 {
+		if code, _ := httpGet(t, srv.BannerOrigin()+"/rows/0/nope.css"); code != 404 {
 			t.Fatalf("missing: %d", code)
 		}
-		if code, _ := httpGet(t, base+"/rows/../../etc/passwd"); code == 200 {
+		if code, _ := httpGet(t, srv.BannerOrigin()+"/rows/../../etc/passwd"); code == 200 {
 			t.Fatal("path escape")
 		}
 		code, body := httpGet(t, base+"/api/state")
@@ -350,10 +368,10 @@ func TestBannerPreviewServer(t *testing.T) {
 		plain := "<html><head><title>x</title></head><body></body></html>"
 		withMeta := `<html><head><meta content="signal" name="taufinity.ready"><title>x</title></head><body></body></html>`
 		notSignal := `<html><head><meta name="taufinity.ready" content="other"></head></html>`
-		_, base, _ := startBanner(t, simpleReport(), map[string]string{
+		srv, _, _ := startBanner(t, simpleReport(), map[string]string{
 			"rows/0/index.html": withMeta, "rows/0/other.html": withMeta,
 		})
-		_, got := httpGet(t, base+"/rows/0/index.html")
+		_, got := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html")
 		if !strings.Contains(got, "window.__taufinityReady") {
 			t.Fatal("hook missing")
 		}
@@ -363,7 +381,7 @@ func TestBannerPreviewServer(t *testing.T) {
 		if strings.Count(got, "<script") != 1 {
 			t.Fatal("only one script")
 		}
-		if _, other := httpGet(t, base+"/rows/0/other.html"); other != withMeta {
+		if _, other := httpGet(t, srv.BannerOrigin()+"/rows/0/other.html"); other != withMeta {
 			t.Fatal("only the entry file gets the hook")
 		}
 		if string(injectReadyHook([]byte(plain))) != plain || string(injectReadyHook([]byte(notSignal))) != notSignal {
@@ -373,8 +391,8 @@ func TestBannerPreviewServer(t *testing.T) {
 
 	t.Run("files_on_disk_unchanged", func(t *testing.T) {
 		withMeta := `<html><head><meta name="taufinity.ready" content="signal"></head></html>`
-		_, base, dir := startBanner(t, simpleReport(), map[string]string{"rows/0/index.html": withMeta})
-		httpGet(t, base+"/rows/0/index.html")
+		srv, _, dir := startBanner(t, simpleReport(), map[string]string{"rows/0/index.html": withMeta})
+		httpGet(t, srv.BannerOrigin()+"/rows/0/index.html")
 		b, _ := os.ReadFile(filepath.Join(dir, "rows", "0", "index.html"))
 		if string(b) != withMeta {
 			t.Fatalf("file on disk changed: %s", b)
@@ -621,7 +639,7 @@ func TestBannerPreviewWatch(t *testing.T) {
 		if st.Failure == "" || st.Report == nil {
 			t.Fatalf("state: %+v", st)
 		}
-		if code, _ := httpGet(t, "http://"+srv.addr+"/rows/0/index.html"); code != 200 {
+		if code, _ := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html"); code != 200 {
 			t.Fatalf("last good banner gone: %d", code)
 		}
 		f.mu.Lock()
@@ -669,7 +687,7 @@ func TestBannerPreviewWatch(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatal("no reload event")
 		}
-		if _, body := httpGet(t, base+"/rows/0/index.html"); body != "y" {
+		if _, body := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html"); body != "y" {
 			t.Fatalf("server did not switch folders: %q", body)
 		}
 	})
@@ -710,6 +728,67 @@ func TestBannerPreviewTemplateKey(t *testing.T) {
 		fill(t, f, other)
 		if f.keys[2] == key {
 			t.Fatal("two folders share a key")
+		}
+	})
+	t.Run("concurrent_creation_one_key", func(t *testing.T) {
+		dir := templateDir(t, nil)
+		path := filepath.Join(dir, ".taufinity", "preview.json")
+		const n = 20
+		keys := make([]string, n)
+		errs := make([]error, n)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		stopRead := make(chan struct{})
+		var badRead atomic.Value
+		var readers sync.WaitGroup
+		readers.Add(1)
+		go func() { // a reader must never see half a file
+			defer readers.Done()
+			for {
+				select {
+				case <-stopRead:
+					return
+				default:
+				}
+				if raw, err := os.ReadFile(path); err == nil {
+					var doc bannerKeyDoc
+					if json.Unmarshal(raw, &doc) != nil || doc.TemplateKey == "" {
+						badRead.Store(string(raw))
+					}
+				}
+			}
+		}()
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-start
+				keys[i], errs[i] = templateKeyFor(dir)
+			}(i)
+		}
+		close(start)
+		wg.Wait()
+		close(stopRead)
+		readers.Wait()
+		for i := 0; i < n; i++ {
+			if errs[i] != nil {
+				t.Fatalf("goroutine %d: %v", i, errs[i])
+			}
+			if keys[i] != keys[0] {
+				t.Fatalf("two keys: %q and %q", keys[0], keys[i])
+			}
+		}
+		if v := badRead.Load(); v != nil {
+			t.Fatalf("a reader saw a broken file: %q", v)
+		}
+		raw, err := os.ReadFile(path)
+		var doc bannerKeyDoc
+		if err != nil || json.Unmarshal(raw, &doc) != nil || doc.TemplateKey != keys[0] {
+			t.Fatalf("file: %q %v", raw, err)
+		}
+		entries, _ := os.ReadDir(filepath.Dir(path))
+		if len(entries) != 1 {
+			t.Fatalf("temp files left behind: %v", entries)
 		}
 	})
 	t.Run("sent_with_every_fill", func(t *testing.T) {
