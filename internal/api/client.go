@@ -155,13 +155,10 @@ func (c *Client) logRequest(method, url, token string, body []byte) {
 	if c.log == nil {
 		return
 	}
+	// A credential is never logged, not even a prefix of it.
 	authSummary := "(none)"
 	if token != "" {
-		if len(token) > 12 {
-			authSummary = "Bearer " + token[:12] + "..."
-		} else {
-			authSummary = "Bearer " + token
-		}
+		authSummary = "Bearer (redacted)"
 	}
 	args := []any{"method", method, "url", url, "auth", authSummary}
 	if len(body) > 0 {

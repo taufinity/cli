@@ -776,6 +776,11 @@ func (b *bridge) dispatchFrame(ctx context.Context, raw []byte) {
 	b.wg.Add(1)
 	go func() {
 		defer b.wg.Done()
+		// review_local_changes reads the local repository, so the bridge
+		// answers it itself; everything else goes upstream unchanged.
+		if b.handleLocalTool(ctx, frame) {
+			return
+		}
 		b.forwardRequest(ctx, raw, frame)
 	}()
 }
@@ -837,6 +842,10 @@ func (b *bridge) forwardRequest(ctx context.Context, raw []byte, frame jsonRPCFr
 		ID:      req.ID,
 		Result:  resp.Result,
 		Error:   resp.Error,
+	}
+	// The first page of tools/list also lists the local review tool.
+	if frame.Method == "tools/list" && resp.Error == nil && !bytes.Contains(frame.Params, []byte(`"cursor"`)) && len(resp.Result) > 0 {
+		out.Result = withLocalReviewTool(resp.Result)
 	}
 	if out.Result == nil && out.Error == nil {
 		// JSON-RPC requires at least one of result/error. Surface as empty result.
