@@ -11,17 +11,43 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// ErrResponseTooLarge is returned when a response body passes Config.MaxResponseBytes.
+var ErrResponseTooLarge = errors.New("response body exceeds the size limit")
 
 // Config configures the resilient HTTP client
 type Config struct {
 	// Timeout is the total request timeout (default: 60s)
 	Timeout time.Duration
 
-	// MaxRetries is the maximum number of retry attempts (default: 3)
+	// MaxRetries is the maximum number of retry attempts. Zero means NO retry:
+	// the request is sent once. DefaultConfig() sets 3, so a client that wants
+	// the default starts from DefaultConfig().
 	MaxRetries int
+
+	// NoTransportRetry stops retrying on transport errors (timeouts, EOF,
+	// connection resets); only RetryStatusCodes still retry. For uploads that
+	// must never be re-sent on the client's own initiative.
+	NoTransportRetry bool
+
+	// HonorRetryAfter makes a retry after a retryable status wait for the
+	// server's Retry-After header (seconds or HTTP date) instead of the
+	// exponential backoff. Without the header InitialBackoff is used; the wait
+	// is never longer than MaxBackoff.
+	HonorRetryAfter bool
+
+	// MaxResponseBytes caps the response body (0 = unlimited). A larger body
+	// is not buffered further: Do fails with ErrResponseTooLarge.
+	MaxResponseBytes int64
+
+	// ReturnFinalStatus returns the last retryable response as a normal
+	// Response with a nil error once the retries are used up, so the caller
+	// can read its status, headers and body.
+	ReturnFinalStatus bool
 
 	// InitialBackoff is the initial backoff duration (default: 2s)
 	InitialBackoff time.Duration
@@ -72,9 +98,6 @@ func New(cfg Config) *Client {
 	// Apply defaults for zero values
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 60 * time.Second
-	}
-	if cfg.MaxRetries == 0 {
-		cfg.MaxRetries = 3
 	}
 	if cfg.InitialBackoff == 0 {
 		cfg.InitialBackoff = 2 * time.Second
@@ -148,6 +171,9 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		// Apply backoff for retries
 		if attempt > 0 {
 			backoff := c.calculateBackoff(attempt - 1)
+			if c.config.HonorRetryAfter {
+				backoff = RetryAfter(lastHeaders, c.config.InitialBackoff, c.config.MaxBackoff)
+			}
 			slog.Debug("HTTP retry backoff",
 				"attempt", attempt,
 				"max_attempts", c.config.MaxRetries+1,
@@ -188,7 +214,8 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 				return nil, err
 			}
 			lastErr = err
-			if c.isRetryableError(err, 0) {
+			lastHeaders, lastResponseBody = nil, nil
+			if !c.config.NoTransportRetry && c.isRetryableError(err, 0) {
 				slog.Warn("HTTP request failed, will retry",
 					"error", err,
 					"attempt", attempt+1,
@@ -200,9 +227,23 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		}
 
 		// Read response body
-		body, err := io.ReadAll(resp.Body)
+		var body []byte
+		if c.config.MaxResponseBytes > 0 {
+			body, err = io.ReadAll(io.LimitReader(resp.Body, c.config.MaxResponseBytes+1))
+			if err == nil && int64(len(body)) > c.config.MaxResponseBytes {
+				resp.Body.Close()
+				return nil, fmt.Errorf("%w (%d bytes)", ErrResponseTooLarge, c.config.MaxResponseBytes)
+			}
+		} else {
+			body, err = io.ReadAll(resp.Body)
+		}
 		resp.Body.Close()
 		if err != nil {
+			if c.config.NoTransportRetry {
+				// a timeout or reset in the middle of the answer: the request was
+				// already sent, so it is never sent again
+				return nil, fmt.Errorf("request failed: %w", err)
+			}
 			lastErr = err
 			lastStatusCode = resp.StatusCode
 			continue
@@ -244,6 +285,9 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 	}
 
 	// All retries exhausted - return the last response body for debugging
+	if c.config.ReturnFinalStatus && lastHeaders != nil {
+		return &Response{StatusCode: lastStatusCode, Headers: lastHeaders, Body: lastResponseBody}, nil
+	}
 	if lastErr != nil {
 		if len(lastResponseBody) > 0 {
 			return &Response{
@@ -255,6 +299,26 @@ func (c *Client) DoWithContext(ctx context.Context, req *http.Request) (*Respons
 		return nil, fmt.Errorf("request failed after %d attempts: %w", c.config.MaxRetries+1, lastErr)
 	}
 	return nil, fmt.Errorf("request failed after %d attempts with status %d", c.config.MaxRetries+1, lastStatusCode)
+}
+
+// RetryAfter reads a Retry-After header (delay in seconds or an HTTP date) as a
+// wait: def when absent or unreadable, never more than max.
+func RetryAfter(h http.Header, def, max time.Duration) time.Duration {
+	d := def
+	if v := strings.TrimSpace(h.Get("Retry-After")); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs >= 0 {
+			d = time.Duration(secs) * time.Second
+		} else if t, err := http.ParseTime(v); err == nil {
+			d = time.Until(t)
+			if d < 0 {
+				d = 0
+			}
+		}
+	}
+	if max > 0 && d > max {
+		d = max
+	}
+	return d
 }
 
 // Get performs a GET request

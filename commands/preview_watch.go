@@ -2,6 +2,8 @@ package commands
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,16 +50,72 @@ func skipWatchDir(name string) bool {
 	return false
 }
 
+// bannerMaxWatchDirs is the most folders the watcher follows. On macOS (kqueue)
+// every file of a watched folder costs a file handle, so an unbounded tree can
+// exhaust the process.
+const bannerMaxWatchDirs = 2000
+
+// watchOptions tune watchBannerWith. The zero value is the normal behaviour.
+type watchOptions struct {
+	Warn     func(msg string)     // nil = stderr
+	MaxDirs  int                  // 0 = bannerMaxWatchDirs
+	AddError func(p string) error // test hook: a non-nil result stands for a failed Add
+}
+
 // watchBanner watches the template folder (recursively) and, when it lies
 // elsewhere, the data file. It calls onChange once, debounce after the last
 // relevant event. It returns when ctx ends.
 func watchBanner(ctx context.Context, dir, dataFile string, debounce time.Duration, onChange func()) error {
+	return watchBannerWith(ctx, dir, dataFile, debounce, onChange, watchOptions{})
+}
+
+func watchBannerWith(ctx context.Context, dir, dataFile string, debounce time.Duration, onChange func(), opts watchOptions) error {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return err
 	}
 	defer w.Close()
 
+	warn := opts.Warn
+	if warn == nil {
+		warn = func(m string) { fmt.Fprintln(os.Stderr, m) }
+	}
+	maxDirs := opts.MaxDirs
+	if maxDirs <= 0 {
+		maxDirs = bannerMaxWatchDirs
+	}
+	watched := 0
+	capWarned := false
+	failed := map[string]bool{}
+	add := func(p string) bool {
+		if watched >= maxDirs {
+			if !capWarned {
+				capWarned = true
+				warn(fmt.Sprintf("Waarschuwing: de map bevat meer dan %d mappen; de rest wordt niet bewaakt. Zet mappen die niet nodig zijn in .taufinityignore.", maxDirs))
+			}
+			return false
+		}
+		var err error
+		if opts.AddError != nil {
+			err = opts.AddError(p)
+		}
+		if err == nil {
+			err = w.Add(p)
+		}
+		if err != nil {
+			if !failed[p] {
+				failed[p] = true
+				warn(fmt.Sprintf("Waarschuwing: %s kan niet worden bewaakt (%v); wijzigingen daar worden gemist.", p, err))
+			}
+			return true
+		}
+		watched++
+		return true
+	}
+
+	// matcher is the upload's ignore matcher: a folder it excludes is never
+	// watched, as nothing in it ever goes up.
+	matcher := uploadMatcher(dir)
 	addTree := func(root string) {
 		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -67,7 +125,14 @@ func watchBanner(ctx context.Context, dir, dataFile string, debounce time.Durati
 				if p != root && skipWatchDir(d.Name()) {
 					return filepath.SkipDir
 				}
-				_ = w.Add(p)
+				if p != dir {
+					if rel, err := filepath.Rel(dir, p); err == nil && (matcher.MatchesPath(filepath.ToSlash(rel)) || matcher.MatchesPath(filepath.ToSlash(rel)+"/")) {
+						return filepath.SkipDir
+					}
+				}
+				if !add(p) && watched >= maxDirs {
+					return filepath.SkipAll
+				}
 			}
 			return nil
 		})
@@ -79,10 +144,9 @@ func watchBanner(ctx context.Context, dir, dataFile string, debounce time.Durati
 	if dataFile != "" {
 		absData, _ = filepath.Abs(dataFile)
 		if !strings.HasPrefix(absData, absDir+string(os.PathSeparator)) {
-			_ = w.Add(filepath.Dir(absData)) // data file outside the folder
+			add(filepath.Dir(absData)) // data file outside the folder
 		}
 	}
-	matcher := uploadMatcher(dir)
 	relevant := func(name string) bool {
 		abs, _ := filepath.Abs(name)
 		if isEditorTempFile(abs) {
@@ -171,17 +235,30 @@ type bannerSession struct {
 	Srv  *bannerServer
 	Warn func(msg string) // one line per failure; nil = silent
 	mu   sync.Mutex       // refills never overlap
+
+	pauseUntil time.Time // after a 429/503 no refill is sent before this moment
 }
+
+// errBannerPaused is returned by Refresh while the server asked us to wait.
+var errBannerPaused = errors.New("vernieuwen is gepauzeerd")
 
 func (s *bannerSession) Refresh(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if time.Now().Before(s.pauseUntil) {
+		return errBannerPaused // the server asked us to wait; sending now only makes it worse
+	}
 	res, err := s.Fill(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		msg := err.Error()
+		var pause *bannerPause
+		if errors.As(err, &pause) {
+			s.pauseUntil = pause.Until
+			msg += fmt.Sprintf("; vernieuwen is gepauzeerd tot %s", pause.Until.Format("15:04:05"))
+		}
 		s.Srv.Fail(msg)
 		if s.Warn != nil {
 			s.Warn("Vernieuwen mislukt: " + msg)

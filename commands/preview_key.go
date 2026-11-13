@@ -38,25 +38,80 @@ func newBannerKey() (string, error) {
 // secret; it is never part of the template ZIP.
 func templateKeyFor(dir string) (string, error) {
 	path := filepath.Join(dir, bannerStateDir, bannerKeyFile)
-	if raw, err := os.ReadFile(path); err == nil {
-		var doc bannerKeyDoc
-		if json.Unmarshal(raw, &doc) == nil && bannerKeyRE.MatchString(doc.TemplateKey) {
-			return doc.TemplateKey, nil
+	for attempt := 0; attempt < 5; attempt++ {
+		if raw, err := os.ReadFile(path); err == nil {
+			var doc bannerKeyDoc
+			if json.Unmarshal(raw, &doc) == nil && bannerKeyRE.MatchString(doc.TemplateKey) {
+				return doc.TemplateKey, nil
+			}
+			return "", fmt.Errorf("%s is onleesbaar; verwijder het bestand om een nieuwe sleutel te maken", path)
+		} else if !os.IsNotExist(err) {
+			return "", err
 		}
-		return "", fmt.Errorf("%s is onleesbaar; verwijder het bestand om een nieuwe sleutel te maken", path)
-	} else if !os.IsNotExist(err) {
-		return "", err
+		key, err := newBannerKey()
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return "", err
+		}
+		created, err := publishBannerKey(path, key)
+		if err != nil {
+			return "", err
+		}
+		if created {
+			return key, nil
+		}
+		// another CLI was first: read its key on the next round
 	}
-	key, err := newBannerKey()
-	if err != nil {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", err
-	}
+	return "", fmt.Errorf("%s kon niet worden aangemaakt: een ander proces schrijft er ook naar", path)
+}
+
+// publishBannerKey writes the key file atomically and without ever replacing
+// an existing one: the content goes to a temp file (created with O_EXCL) in the
+// same folder, which is then hard-linked to its final name. link(2) fails when
+// the name exists, so of two CLIs starting at once exactly one wins, and a
+// reader never sees a half-written file. created is false when another process
+// was first. Where hard links are not supported it falls back to rename.
+func publishBannerKey(path, key string) (created bool, err error) {
 	raw, _ := json.MarshalIndent(bannerKeyDoc{TemplateKey: key}, "", "  ")
-	if err := os.WriteFile(path, append(raw, '\n'), 0o644); err != nil {
-		return "", err
+	raw = append(raw, '\n')
+	var tmp string
+	for i := 0; ; i++ {
+		suffix := make([]byte, 6)
+		if _, err := rand.Read(suffix); err != nil {
+			return false, err
+		}
+		tmp = fmt.Sprintf("%s.tmp-%x", path, suffix)
+		f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			if os.IsExist(err) && i < 5 {
+				continue
+			}
+			return false, err
+		}
+		_, werr := f.Write(raw)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			os.Remove(tmp)
+			return false, werr
+		}
+		break
 	}
-	return key, nil
+	defer os.Remove(tmp)
+	if err := os.Link(tmp, path); err != nil {
+		if os.IsExist(err) {
+			return false, nil
+		}
+		// no hard links on this filesystem: rename (still atomic, last writer wins)
+		if _, statErr := os.Stat(path); statErr == nil {
+			return false, nil
+		}
+		if rerr := os.Rename(tmp, path); rerr != nil {
+			return false, rerr
+		}
+	}
+	return true, nil
 }

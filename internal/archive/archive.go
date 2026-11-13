@@ -42,6 +42,29 @@ var HardcodedIgnorePatterns = []string{
 	"*.p12",
 	"*.pfx",
 
+	// More secrets, excluded from every upload (preview, deploy, ...): the
+	// CLI's own credentials-<host>.json, package manager and netrc logins,
+	// SSH keys, cloud CLI folders, Terraform variables and state, service
+	// account keys.
+	"credentials*.json",
+	".npmrc",
+	".netrc",
+	".pypirc",
+	"id_rsa*",
+	"id_ed25519*",
+	"id_ecdsa*",
+	".aws",
+	".aws/**",
+	".ssh",
+	".ssh/**",
+	".gcloud",
+	".gcloud/**",
+	"*.tfvars",
+	"*.tfstate",
+	"*.tfstate.*",
+	"*-sa.json",
+	"service-account*.json",
+
 	// IDE and OS
 	".idea",
 	".vscode",
@@ -104,6 +127,12 @@ func Create(srcDir, destPath string) error {
 			return nil
 		}
 
+		// Only regular files: a symlink would pull its target (possibly outside
+		// the folder) into the archive. Same rule as CreateZip.
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
 		// Create tar header
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
@@ -138,7 +167,9 @@ func CollectIgnorePatterns(dir string) []string {
 	// 1. Hardcoded security patterns
 	patterns = append(patterns, HardcodedIgnorePatterns...)
 
-	// 2. .gitignore
+	// 2. .gitignore, from the git root down to the folder itself (a template
+	// folder inside a repo is covered by the repo's own .gitignore files)
+	patterns = append(patterns, parentGitignores(dir)...)
 	patterns = append(patterns, loadIgnoreFile(filepath.Join(dir, ".gitignore"))...)
 
 	// 3. .dockerignore
@@ -190,4 +221,73 @@ func loadTaufinityIgnores(dir string) []string {
 	}
 
 	return cfg.Ignore
+}
+
+// parentGitignores returns the patterns of every .gitignore above dir, up to
+// and including the git root (the nearest ancestor holding .git). Outside a git
+// repo it returns nothing. Outermost first, so nearer files override. A pattern
+// anchored to its own folder is rewritten relative to dir, or dropped when it
+// points elsewhere.
+func parentGitignores(dir string) []string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(abs, ".git")); err == nil {
+		return nil // dir is itself the git root
+	}
+	var chain []string // dir's ancestors, nearest first, up to the git root
+	found := false
+	for cur := filepath.Dir(abs); ; cur = filepath.Dir(cur) {
+		chain = append(chain, cur)
+		if _, err := os.Stat(filepath.Join(cur, ".git")); err == nil {
+			found = true
+			break
+		}
+		if filepath.Dir(cur) == cur {
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	var out []string
+	for i := len(chain) - 1; i >= 0; i-- {
+		rel, err := filepath.Rel(chain[i], abs)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		for _, p := range loadIgnoreFile(filepath.Join(chain[i], ".gitignore")) {
+			if q, ok := rebasePattern(p, rel); ok {
+				out = append(out, q)
+			}
+		}
+	}
+	return out
+}
+
+// rebasePattern makes a pattern of an ancestor's .gitignore relative to dir
+// (rel is dir's path below that ancestor). Unanchored patterns apply anywhere.
+func rebasePattern(p, rel string) (string, bool) {
+	neg := ""
+	if strings.HasPrefix(p, "!") {
+		neg, p = "!", p[1:]
+	}
+	body := strings.TrimSuffix(p, "/")
+	if !strings.HasPrefix(body, "/") && !strings.Contains(body, "/") {
+		return neg + p, true
+	}
+	body = strings.TrimPrefix(p, "/")
+	if body == rel || strings.HasPrefix(body, rel+"/") {
+		rest := strings.TrimPrefix(strings.TrimPrefix(body, rel), "/")
+		if rest == "" {
+			return "", false
+		}
+		return neg + rest, true
+	}
+	if strings.HasPrefix(body, "**/") {
+		return neg + body, true
+	}
+	return "", false
 }

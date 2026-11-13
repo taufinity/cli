@@ -44,7 +44,7 @@
 <main>
   <section id="single">
     <div id="stage">
-      <iframe id="banner-frame" title="Banner"></iframe>
+      <iframe id="banner-frame" title="Banner" sandbox="allow-scripts"></iframe>
       <div id="error-overlay" hidden></div>
     </div>
     <div id="scrubber" hidden>
@@ -80,7 +80,8 @@
   function frameSrc(i) {
     var r = state.report;
     var p = r.entry.split("/").map(encodeURIComponent).join("/");
-    return "/rows/" + i + "/" + p + "?v=" + state.version;
+    // the banner lives on its own origin (a second listener), see the CSP
+    return state.banner_origin + "/rows/" + i + "/" + p + "?v=" + state.version;
   }
   function rowOf(i) {
     var rows = state.report.rows;
@@ -149,6 +150,7 @@
         var fr = document.createElement("iframe");
         fr.width = r.width; fr.height = r.height;
         fr.title = row.label;
+        fr.setAttribute("sandbox", "allow-scripts"); /* scripts only: the banner stays a stranger to the page */
         fr.src = frameSrc(row.index);
         b.appendChild(fr);
       }
@@ -211,12 +213,9 @@
     if (ms == null) { b.className = "late"; b.textContent = "geen klaar-signaal binnen 10 s"; }
     else { b.className = ""; b.textContent = "klaar-signaal na " + Math.round(ms) + " ms"; }
   }
-  function frameUsesReady(win) {
-    try { return !!win.document.querySelector('meta[name="taufinity.ready"]'); } catch (e) { return false; }
-  }
-  function setupReady(win) {
+  function setupReady(usesReady) {
     clearTimeout(readyTimer);
-    if (!frameUsesReady(win)) { $("ready-badge").hidden = true; return; }
+    if (!usesReady) { $("ready-badge").hidden = true; return; }
     if (readyAt[selected] != null) { showReady(readyAt[selected] - navStart); return; }
     var left = Math.max(0, 10000 - (performance.now() - navStart));
     readyTimer = setTimeout(function () {
@@ -224,11 +223,17 @@
     }, left);
   }
   window.addEventListener("message", function (ev) {
-    if (!ev.data || ev.data.type !== "taufinity-ready") return;
+    if (!ev.data) return;
     var f = $("banner-frame");
     if (view !== "row" || ev.source !== f.contentWindow) return;
-    readyAt[selected] = performance.now();
-    showReady(readyAt[selected] - navStart);
+    if (ev.data.type === "taufinity-ready") {
+      readyAt[selected] = performance.now();
+      showReady(readyAt[selected] - navStart);
+    } else if (ev.data.type === "taufinity-driver") {
+      /* the banner (another origin, sandboxed) tells what it offers; we never look inside it */
+      setupReady(ev.data.usesReady === true);
+      setupScrubber(ev.data.driver);
+    }
   });
 
   /* animation scrubber: __taufinitySeek first, then the global timeline, else nothing */
@@ -263,29 +268,22 @@
     return 10;
   }
   /* driver:end */
-  function setupScrubber(win) {
-    var drv = null;
-    try { drv = findDriver(win); } catch (e) { drv = null; }
+  function setupScrubber(info) {
     var wrap = $("scrubber"), note = $("scrubber-note"), range = $("scrubber-range");
-    if (!drv) { wrap.hidden = true; note.hidden = false; return; }
+    var dur = info && typeof info.duration === "number" && isFinite(info.duration) && info.duration > 0 ? info.duration : 0;
+    if (!dur) { wrap.hidden = true; note.hidden = false; return; }
     note.hidden = true;
     wrap.hidden = false;
-    range.max = String(drv.duration);
+    range.max = String(dur);
     range.value = "0";
     $("scrubber-time").textContent = "0.00 s";
     range.oninput = function () {
       var t = parseFloat(range.value);
       $("scrubber-time").textContent = t.toFixed(2) + " s";
-      try { drv.seek(t); } catch (e) { /* the banner decides */ }
+      var w = $("banner-frame").contentWindow;
+      if (w) w.postMessage({ type: "taufinity-seek", t: t }, "*"); /* the banner decides what to do with it */
     };
   }
-
-  $("banner-frame").addEventListener("load", function () {
-    var win = this.contentWindow;
-    if (!win || this.hidden) return;
-    setupReady(win);
-    setupScrubber(win);
-  });
 
   $("row-picker").addEventListener("change", function () {
     selected = parseInt(this.value, 10);

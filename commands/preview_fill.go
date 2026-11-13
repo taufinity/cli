@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/archive"
+	"github.com/taufinity/cli/internal/httpclient"
 )
 
 const (
@@ -26,7 +28,23 @@ const (
 	bannerMaxZip     = 32 << 20  // server limit for the template ZIP
 	bannerMaxUnpack  = 512 << 20 // sanity cap on the answer, zip bomb guard
 	bannerMaxOneFile = 128 << 20
+
+	bannerMaxZipFiles   = 5000     // files in the upload
+	bannerMaxAnswerBody = 64 << 20 // the answer, as received (api.PreviewMaxResponse)
+	bannerMaxAnswerFile = 5000     // files in the answer
+	bannerMaxReport     = 4 << 20  // report.json
+	bannerMaxReportRows = 60
+	bannerMaxDim        = 4096
 )
+
+// bannerPause is the error of an answer that asks us to wait (429, 503): the
+// watcher does not refill before Until.
+type bannerPause struct {
+	Until time.Time
+	msg   string
+}
+
+func (e *bannerPause) Error() string { return e.msg }
 
 // bannerName is a field name. The contract lists plain strings; an object with
 // a "name" is accepted too so a richer server answer does not break the CLI.
@@ -144,13 +162,19 @@ func (s *bannerSource) noteCharge(rep *bannerReport) {
 
 // buildBannerRequest makes the multipart body: the zipped folder and, when
 // there are rows, their JSON.
-func buildBannerRequest(dir, templateKey string, rows []map[string]string) (*bytes.Buffer, string, error) {
+func buildBannerRequest(ctx context.Context, dir, templateKey string, rows []map[string]string) (*bytes.Buffer, string, error) {
 	var zipBuf bytes.Buffer
-	if _, err := archive.CreateZip(dir, &zipBuf); err != nil {
+	// The zipper stops at 32 MB of output and refuses more than 5,000 files
+	// before it reads any, so a save in a huge folder never builds gigabytes.
+	if _, err := archive.CreateZipWithOptions(ctx, dir, &zipBuf, archive.ZipOptions{
+		MaxFiles: bannerMaxZipFiles,
+		MaxBytes: bannerMaxZip,
+		Warn:     func(m string) { fmt.Fprintln(os.Stderr, m) },
+	}); err != nil {
+		if ctx.Err() != nil {
+			return nil, "", ctx.Err()
+		}
 		return nil, "", fmt.Errorf("map inpakken: %w", err)
-	}
-	if zipBuf.Len() > bannerMaxZip {
-		return nil, "", fmt.Errorf("de map is %d MB na inpakken; het maximum is 32 MB", zipBuf.Len()>>20)
 	}
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
@@ -186,7 +210,16 @@ func buildBannerRequest(dir, templateKey string, rows []map[string]string) (*byt
 
 // bannerHTTPError turns an error answer into one Dutch message. A 429 shows
 // the server's own (Dutch) message as is.
-func bannerHTTPError(status int, body []byte) error {
+func bannerHTTPError(status int, hdr http.Header, body []byte) error {
+	err := bannerHTTPErrorText(status, body)
+	if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
+		wait := httpclient.RetryAfter(hdr, 2*time.Second, 30*time.Second)
+		return &bannerPause{Until: time.Now().Add(wait), msg: err.Error()}
+	}
+	return err
+}
+
+func bannerHTTPErrorText(status int, body []byte) error {
 	var e struct {
 		Error string `json:"error"`
 	}
@@ -227,6 +260,9 @@ func unpackBannerZip(data []byte, dest string) error {
 	if err != nil {
 		return fmt.Errorf("het antwoord van de server is geen geldige zip: %w", err)
 	}
+	if len(zr.File) > bannerMaxAnswerFile {
+		return fmt.Errorf("het antwoord van de server is onbruikbaar: meer dan %d bestanden", bannerMaxAnswerFile)
+	}
 	var total int64
 	root := filepath.Clean(dest) + string(os.PathSeparator)
 	for _, f := range zr.File {
@@ -252,11 +288,19 @@ func unpackBannerZip(data []byte, dest string) error {
 			rc.Close()
 			return err
 		}
-		n, err := io.Copy(out, io.LimitReader(rc, bannerMaxOneFile+1))
+		limit := int64(bannerMaxOneFile)
+		isReport := path.Clean(f.Name) == "report.json"
+		if isReport {
+			limit = bannerMaxReport
+		}
+		n, err := io.Copy(out, io.LimitReader(rc, limit+1))
 		rc.Close()
 		out.Close()
 		if err != nil {
 			return err
+		}
+		if isReport && n > limit {
+			return fmt.Errorf("het antwoord van de server is onbruikbaar: report.json is groter dan %d MB", bannerMaxReport>>20)
 		}
 		total += n
 		if n > bannerMaxOneFile || total > bannerMaxUnpack {
@@ -267,7 +311,11 @@ func unpackBannerZip(data []byte, dest string) error {
 }
 
 func readBannerReport(dir string) (*bannerReport, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, "report.json"))
+	rp := filepath.Join(dir, "report.json")
+	if st, err := os.Stat(rp); err == nil && st.Size() > bannerMaxReport {
+		return nil, fmt.Errorf("het antwoord van de server is onbruikbaar: report.json is groter dan %d MB", bannerMaxReport>>20)
+	}
+	raw, err := os.ReadFile(rp)
 	if err != nil {
 		return nil, errors.New("het antwoord van de server bevat geen report.json")
 	}
@@ -278,12 +326,21 @@ func readBannerReport(dir string) (*bannerReport, error) {
 	if r.Entry == "" || len(r.Rows) == 0 {
 		return nil, errors.New("report.json mist het startbestand of de regels")
 	}
+	if len(r.Rows) > bannerMaxReportRows {
+		return nil, fmt.Errorf("het antwoord van de server is onbruikbaar: %d regels (maximaal %d)", len(r.Rows), bannerMaxReportRows)
+	}
+	if r.Width < 1 || r.Height < 1 || r.Width > bannerMaxDim || r.Height > bannerMaxDim {
+		return nil, fmt.Errorf("het antwoord van de server is onbruikbaar: afmeting %d x %d (maximaal %d)", r.Width, r.Height, bannerMaxDim)
+	}
 	return &r, nil
 }
 
 // Fill reads the data file, zips the folder, calls the endpoint and unpacks
 // the answer into a fresh temp folder. The caller owns result.Dir.
 func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err // cancelled: no work at all
+	}
 	var rows []map[string]string
 	if !s.NoRows {
 		var err error
@@ -296,18 +353,21 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	body, ct, err := buildBannerRequest(s.Dir, key, rows)
+	body, ct, err := buildBannerRequest(ctx, s.Dir, key, rows)
 	if err != nil {
 		return nil, err
 	}
 	resp, err := s.Client.PostMultipart(ctx, bannerEndpoint, body, ct)
 	if err != nil {
+		if errors.Is(err, httpclient.ErrResponseTooLarge) {
+			return nil, fmt.Errorf("het antwoord van de server is groter dan %d MB en wordt geweigerd", bannerMaxAnswerBody>>20)
+		}
 		return nil, fmt.Errorf("geen verbinding met Studio: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, bannerHTTPError(resp.StatusCode, resp.Body)
+		return nil, bannerHTTPError(resp.StatusCode, resp.Headers, resp.Body)
 	}
-	dir, err := os.MkdirTemp("", "taufinity-preview-*")
+	dir, err := newBannerTempDir()
 	if err != nil {
 		return nil, err
 	}

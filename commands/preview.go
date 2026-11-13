@@ -76,6 +76,16 @@ SLEUTEL
   sjabloon zodat de sleutel gelijk blijft; er staat geen geheim in. De map
   .taufinity/ gaat nooit mee in de zip.
 
+VEILIGHEID
+  Alleen gewone bestanden in de map gaan mee: symbolische links worden overgeslagen
+  (met een melding). Geheimen (.env, credentials*.json, .npmrc, .netrc, SSH-sleutels,
+  .aws/, *.tfvars, ...) en alles uit de .gitignore-bestanden tot de git-root blijven
+  eruit. Grenzen: 5.000 bestanden en 32 MB ingepakt omhoog, 64 MB, 5.000 bestanden
+  en 60 regels terug, en hooguit 2.000 bewaakte mappen. Een sjabloon wordt nooit
+  vanzelf opnieuw verstuurd na een fout of time-out; na een 429 of 503 pauzeert
+  het verversen tot Retry-After. De banner draait op een eigen poort in een
+  sandbox, los van de pagina.
+
 OPSLAG
   Studio bewaart het sjabloon zelf nooit: het leeft alleen in het geheugen
   voor de duur van één verzoek.
@@ -105,7 +115,7 @@ func init() {
 }
 
 func newBannerClient() *api.Client {
-	client := api.NewNoRateLimitRetry(GetAPIURL())
+	client := api.NewPreview(GetAPIURL())
 	client.SetDebug(IsDebug())
 	if org := GetOrg(); org != "" {
 		client.SetOrg(org)
@@ -125,6 +135,10 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
 		return fmt.Errorf("%s is geen map", dir)
 	}
+	if err := checkTempOutsideTemplate(dir); err != nil {
+		return err
+	}
+	cleanStaleBannerDirs(os.TempDir(), bannerStaleAfter)
 	src := &bannerSource{Client: newBannerClient(), Dir: dir, DataFlag: flagBannerData, Row: flagBannerRow}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
