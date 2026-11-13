@@ -99,6 +99,9 @@ func renderTransportError(step string, err error) error {
 	if errors.Is(err, httpclient.ErrResponseTooLarge) {
 		return &renderError{Msg: step + ": het antwoord van Studio is te groot"}
 	}
+	if edgeBlocked(err) {
+		return &renderError{Msg: step + ": " + err.Error()}
+	}
 	return &renderError{Msg: fmt.Sprintf("%s: geen verbinding met Studio: %v", step, err)}
 }
 

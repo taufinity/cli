@@ -20,7 +20,9 @@ import (
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/archive"
+	"github.com/taufinity/cli/internal/cfaccess"
 	"github.com/taufinity/cli/internal/httpclient"
+	"github.com/taufinity/cli/internal/jsonresp"
 )
 
 const (
@@ -362,6 +364,9 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 		if errors.Is(err, httpclient.ErrResponseTooLarge) {
 			return nil, fmt.Errorf("het antwoord van de server is groter dan %d MB en wordt geweigerd", bannerMaxAnswerBody>>20)
 		}
+		if edgeBlocked(err) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("geen verbinding met Studio: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -382,4 +387,12 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 	}
 	s.noteCharge(rep)
 	return &bannerResult{Dir: dir, Report: rep}, nil
+}
+
+// edgeBlocked reports whether Cloudflare turned the request away before it
+// reached Studio: its firewall, or Access. Those errors say so themselves, and
+// "geen verbinding" would send the reader looking at their network.
+func edgeBlocked(err error) bool {
+	var nj *jsonresp.NonJSONError
+	return (errors.As(err, &nj) && nj.Firewall) || cfaccess.AsBlocked(err) != nil
 }

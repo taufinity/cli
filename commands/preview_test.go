@@ -42,6 +42,7 @@ type fakeBanner struct {
 	answer     []byte        // non-nil: send this as the 200 answer
 	delay      time.Duration // sleep before answering
 	retryAfter string        // Retry-After header on a status answer
+	statusType string        // Content-Type of a status answer (default JSON)
 	stallBody  bool          // send headers and half a body, then stall
 	zipSizes   []int         // compressed size of the template of every call
 }
@@ -103,6 +104,7 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 	f.keys = append(f.keys, key)
 	status, body, rep, html := f.status, f.body, f.report, f.html
 	answer, delay, retryAfter := f.answer, f.delay, f.retryAfter
+	statusType := f.statusType
 	f.mu.Unlock()
 	if delay > 0 {
 		time.Sleep(delay)
@@ -123,7 +125,10 @@ func (f *fakeBanner) handle(w http.ResponseWriter, r *http.Request) {
 		if retryAfter != "" {
 			w.Header().Set("Retry-After", retryAfter)
 		}
-		w.Header().Set("Content-Type", "application/json")
+		if statusType == "" {
+			statusType = "application/json"
+		}
+		w.Header().Set("Content-Type", statusType)
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
 		return
