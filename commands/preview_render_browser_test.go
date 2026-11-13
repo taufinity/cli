@@ -1,8 +1,10 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,12 +20,18 @@ func browserFor(t *testing.T) context.Context {
 		chromedp.Flag("disable-gpu", true),
 	)
 	opts = append(opts, chromedp.NoSandbox) // CI runners (root, containers) need it
+	// The first Chrome start on a fresh CI runner can take longer than
+	// chromedp's default 20 s to print its DevTools address (seen on the
+	// ubuntu-26.04 image of 2026-11-11, build 196); later starts are quick.
+	opts = append(opts, chromedp.WSURLReadTimeout(60*time.Second))
+	out := &lockedBuffer{}
+	opts = append(opts, chromedp.CombinedOutput(out))
 	actx, cancelA := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancelC := chromedp.NewContext(actx)
-	ctx, cancelT := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancelT := context.WithTimeout(ctx, 90*time.Second)
 	t.Cleanup(func() { cancelT(); cancelC(); cancelA() })
 	if err := chromedp.Run(ctx); err != nil {
-		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v", err)
+		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v\nuitvoer van Chrome:\n%s", err, out.tail(4096))
 	}
 	return ctx
 }
@@ -175,4 +183,27 @@ func TestPreviewRenderBrowser(t *testing.T) {
 			t.Fatalf("renders = %v", fs.renders)
 		}
 	})
+}
+
+// lockedBuffer collects Chrome's output, which chromedp writes from its own
+// goroutine, for the failure message.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) tail(n int) string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	s := b.buf.Bytes()
+	if len(s) > n {
+		s = s[len(s)-n:]
+	}
+	return string(s)
 }
