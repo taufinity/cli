@@ -63,6 +63,9 @@ func templateKeyFor(dir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := ignoreBannerStateDir(dir); err != nil {
+		return "", err
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		if raw, err := os.ReadFile(path); err == nil {
 			var doc bannerKeyDoc
@@ -108,6 +111,28 @@ func templateKeyFor(dir string) (string, error) {
 		// another CLI was first: read its key on the next round
 	}
 	return "", fmt.Errorf("%s kon niet worden aangemaakt: een ander proces schrijft er ook naar", path)
+}
+
+// ignoreBannerStateDir keeps .taufinity/ out of git with a .gitignore of its
+// own. The key is bound to a folder on one machine, so a committed key file
+// would be rewritten by every other checkout and teammate.
+func ignoreBannerStateDir(dir string) error {
+	state := filepath.Join(dir, bannerStateDir)
+	if err := os.MkdirAll(state, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(state, ".gitignore"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if os.IsExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, werr := f.WriteString("*\n")
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
 }
 
 // publishBannerKey writes the key file atomically and without ever replacing

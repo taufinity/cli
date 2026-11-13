@@ -86,8 +86,7 @@ func walkEligible(ctx context.Context, srcDir string, matcher *ignore.GitIgnore,
 		if relPath == "." {
 			return nil
 		}
-		// a folder rule such as "build/" only matches with a trailing slash
-		if matcher.MatchesPath(relPath) || (info.IsDir() && matcher.MatchesPath(filepath.ToSlash(relPath)+"/")) {
+		if excluded(matcher, relPath, info.IsDir()) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
@@ -239,6 +238,9 @@ func CreateTarGzWithOptions(ctx context.Context, srcDir string, w io.Writer, opt
 			return fmt.Errorf("header for %s: %w", relPath, err)
 		}
 		hdr.Name = filepath.ToSlash(relPath)
+		// FileInfoHeader fills in the local user and group: they say nothing
+		// about the template and do not belong in an upload.
+		hdr.Uname, hdr.Gname, hdr.Uid, hdr.Gid = "", "", 0, 0
 		if err := tw.WriteHeader(hdr); err != nil {
 			return wrapZipErr(opts, "create entry "+relPath, err)
 		}

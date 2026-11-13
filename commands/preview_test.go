@@ -800,8 +800,13 @@ func TestBannerPreviewTemplateKey(t *testing.T) {
 			t.Fatalf("file: %q %v", raw, err)
 		}
 		entries, _ := os.ReadDir(filepath.Dir(path))
-		if len(entries) != 1 {
-			t.Fatalf("temp files left behind: %v", entries)
+		for _, e := range entries {
+			if e.Name() != bannerKeyFile && e.Name() != ".gitignore" {
+				t.Fatalf("temp files left behind: %v", entries)
+			}
+		}
+		if len(entries) != 2 {
+			t.Fatalf("want preview.json and .gitignore, got %v", entries)
 		}
 	})
 	t.Run("sent_with_every_fill", func(t *testing.T) {

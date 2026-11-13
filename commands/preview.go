@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -77,9 +78,9 @@ PRIJS
 
 SLEUTEL
   Bij het eerste gebruik maakt dit commando .taufinity/preview.json in de
-  sjabloonmap, met een willekeurige template_key. Bewaar dit bestand bij het
-  sjabloon zodat de sleutel gelijk blijft; er staat geen geheim in. De map
-  .taufinity/ gaat nooit mee in de zip.
+  sjabloonmap, met een willekeurige template_key. Laat dit bestand staan,
+  dan blijft de sleutel gelijk; er staat geen geheim in. De map .taufinity/
+  gaat nooit mee in de zip en heeft een eigen .gitignore, dus ook niet in git.
   De sleutel hoort bij deze map: het bestand onthoudt welke map (als code, geen
   pad of gebruikersnaam). Een gekopieerde of verplaatste map krijgt daarom een
   eigen sleutel, en daarmee een eigen sessie van 1 credit.
@@ -120,6 +121,21 @@ func init() {
 	f.BoolVar(&bannerNoWatch, "no-watch", false, "bewaak de map niet, vul één keer in")
 	f.BoolVar(&bannerInit, "init", false, "schrijf voorbeeld.csv naast het sjabloon")
 	f.BoolVar(&bannerForce, "force", false, "overschrijf een bestaand voorbeeld.csv (met --init)")
+}
+
+// bannerRenderClientTimeout covers the render endpoint's own wait plus the upload and
+// the download around it.
+const bannerRenderClientTimeout = renderTimeout + 30*time.Second
+
+// newBannerRenderClient is the client of the "Echte render" button: a paid call,
+// so it is never retried, and it waits for a slow render.
+func newBannerRenderClient() *api.Client {
+	client := api.NewRender(GetAPIURL(), bannerRenderClientTimeout)
+	client.SetDebug(IsDebug())
+	if org := GetOrg(); org != "" {
+		client.SetOrg(org)
+	}
+	return client
 }
 
 func newBannerClient() *api.Client {
@@ -169,7 +185,7 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	srv := newBannerServer()
-	srv.Renderer = &bannerRenderer{Client: src.Client, Dir: dir, DataFlag: flagBannerData, Row: flagBannerRow}
+	srv.Renderer = &bannerRenderer{Client: newBannerRenderClient(), Dir: dir, DataFlag: flagBannerData, Row: flagBannerRow}
 	defer srv.Close()
 	ln, err := srv.Listen(bannerPort)
 	if err != nil {

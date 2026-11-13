@@ -327,10 +327,10 @@ keer invullen toont de terminal de stand ("1 credit voor deze template, sessie t
 tekst. De tijd is lokale tijd.
 
 **`.taufinity/preview.json`.** Bij het eerste gebruik maakt het commando in de
-sjabloonmap `.taufinity/preview.json` met een willekeurige `template_key`. Bewaar dit
-bestand bij het sjabloon, dan blijft de sleutel gelijk en telt een nieuwe sessie niet
-dubbel. Er staat geen geheim in. De map `.taufinity/` gaat nooit mee in de zip naar
-Studio. De sleutel hoort bij de map: het bestand onthoudt welke map, als code (geen pad
+sjabloonmap `.taufinity/preview.json` met een willekeurige `template_key`. Laat dit
+bestand staan, dan blijft de sleutel gelijk en telt een nieuwe sessie niet dubbel. Er
+staat geen geheim in. De map `.taufinity/` gaat nooit mee in de zip naar Studio, en
+heeft een eigen `.gitignore`, zodat hij ook niet in git belandt. De sleutel hoort bij de map: het bestand onthoudt welke map, als code (geen pad
 of gebruikersnaam). Een gekopieerde of verplaatste map, of een nieuwe clone op een
 andere plek, krijgt daarom een eigen sleutel en daarmee een eigen sessie van 1 credit.
 

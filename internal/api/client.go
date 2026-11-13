@@ -95,6 +95,19 @@ func NewPreviewWithTimeout(baseURL string, timeout time.Duration) *Client {
 	})
 }
 
+// NewRender is the client for a paid action such as a real render: it never
+// retries (a 504 from a proxy while Studio is still rendering would otherwise
+// send, and charge, the render twice) and waits as long as the caller says.
+func NewRender(baseURL string, timeout time.Duration) *Client {
+	return newClient(baseURL, func(cfg *httpclient.Config) {
+		cfg.Timeout = timeout
+		cfg.MaxRetries = 0
+		cfg.NoTransportRetry = true
+		cfg.MaxResponseBytes = PreviewMaxResponse
+		cfg.ReturnFinalStatus = true
+	})
+}
+
 func newClient(baseURL string, tweak func(*httpclient.Config)) *Client {
 	cfg := httpclient.DefaultConfig()
 	// CLI-friendly timeouts

@@ -76,6 +76,24 @@ var HardcodedIgnorePatterns = []string{
 }
 
 // Create creates a tar.gz archive of the directory, respecting ignore patterns.
+// secretMatcher holds only the built-in secret patterns. It is checked on its
+// own, before the template's ignore files, because gitignore rules are "last
+// match wins": a "!credentials.json" in a .gitignore or .taufinityignore would
+// otherwise put a secret back into the upload.
+var secretMatcher = ignore.CompileIgnoreLines(HardcodedIgnorePatterns...)
+
+// excluded reports whether relPath stays out of an upload: a built-in secret
+// pattern always, otherwise the combined ignore rules. A folder rule such as
+// "build/" only matches with a trailing slash.
+func excluded(matcher *ignore.GitIgnore, relPath string, isDir bool) bool {
+	for _, m := range []*ignore.GitIgnore{secretMatcher, matcher} {
+		if m.MatchesPath(relPath) || (isDir && m.MatchesPath(filepath.ToSlash(relPath)+"/")) {
+			return true
+		}
+	}
+	return false
+}
+
 func Create(srcDir, destPath string) error {
 	// Collect all ignore patterns
 	patterns := CollectIgnorePatterns(srcDir)
@@ -115,7 +133,7 @@ func Create(srcDir, destPath string) error {
 		}
 
 		// Check if ignored
-		if matcher.MatchesPath(relPath) {
+		if excluded(matcher, relPath, false) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}

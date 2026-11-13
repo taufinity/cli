@@ -242,6 +242,8 @@ func (s *bannerServer) handlePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", bannerPageCSP(s.BannerOrigin()))
+	// No other site may frame the page: a click there could buy a real render.
+	w.Header().Set("X-Frame-Options", "DENY")
 	_, _ = w.Write(bytes.Replace(bannerPageHTML, []byte(renderTokenPlaceholder), []byte(s.token), 1))
 }
 
@@ -374,7 +376,8 @@ var bannerReadyHook = "<script>" + bannerBridge() + "</script>"
 func bannerPageCSP(bannerOrigin string) string {
 	return "default-src 'self'; script-src " + inlineHash(bannerPageHTML, "script") +
 		"; style-src " + inlineHash(bannerPageHTML, "style") +
-		"; frame-src " + bannerOrigin + "; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'"
+		"; frame-src " + bannerOrigin + "; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'" +
+		"; frame-ancestors 'none'"
 }
 
 // inlineHash is the CSP hash source of the first inline <tag> element.

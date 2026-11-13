@@ -152,7 +152,9 @@ func (f *fakeRenderStudio) client() *api.Client {
 }
 
 func (f *fakeRenderStudio) renderer(dir string) *bannerRenderer {
-	return &bannerRenderer{Client: f.client(), Dir: dir}
+	c := api.NewRender(f.srv.URL, bannerRenderClientTimeout) // the client the button really uses
+	c.SetAuth("test-token")
+	return &bannerRenderer{Client: c, Dir: dir}
 }
 
 func renderReport() *bannerReport {
