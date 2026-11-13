@@ -80,6 +80,9 @@ SLEUTEL
   sjabloonmap, met een willekeurige template_key. Bewaar dit bestand bij het
   sjabloon zodat de sleutel gelijk blijft; er staat geen geheim in. De map
   .taufinity/ gaat nooit mee in de zip.
+  De sleutel hoort bij deze map: het bestand onthoudt welke map (als code, geen
+  pad of gebruikersnaam). Een gekopieerde of verplaatste map krijgt daarom een
+  eigen sleutel, en daarmee een eigen sessie van 1 credit.
 
 VEILIGHEID
   Alleen gewone bestanden in de map gaan mee: symbolische links worden overgeslagen

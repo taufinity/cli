@@ -729,7 +729,7 @@ func TestBannerPreviewTemplateKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		key := doc["template_key"]
-		if !regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`).MatchString(key) || len(doc) != 1 {
+		if !regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`).MatchString(key) || len(doc) != 2 || doc["folder"] == "" {
 			t.Fatalf("doc: %v", doc)
 		}
 		fill(t, f, dir)
