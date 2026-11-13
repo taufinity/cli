@@ -349,13 +349,13 @@ func TestBannerPreviewServer(t *testing.T) {
 		if code, body := httpGet(t, base+"/"); code != 200 || !strings.Contains(body, "row-picker") {
 			t.Fatalf("page: %d", code)
 		}
-		if code, body := httpGet(t, srv.BannerOrigin()+"/rows/0/a/b.css"); code != 200 || body != "b{}" {
+		if code, body := httpGet(t, srv.BannerBase()+"/rows/0/a/b.css"); code != 200 || body != "b{}" {
 			t.Fatalf("file: %d %q", code, body)
 		}
-		if code, _ := httpGet(t, srv.BannerOrigin()+"/rows/0/nope.css"); code != 404 {
+		if code, _ := httpGet(t, srv.BannerBase()+"/rows/0/nope.css"); code != 404 {
 			t.Fatalf("missing: %d", code)
 		}
-		if code, _ := httpGet(t, srv.BannerOrigin()+"/rows/../../etc/passwd"); code == 200 {
+		if code, _ := httpGet(t, srv.BannerBase()+"/rows/../../etc/passwd"); code == 200 {
 			t.Fatal("path escape")
 		}
 		code, body := httpGet(t, base+"/api/state")
@@ -389,7 +389,7 @@ func TestBannerPreviewServer(t *testing.T) {
 		srv, _, _ := startBanner(t, simpleReport(), map[string]string{
 			"rows/0/index.html": withMeta, "rows/0/other.html": withMeta,
 		})
-		_, got := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html")
+		_, got := httpGet(t, srv.BannerBase()+"/rows/0/index.html")
 		if !strings.Contains(got, "window.__taufinityReady") {
 			t.Fatal("hook missing")
 		}
@@ -399,7 +399,7 @@ func TestBannerPreviewServer(t *testing.T) {
 		if strings.Count(got, "<script") != 1 {
 			t.Fatal("only one script")
 		}
-		if _, other := httpGet(t, srv.BannerOrigin()+"/rows/0/other.html"); other != withMeta {
+		if _, other := httpGet(t, srv.BannerBase()+"/rows/0/other.html"); other != withMeta {
 			t.Fatal("only the entry file gets the hook")
 		}
 		if string(injectReadyHook([]byte(plain))) != plain || string(injectReadyHook([]byte(notSignal))) != notSignal {
@@ -410,7 +410,7 @@ func TestBannerPreviewServer(t *testing.T) {
 	t.Run("files_on_disk_unchanged", func(t *testing.T) {
 		withMeta := `<html><head><meta name="taufinity.ready" content="signal"></head></html>`
 		srv, _, dir := startBanner(t, simpleReport(), map[string]string{"rows/0/index.html": withMeta})
-		httpGet(t, srv.BannerOrigin()+"/rows/0/index.html")
+		httpGet(t, srv.BannerBase()+"/rows/0/index.html")
 		b, _ := os.ReadFile(filepath.Join(dir, "rows", "0", "index.html"))
 		if string(b) != withMeta {
 			t.Fatalf("file on disk changed: %s", b)
@@ -657,7 +657,7 @@ func TestBannerPreviewWatch(t *testing.T) {
 		if st.Failure == "" || st.Report == nil {
 			t.Fatalf("state: %+v", st)
 		}
-		if code, _ := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html"); code != 200 {
+		if code, _ := httpGet(t, srv.BannerBase()+"/rows/0/index.html"); code != 200 {
 			t.Fatalf("last good banner gone: %d", code)
 		}
 		f.mu.Lock()
@@ -705,7 +705,7 @@ func TestBannerPreviewWatch(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatal("no reload event")
 		}
-		if _, body := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html"); body != "y" {
+		if _, body := httpGet(t, srv.BannerBase()+"/rows/0/index.html"); body != "y" {
 			t.Fatalf("server did not switch folders: %q", body)
 		}
 	})

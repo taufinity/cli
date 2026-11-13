@@ -110,7 +110,7 @@
     var r = state.report;
     var p = r.entry.split("/").map(encodeURIComponent).join("/");
     // the banner lives on its own origin (a second listener), see the CSP
-    return state.banner_origin + "/rows/" + i + "/" + p + "?v=" + state.version;
+    return state.banner_base + "/rows/" + i + "/" + p + "?v=" + state.version;
   }
   function rowOf(i) {
     var rows = state.report.rows;

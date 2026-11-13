@@ -35,6 +35,9 @@ type bannerState struct {
 	// BannerOrigin is where the banner files are served from: a second
 	// listener, so the template runs on an origin of its own.
 	BannerOrigin string `json:"banner_origin"`
+	// BannerBase is the URL the banner files are under: the banner origin and
+	// a random key of this run (see bannerHandler).
+	BannerBase string `json:"banner_base"`
 }
 
 // bannerServer serves the preview page and the prepared files of the current
@@ -64,6 +67,7 @@ type bannerServer struct {
 	bannerLn   net.Listener
 	addr       string
 	bannerAddr string
+	bannerKey  string // random path prefix of the banner files, see bannerHandler
 }
 
 func newBannerServer() *bannerServer {
@@ -71,7 +75,11 @@ func newBannerServer() *bannerServer {
 	if _, err := rand.Read(raw); err != nil {
 		panic("geen willekeurige bytes beschikbaar: " + err.Error())
 	}
-	return &bannerServer{subs: map[chan string]struct{}{}, token: hex.EncodeToString(raw)}
+	key := make([]byte, 16)
+	if _, err := rand.Read(key); err != nil {
+		panic("geen willekeurige bytes beschikbaar: " + err.Error())
+	}
+	return &bannerServer{subs: map[chan string]struct{}{}, token: hex.EncodeToString(raw), bannerKey: hex.EncodeToString(key)}
 }
 
 // Listen binds 127.0.0.1 only. port 0 picks a free one. A second listener on a
@@ -98,6 +106,9 @@ func (s *bannerServer) URL() string { return "http://" + s.addr + "/" }
 
 // BannerOrigin is the origin of the banner listener.
 func (s *bannerServer) BannerOrigin() string { return "http://" + s.bannerAddr }
+
+// BannerBase is the URL the banner files are under: <origin>/<key>.
+func (s *bannerServer) BannerBase() string { return s.BannerOrigin() + "/" + s.bannerKey }
 
 func (s *bannerServer) Serve(ln net.Listener) error {
 	s.httpSrv = &http.Server{Handler: s.Handler(), ReadHeaderTimeout: 10 * time.Second}
@@ -172,7 +183,7 @@ func (s *bannerServer) Fail(msg string) {
 func (s *bannerServer) state() bannerState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return bannerState{Report: s.report, Charge: s.report.chargeText(), Failure: s.failure, Version: s.version, BannerOrigin: s.BannerOrigin()}
+	return bannerState{Report: s.report, Charge: s.report.chargeText(), Failure: s.failure, Version: s.version, BannerOrigin: s.BannerOrigin(), BannerBase: s.BannerBase()}
 }
 
 func (s *bannerServer) broadcast(event, data string) {
@@ -199,14 +210,32 @@ func (s *bannerServer) Handler() http.Handler {
 	return localOnly(nosniff(mux))
 }
 
-// bannerHandler is the banner origin: only rows/<i>/... and nothing of /api/.
-// It may only be framed by the page.
+// bannerHandler is the banner origin: only <key>/rows/<i>/... and nothing of
+// /api/. It may only be framed by the page.
+//
+// The key is random per run and only the page knows it (from /api/state, which
+// no other site can read). It is what keeps the filled rows, which carry the
+// customer's data, away from other websites: without it they 404.
+//
+// That also makes CORS safe here. The banner is framed with
+// sandbox="allow-scripts", so its origin is opaque ("null"), and every
+// CORS-mode request it makes to its own files (an @font-face font, a fetch of a
+// JSON file, a Lottie animation) fails without Access-Control-Allow-Origin:
+// fonts would fall back silently and the preview would no longer show what a
+// render gets. An opaque origin sends no Referer, so the header cannot be
+// limited to the banner by anything but the path: a request that names the
+// key came from the banner (or from someone who already has the page).
 func (s *bannerServer) bannerHandler() http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rows/", func(w http.ResponseWriter, r *http.Request) {
+	files := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "frame-ancestors http://"+s.addr)
+		w.Header().Add("Vary", "Origin")
+		if r.Header.Get("Origin") == "null" {
+			w.Header().Set("Access-Control-Allow-Origin", "null")
+		}
 		s.handleFile(w, r)
 	})
+	mux := http.NewServeMux()
+	mux.Handle("/"+s.bannerKey+"/rows/", http.StripPrefix("/"+s.bannerKey, files))
 	return localOnly(nosniff(mux))
 }
 

@@ -352,7 +352,7 @@ func TestBannerPreviewIsolation(t *testing.T) {
 		if srv.addr == srv.bannerAddr || srv.BannerOrigin() == strings.TrimSuffix(srv.URL(), "/") {
 			t.Fatal("page and banner share an origin")
 		}
-		if code, body := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html"); code != 200 || !strings.Contains(body, "hoi") {
+		if code, body := httpGet(t, srv.BannerBase()+"/rows/0/index.html"); code != 200 || !strings.Contains(body, "hoi") {
 			t.Fatalf("banner origin: %d", code)
 		}
 		if code, _ := httpGet(t, base+"/rows/0/index.html"); code != 404 {
@@ -365,7 +365,7 @@ func TestBannerPreviewIsolation(t *testing.T) {
 		if !strings.Contains(page, `sandbox="allow-scripts"`) || strings.Contains(page, "allow-same-origin") {
 			t.Fatal("the iframe must be sandboxed with allow-scripts only")
 		}
-		_, body := httpGet(t, srv.BannerOrigin()+"/rows/0/index.html")
+		_, body := httpGet(t, srv.BannerBase()+"/rows/0/index.html")
 		if !strings.Contains(body, "taufinity-driver") {
 			t.Fatal("the bridge is missing from the banner")
 		}
@@ -380,7 +380,7 @@ func TestBannerPreviewIsolation(t *testing.T) {
 	})
 	t.Run("nosniff_everywhere", func(t *testing.T) {
 		srv, base, _ := startBanner(t, simpleReport(), files)
-		for _, u := range []string{base + "/", base + "/api/state", base + "/nope", srv.BannerOrigin() + "/rows/0/index.html", srv.BannerOrigin() + "/rows/0/missing", srv.BannerOrigin() + "/api/state"} {
+		for _, u := range []string{base + "/", base + "/api/state", base + "/nope", srv.BannerBase() + "/rows/0/index.html", srv.BannerBase() + "/rows/0/missing", srv.BannerOrigin() + "/api/state"} {
 			if got := get(t, u).Header.Get("X-Content-Type-Options"); got != "nosniff" {
 				t.Fatalf("%s: X-Content-Type-Options = %q", u, got)
 			}
@@ -406,7 +406,7 @@ func TestBannerPreviewIsolation(t *testing.T) {
 		if !strings.Contains(csp, "script-src 'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'") {
 			t.Fatalf("CSP does not hash the page script: %q", csp)
 		}
-		if cb := get(t, srv.BannerOrigin()+"/rows/0/index.html").Header.Get("Content-Security-Policy"); !strings.Contains(cb, "frame-ancestors") {
+		if cb := get(t, srv.BannerBase()+"/rows/0/index.html").Header.Get("Content-Security-Policy"); !strings.Contains(cb, "frame-ancestors") {
 			t.Fatalf("the banner may be framed by anyone: %q", cb)
 		}
 	})
