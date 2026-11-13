@@ -327,6 +327,13 @@ func (s *bannerServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	}
 	rel := path.Clean("/" + strings.TrimPrefix(r.URL.Path, "/"))
 	rel = strings.TrimPrefix(rel, "/") // rows/<i>/...
+	// Only a file of a row. The mux routes rows/ only, but an encoded ".."
+	// (%2e%2e, ..%2f) is decoded after routing, so a path can still clean up to
+	// the fill folder's own files (report.json, the lock file).
+	if seg := strings.SplitN(rel, "/", 3); len(seg) != 3 || seg[0] != "rows" || !isRowIndex(seg[1]) {
+		http.NotFound(w, r)
+		return
+	}
 	full := filepath.Join(dir, filepath.FromSlash(rel))
 	if !strings.HasPrefix(full, filepath.Clean(dir)+string(os.PathSeparator)) {
 		http.NotFound(w, r)
@@ -479,4 +486,18 @@ func injectReadyHook(html []byte) []byte {
 		return html
 	}
 	return injectBridge(html)
+}
+
+// isRowIndex reports whether s is a row number as the fill names its folders:
+// decimal digits only.
+func isRowIndex(s string) bool {
+	if s == "" || len(s) > 6 {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
