@@ -32,8 +32,8 @@ var tinyPNG = func() []byte {
 	return b.Bytes()
 }()
 
-// fakeStudio records the real-render requests of the contract.
-type fakeStudio struct {
+// fakeRenderStudio records the real-render requests of the contract.
+type fakeRenderStudio struct {
 	srv *httptest.Server
 	mu  sync.Mutex
 
@@ -54,14 +54,14 @@ type fakeStudio struct {
 	entered       chan struct{} // signalled when a render arrives
 }
 
-func newFakeStudio(t *testing.T) *fakeStudio {
-	f := &fakeStudio{}
+func newFakeRenderStudio(t *testing.T) *fakeRenderStudio {
+	f := &fakeRenderStudio{}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.srv.Close)
 	return f
 }
 
-func (f *fakeStudio) handle(w http.ResponseWriter, r *http.Request) {
+func (f *fakeRenderStudio) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.auths = append(f.auths, r.Header.Get("Authorization"))
 	f.mu.Unlock()
@@ -145,13 +145,13 @@ func (f *fakeStudio) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (f *fakeStudio) client() *api.Client {
+func (f *fakeRenderStudio) client() *api.Client {
 	c := api.NewPreview(f.srv.URL)
 	c.SetAuth("test-token")
 	return c
 }
 
-func (f *fakeStudio) renderer(dir string) *bannerRenderer {
+func (f *fakeRenderStudio) renderer(dir string) *bannerRenderer {
 	return &bannerRenderer{Client: f.client(), Dir: dir}
 }
 
@@ -177,7 +177,7 @@ func TestPreviewRenderUpload(t *testing.T) {
 		if err := os.Symlink("index.html", filepath.Join(dir, "link.html")); err != nil {
 			t.Fatal(err)
 		}
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		id, err := fs.renderer(dir).Upload(context.Background())
 		if err != nil || id != "tpl_abc" {
 			t.Fatalf("id=%q err=%v", id, err)
@@ -204,7 +204,7 @@ func TestPreviewRenderUpload(t *testing.T) {
 			"index.html": "x", ".env": "A=1", "credentials.json": "{}", ".npmrc": "t", "id_rsa": "k",
 			"a.tfvars": "x", ".taufinity/preview.json": "{}", ".aws/credentials": "x",
 		})
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		if _, err := fs.renderer(dir).Upload(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -219,7 +219,7 @@ func TestPreviewRenderUpload(t *testing.T) {
 	})
 	t.Run("upload_error_shown", func(t *testing.T) {
 		dir := templateDir(t, nil)
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		fs.uploadStatus, fs.uploadBody = 413, `{"error":"archief is groter dan 32 MB"}`
 		_, err := fs.renderer(dir).Upload(context.Background())
 		if err == nil || !strings.Contains(err.Error(), "archief is groter dan 32 MB") || !strings.Contains(err.Error(), "uploaden") {
@@ -231,7 +231,7 @@ func TestPreviewRenderUpload(t *testing.T) {
 func TestPreviewRenderRequest(t *testing.T) {
 	ctx := context.Background()
 	t.Run("png_body", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		dir := templateDir(t, nil)
 		out := filepath.Join(t.TempDir(), "r.png")
 		res, err := fs.renderer(dir).Render(ctx, renderReport(), 0, "png", out)
@@ -256,7 +256,7 @@ func TestPreviewRenderRequest(t *testing.T) {
 		}
 	})
 	t.Run("gif_body_has_10_frames", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		_, err := fs.renderer(templateDir(t, nil)).Render(ctx, renderReport(), 0, "gif", filepath.Join(t.TempDir(), "r.gif"))
 		if err != nil {
 			t.Fatal(err)
@@ -266,7 +266,7 @@ func TestPreviewRenderRequest(t *testing.T) {
 		}
 	})
 	t.Run("variables_from_current_row", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		dir := templateDir(t, map[string]string{"data.csv": "titel;prijs\nKoude Haven;9,95\nWarme Haven;12\n"})
 		rep := renderReport()
 		rep.Rows = append(rep.Rows, bannerRow{Index: 1, Label: "regel 3"})
@@ -279,7 +279,7 @@ func TestPreviewRenderRequest(t *testing.T) {
 		}
 	})
 	t.Run("refused_422_shows_server_text", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		fs.renderStatus, fs.renderBody = 422, `{"error":"banner geweigerd: tekst past niet"}`
 		_, err := fs.renderer(templateDir(t, nil)).Render(ctx, renderReport(), 0, "png", filepath.Join(t.TempDir(), "r.png"))
 		var re *renderError
@@ -288,7 +288,7 @@ func TestPreviewRenderRequest(t *testing.T) {
 		}
 	})
 	t.Run("not_achieved_reported", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		fs.renderStatus2, fs.notes = "not_achieved", "logo te klein"
 		res, err := fs.renderer(templateDir(t, nil)).Render(ctx, renderReport(), 0, "png", filepath.Join(t.TempDir(), "r.png"))
 		if err != nil || res.Status != "not_achieved" || res.Notes != "logo te klein" || res.File != "" || fs.downloads != 0 {
@@ -298,7 +298,7 @@ func TestPreviewRenderRequest(t *testing.T) {
 }
 
 // startRenderServer is a page server whose Renderer talks to the fake Studio.
-func startRenderServer(t *testing.T, fs *fakeStudio) (*bannerServer, string) {
+func startRenderServer(t *testing.T, fs *fakeRenderStudio) (*bannerServer, string) {
 	t.Helper()
 	dir := templateDir(t, map[string]string{"index.html": "<html><body>hoi</body></html>"})
 	s, base, _ := startBanner(t, renderReport(), map[string]string{"rows/0/index.html": "<html></html>"})
@@ -327,7 +327,7 @@ func postRender(t *testing.T, base, token, origin, body string) (int, string) {
 func TestPreviewRenderEndpointGuards(t *testing.T) {
 	const ok = `{"row":0,"format":"png"}`
 	t.Run("wrong_method", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		s, base := startRenderServer(t, fs)
 		for _, m := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 			req, _ := http.NewRequest(m, base+"/api/render", nil)
@@ -346,7 +346,7 @@ func TestPreviewRenderEndpointGuards(t *testing.T) {
 		}
 	})
 	t.Run("missing_token", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		_, base := startRenderServer(t, fs)
 		if code, _ := postRender(t, base, "", "", ok); code != 403 {
 			t.Fatalf("code = %d", code)
@@ -356,7 +356,7 @@ func TestPreviewRenderEndpointGuards(t *testing.T) {
 		}
 	})
 	t.Run("wrong_token", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		s, base := startRenderServer(t, fs)
 		if code, _ := postRender(t, base, s.token+"x", "", ok); code != 403 {
 			t.Fatalf("code = %d", code)
@@ -369,7 +369,7 @@ func TestPreviewRenderEndpointGuards(t *testing.T) {
 		}
 	})
 	t.Run("foreign_origin", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		s, base := startRenderServer(t, fs)
 		for _, o := range []string{"http://evil.example", "null", s.BannerOrigin()} {
 			if code, _ := postRender(t, base, s.token, o, ok); code != 403 {
@@ -384,7 +384,7 @@ func TestPreviewRenderEndpointGuards(t *testing.T) {
 		}
 	})
 	t.Run("one_at_a_time", func(t *testing.T) {
-		fs := newFakeStudio(t)
+		fs := newFakeRenderStudio(t)
 		fs.hold = make(chan struct{})
 		fs.entered = make(chan struct{}, 1)
 		s, base := startRenderServer(t, fs)
@@ -450,7 +450,7 @@ func TestPreviewRenderTokenOnlyInPage(t *testing.T) {
 }
 
 func TestPreviewRenderResultServed(t *testing.T) {
-	fs := newFakeStudio(t)
+	fs := newFakeRenderStudio(t)
 	s, base := startRenderServer(t, fs)
 	get := func(path string) (*http.Response, []byte) {
 		resp, err := http.Get(base + path)

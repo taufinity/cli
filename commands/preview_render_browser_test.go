@@ -57,15 +57,15 @@ func openPage(t *testing.T, ctx context.Context, url string) {
 	waitJS(t, ctx, `document.querySelectorAll("#row-picker option").length > 0`)
 }
 
-func (f *fakeStudio) counts() (uploads, renders int) {
+func (f *fakeRenderStudio) counts() (uploads, renders int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.uploads, len(f.renders)
 }
 
 func TestPreviewRenderBrowser(t *testing.T) {
-	setup := func(t *testing.T) (*fakeStudio, string, context.Context) {
-		fs := newFakeStudio(t)
+	setup := func(t *testing.T) (*fakeRenderStudio, string, context.Context) {
+		fs := newFakeRenderStudio(t)
 		_, base := startRenderServer(t, fs)
 		ctx := browserFor(t)
 		openPage(t, ctx, base+"/")

@@ -338,6 +338,91 @@ andere plek, krijgt daarom een eigen sleutel en daarmee een eigen sessie van 1 c
 voor de duur van één verzoek. Bewaard blijft alleen de regel voor de afrekening
 (organisatie, ontwikkelaar, sleutel, credits, tijd).
 
+## Code review before you push
+
+`taufinity review` checks your local changes with Taufinity Studio before you push to a branch that deploys. It reads the local git repository only, so it works with GitHub, Bitbucket, GitLab or no git host at all, and it talks to Taufinity Studio and nothing else.
+
+Your organisation must have code review switched on. If it is not, the command says so and tells you to ask your Taufinity contact.
+
+```bash
+taufinity review                      # your changes against the base branch
+taufinity review src/ docs/index.md   # only these files or folders
+taufinity review --staged             # only what is staged
+taufinity review --base origin/develop
+taufinity review --whole src/api      # the current content of these files, changed or not
+```
+
+**Diff mode (default).** The base is the upstream of the current branch, else `origin/main`, else `main`; override it with `--base <ref>`. The working tree is compared with the merge-base of that ref and HEAD, so committed and uncommitted changes are both included, plus new files that are not ignored. `--staged` compares the index instead. `--head <rev>` reviews only the commits up to that revision, leaving uncommitted and untracked files out. Paths are git pathspecs relative to the current directory. When nothing changed (under the paths), the command says so and exits 0 without calling Studio.
+
+**Whole mode.** `--whole` reviews the current content of the files under the paths you give (at least one is required). A review over 1.5 MiB after exclusions is refused locally: narrow the paths.
+
+### Exit codes
+
+`--fail-on critical|high|medium|none` (default `critical`) decides when the command fails.
+
+| Code | Meaning |
+| ---- | ------- |
+| 0 | No finding at or above `--fail-on`, or nothing to review |
+| 1 | A finding at or above `--fail-on`, or a `request_changes` verdict that reports no critical or high finding (the counts are incomplete, so the gate fails rather than passes; not with `--fail-on none`) |
+| 2 | An error or a refusal (not switched on, budget reached, not signed in, no result) |
+
+The review text goes to stdout. Progress and a one-line summary (counts per severity, verdict, "partial" when the review stopped early) go to stderr. `--json` prints only the final result line as JSON on stdout. `--repo <name>` overrides the repository name, which defaults to `owner/name` from the origin remote, else the folder name. `--dry-run` shows what would be sent (mode, base, repo, file count, sizes, skipped files, masked count) and sends nothing.
+
+### Pre-push hook
+
+```bash
+taufinity review install-hook         # writes .git/hooks/pre-push
+taufinity review install-hook --force # replace an existing hook
+```
+
+The hook reviews what is being pushed, not your working tree. For each pushed ref, git gives the hook the local commit and the remote's current commit, and the hook runs `taufinity review --fail-on critical --head <local sha> --base <remote sha>`: the commits in that range, without uncommitted or untracked files. A new branch (or a remote commit you have not fetched) is compared with the default base: the upstream, `origin/main` or `main`. Deleting a remote branch reviews nothing. The hook works in git worktrees. The push stops when the review finds a critical issue. If the review cannot run (offline, not signed in, code review not switched on), the hook says so and lets the push go. Skip it once with `git push --no-verify`.
+
+### Staging
+
+```bash
+taufinity review --env staging
+```
+
+`--env staging`, `--api-url` and `--org` work as for every other command. Reviews are sent to `<Studio URL>/api/code-review/reviews` and nowhere else. `<Studio URL>` is the API URL you configured (default, `--env` or `--api-url`), so only point it at a Studio you trust. Code is only sent over https (plain http only to localhost).
+
+### CI
+
+Set `TAUFINITY_API_KEY` and the command uses it instead of a stored login:
+
+```bash
+TAUFINITY_API_KEY=... taufinity review --fail-on high
+```
+
+CI checkouts are often shallow: fetch enough history for the merge-base (for example `fetch-depth: 0`) or pass `--base <ref>`.
+
+The key is sent as `X-API-Key` and is never printed, not even with `--debug`. Debug output shows the size of the request, never its content.
+
+### What is never sent
+
+These files are never read and never sent, wherever they are in the repository:
+
+- Env and credential files: `.env`, `*.env`, `.env.*`, `.env-*`, `.envrc`, `.netrc`, `_netrc`, `.pgpass`, `.npmrc`, `.pypirc`, `.git-credentials`, `.dockercfg`, `.docker/config.json`, `credentials.json`.
+- Keys and certificates: SSH private keys `id_rsa*`, `id_dsa*`, `id_ecdsa*`, `id_ed25519*` (with their `.pub`), `*.ppk`, and `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `*.keystore`.
+- Terraform state and variables: `*.tfstate`, `*.tfstate.backup`, `*.tfvars`, `*.tfvars.json`.
+- Local databases: `*.sqlite`, `*.db`, `*.dump`, `*.sql.gz`.
+- Generated and vendored files: `node_modules`, `vendor`, `dist` and `build` at the repository root, `*.min.js`, `*.min.css`, `*.map`, and the lock files `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `Cargo.lock`, `composer.lock`.
+
+Also never sent:
+
+- Google service-account key files: any `*.json` with `"type": "service_account"` and a `private_key`. They have no fixed name, so these are recognised by their content, which is read locally and not sent.
+- Binary files and files over 1 MiB.
+- Files ignored by git.
+
+Each skipped file is listed on stderr with the reason. Secrets in what is sent are replaced by `[MASKED]` (cloud and API keys, tokens, JWTs, private key blocks, URL credentials, bearer tokens, and values of 8 or more characters, quoted or not, assigned to names such as `password`, `secret` or `token`); the number masked is printed, never the values. The CLI writes no code or review to disk.
+
+### Cost
+
+Studio keeps the cost of reviews against your organisation. The CLI never prints an amount: after each review it shows how much of the organisation's budget is used, for example `Code review budget used: 6% today, 2% this month`. Amounts are for system admins in Studio.
+
+### From an MCP client
+
+`taufinity mcp stdio` adds a tool, `review_local_changes` (arguments `paths`, `whole`, `base`, `staged`), that runs the same review on the repository in its working directory and returns the review, the counts and the budget line.
+
 ## Configuration
 
 Config is resolved in this order (highest priority first):
