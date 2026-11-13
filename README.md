@@ -295,6 +295,49 @@ Flags:
 - `--api-url URL` — override the upstream (defaults to `$TAUFINITY_API_URL`, then config, then `https://studio.taufinity.io`).
 - `--timeout DURATION` — per-request timeout (default 5m, accommodates BigQuery-backed tools).
 
+## Banner templates bekijken
+
+```bash
+cd mijn-banner-sjabloon
+taufinity preview --init   # schrijft voorbeeld.csv met alle velden
+taufinity preview          # opent de banner in de browser, ververst bij elke wijziging
+```
+
+Het invullen gebeurt op de server met dezelfde code als een echte render, dus je ziet
+precies wat een render krijgt, minus de capture. `--row 3` toont een regel uit de CSV
+(kopregel = regel 1). Zie `taufinity preview --help`. Voor sjablonen van artikelen van
+een site is er `taufinity template preview`.
+
+**Echte render.** De knop "Echte render (normale prijs)" op de pagina vraagt Studio om een
+echte render van de regel die je ziet, tegen de normale prijs: PNG 1 credit, GIF van
+10 frames 2 credits. De pagina vraagt dat één keer in de browser en onthoudt je
+bevestiging (`localStorage`, sleutel `taufinity.preview.renderConfirmed`). Het resultaat
+verschijnt onder de banner.
+
+**Bewaken.** Na een wijziging wacht het commando 250 ms tot het stil is en vult dan
+opnieuw. Wat niet meegaat in de zip naar Studio (`.gitignore`, `.taufinityignore`,
+`.dockerignore`, de vaste uitsluitingen zoals `.env`) start ook geen nieuwe vulling, net
+als tijdelijke bestanden van editors (`.swp`, `~`, `.DS_Store`) en `.git`/`node_modules`.
+Sla je op terwijl een vulling nog onderweg is, dan vervalt die en telt alleen de nieuwste.
+
+**Prijs.** 1 credit per ontwikkelaar, per sjabloon, per uur bekijken. De sessie loopt 60
+minuten vanaf de eerste keer invullen; opslaan daarna in dat uur kost niets. Na elke
+keer invullen toont de terminal de stand ("1 credit voor deze template, sessie tot
+17:46" of "binnen de sessie tot 17:46, geen extra credit"), en de pagina toont dezelfde
+tekst. De tijd is lokale tijd.
+
+**`.taufinity/preview.json`.** Bij het eerste gebruik maakt het commando in de
+sjabloonmap `.taufinity/preview.json` met een willekeurige `template_key`. Laat dit
+bestand staan, dan blijft de sleutel gelijk en telt een nieuwe sessie niet dubbel. Er
+staat geen geheim in. De map `.taufinity/` gaat nooit mee in de zip naar Studio, en
+heeft een eigen `.gitignore`, zodat hij ook niet in git belandt. De sleutel hoort bij de map: het bestand onthoudt welke map, als code (geen pad
+of gebruikersnaam). Een gekopieerde of verplaatste map, of een nieuwe clone op een
+andere plek, krijgt daarom een eigen sleutel en daarmee een eigen sessie van 1 credit.
+
+**Opslag.** Studio bewaart het sjabloon zelf nooit: het leeft alleen in het geheugen
+voor de duur van één verzoek. Bewaard blijft alleen de regel voor de afrekening
+(organisatie, ontwikkelaar, sleutel, credits, tijd).
+
 ## Code review before you push
 
 `taufinity review` checks your local changes with Taufinity Studio before you push to a branch that deploys. It reads the local git repository only, so it works with GitHub, Bitbucket, GitLab or no git host at all, and it talks to Taufinity Studio and nothing else.

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="preview-token" content="__PREVIEW_TOKEN__">
+<title>Banner bekijken</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #f2f3f5; color: #1c1e21; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 16px; background: #fff; border-bottom: 1px solid #d8dbe0; }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; }
+  select, button { font: inherit; padding: 4px 8px; }
+  button.active { background: #1c1e21; color: #fff; }
+  main { padding: 16px; }
+  #refill-error { background: #fdecea; color: #8a1c13; padding: 8px 16px; border-bottom: 1px solid #f3b8b2; }
+  #stage { position: relative; display: inline-block; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  #banner-frame, .cell iframe { border: 0; display: block; background: #fff; }
+  #error-overlay { position: absolute; inset: 0; background: rgba(138,28,19,.94); color: #fff; padding: 14px; overflow: auto; box-sizing: border-box; }
+  #error-overlay code { display: block; margin-bottom: 6px; font-weight: 600; }
+  #overview { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+  .cell .label { font-weight: 600; margin-bottom: 4px; }
+  .cell .box { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  .cell .rowerr { position: absolute; inset: 0; background: rgba(138,28,19,.94); color: #fff; padding: 8px; overflow: auto; box-sizing: border-box; font-size: 12px; }
+  #ready-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #e3f4e6; color: #145a22; }
+  #ready-badge.late { background: #fff1d6; color: #7a4b00; }
+  #scrubber { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
+  #scrubber-range { width: 360px; }
+  #scrubber-note { color: #5b6068; margin-top: 12px; }
+  #field-report { margin-top: 18px; background: #fff; padding: 10px 14px; max-width: 760px; border: 1px solid #d8dbe0; }
+  #field-report h2 { font-size: 13px; margin: 8px 0 2px; }
+  #field-report ul { margin: 0; padding-left: 18px; }
+  .muted { color: #5b6068; }
+  #render-panel { margin-top: 16px; max-width: 760px; }
+  #render-panel .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #render-error { margin-top: 8px; background: #fdecea; color: #8a1c13; padding: 8px 12px; border: 1px solid #f3b8b2; }
+  #render-result { margin-top: 10px; background: #fff; padding: 10px 14px; border: 1px solid #d8dbe0; }
+  #render-result img { display: block; margin-top: 8px; max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  #render-modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+  #render-modal .dialog { background: #fff; padding: 18px 22px; max-width: 420px; border-radius: 6px; }
+  #render-modal .buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div id="refill-error" hidden></div>
+<header>
+  <h1>Banner bekijken</h1>
+  <label>Regel <select id="row-picker"></select></label>
+  <button id="overview-toggle" type="button">Alle regels</button>
+  <span id="size-label" class="muted"></span>
+  <span id="ready-badge" hidden></span>
+  <span id="charge" class="muted"></span>
+</header>
+<main>
+  <section id="single">
+    <div id="stage">
+      <iframe id="banner-frame" title="Banner" sandbox="allow-scripts"></iframe>
+      <div id="error-overlay" hidden></div>
+    </div>
+    <div id="scrubber" hidden>
+      <label for="scrubber-range">Tijd</label>
+      <input id="scrubber-range" type="range" min="0" max="10" step="0.01" value="0">
+      <span id="scrubber-time">0.00 s</span>
+    </div>
+    <div id="scrubber-note" hidden>geen tijdlijn: als GIF of video wordt deze banner geweigerd</div>
+  </section>
+  <section id="overview" hidden></section>
+  <section id="render-panel">
+    <div class="controls">
+      <button id="render-button" type="button">Echte render (normale prijs)</button>
+      <label><input type="radio" name="render-format" value="png" checked> PNG</label>
+      <label><input type="radio" name="render-format" value="gif"> GIF (10 frames)</label>
+    </div>
+    <div id="render-error" hidden></div>
+    <div id="render-result" hidden></div>
+  </section>
+  <section id="field-report"></section>
+</main>
+<div id="render-modal" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="render-modal-title">
+    <strong id="render-modal-title">Echte render</strong>
+    <p>Dit is een echte render tegen de normale prijs, geen gratis voorbeeld.</p>
+    <p id="render-modal-price"></p>
+    <div class="buttons">
+      <button id="render-cancel" type="button">Annuleren</button>
+      <button id="render-confirm" type="button">Bevestigen</button>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var state = null;
+  var view = "row";
+  var selected = 0;
+  var navStart = 0;
+  var readyAt = {};
+  var readyTimer = null;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function readHash() {
+    var h = new URLSearchParams(location.hash.slice(1));
+    if (h.get("view") === "all") view = "all";
+    if (h.get("row")) selected = parseInt(h.get("row"), 10) || 0;
+  }
+  function writeHash() {
+    history.replaceState(null, "", "#row=" + selected + "&view=" + view);
+  }
+
+  function frameSrc(i) {
+    var r = state.report;
+    var p = r.entry.split("/").map(encodeURIComponent).join("/");
+    // the banner lives on its own origin (a second listener), see the CSP
+    return state.banner_base + "/rows/" + i + "/" + p + "?v=" + state.version;
+  }
+  function rowOf(i) {
+    var rows = state.report.rows;
+    for (var k = 0; k < rows.length; k++) { if (rows[k].index === i) return rows[k]; }
+    return rows[0];
+  }
+  function el(tag, text, cls) {
+    var e = document.createElement(tag);
+    if (text != null) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+  function errText(err) {
+    return err.file + (err.line ? ":" + err.line : "") + " " + err.message;
+  }
+
+  function renderPicker() {
+    var sel = $("row-picker");
+    sel.textContent = "";
+    state.report.rows.forEach(function (r) {
+      var o = el("option", r.label + " (" + r.index + ")");
+      o.value = String(r.index);
+      sel.appendChild(o);
+    });
+    if (!state.report.rows.some(function (r) { return r.index === selected; })) selected = state.report.rows[0].index;
+    sel.value = String(selected);
+  }
+
+  function renderSingle() {
+    var r = state.report, row = rowOf(selected);
+    var f = $("banner-frame");
+    f.width = r.width; f.height = r.height;
+    f.style.width = r.width + "px"; f.style.height = r.height + "px";
+    $("stage").style.width = r.width + "px"; $("stage").style.height = r.height + "px";
+    var ov = $("error-overlay");
+    if (row.error) {
+      ov.hidden = false;
+      ov.textContent = "";
+      ov.appendChild(el("code", errText(row.error)));
+      ov.appendChild(el("div", "Deze regel kan niet worden gevuld."));
+      f.hidden = true;
+      f.removeAttribute("src");
+    } else {
+      ov.hidden = true;
+      f.hidden = false;
+      navStart = performance.now();
+      f.src = frameSrc(selected);
+    }
+    $("scrubber").hidden = true;
+    $("scrubber-note").hidden = true;
+    $("ready-badge").hidden = true;
+    clearTimeout(readyTimer);
+  }
+
+  function renderOverview() {
+    var box = $("overview"), r = state.report;
+    box.textContent = "";
+    r.rows.forEach(function (row) {
+      var cell = el("div", null, "cell");
+      cell.appendChild(el("div", row.label, "label"));
+      var b = el("div", null, "box");
+      b.style.width = r.width + "px"; b.style.height = r.height + "px";
+      if (row.error) {
+        b.appendChild(el("div", errText(row.error), "rowerr"));
+      } else {
+        var fr = document.createElement("iframe");
+        fr.width = r.width; fr.height = r.height;
+        fr.title = row.label;
+        fr.setAttribute("sandbox", "allow-scripts"); /* scripts only: the banner stays a stranger to the page */
+        fr.src = frameSrc(row.index);
+        b.appendChild(fr);
+      }
+      cell.appendChild(b);
+      box.appendChild(cell);
+    });
+  }
+
+  function list(parent, title, items) {
+    if (!items || !items.length) return;
+    parent.appendChild(el("h2", title));
+    var ul = el("ul");
+    items.forEach(function (t) { ul.appendChild(el("li", t)); });
+    parent.appendChild(ul);
+  }
+  function renderReport() {
+    var box = $("field-report");
+    box.textContent = "";
+    box.appendChild(el("strong", "Veldrapport"));
+    var rows = view === "all" ? state.report.rows : [rowOf(selected)];
+    var any = false;
+    rows.forEach(function (row) {
+      var has = (row.unfilled || []).length || (row.unused || []).length || (row.warnings || []).length;
+      if (!has) return;
+      any = true;
+      var sec = el("div");
+      if (rows.length > 1) sec.appendChild(el("h2", row.label));
+      list(sec, "Velden zonder waarde", row.unfilled);
+      list(sec, "Kolommen die niets gebruikt", row.unused);
+      list(sec, "Waarschuwingen", row.warnings);
+      box.appendChild(sec);
+    });
+    if (!any) box.appendChild(el("p", "Geen opmerkingen.", "muted"));
+  }
+
+  function render() {
+    var r = state.report;
+    $("size-label").textContent = r.width + " × " + r.height;
+    renderPicker();
+    $("overview-toggle").className = view === "all" ? "active" : "";
+    $("single").hidden = view === "all";
+    $("overview").hidden = view !== "all";
+    if (view === "all") renderOverview(); else renderSingle();
+    renderReport();
+    $("charge").textContent = state.charge || "";
+    renderFailure();
+    writeHash();
+  }
+
+  function renderFailure() {
+    var b = $("refill-error");
+    b.hidden = !state.failure;
+    b.textContent = state.failure ? "Vernieuwen mislukt, de laatste goede banner blijft staan: " + state.failure : "";
+  }
+
+  /* ready signal */
+  function showReady(ms) {
+    var b = $("ready-badge");
+    b.hidden = false;
+    if (ms == null) { b.className = "late"; b.textContent = "geen klaar-signaal binnen 10 s"; }
+    else { b.className = ""; b.textContent = "klaar-signaal na " + Math.round(ms) + " ms"; }
+  }
+  function setupReady(usesReady) {
+    clearTimeout(readyTimer);
+    if (!usesReady) { $("ready-badge").hidden = true; return; }
+    if (readyAt[selected] != null) { showReady(readyAt[selected] - navStart); return; }
+    var left = Math.max(0, 10000 - (performance.now() - navStart));
+    readyTimer = setTimeout(function () {
+      if (readyAt[selected] == null) showReady(null);
+    }, left);
+  }
+  window.addEventListener("message", function (ev) {
+    if (!ev.data) return;
+    var f = $("banner-frame");
+    if (view !== "row" || ev.source !== f.contentWindow) return;
+    if (ev.data.type === "taufinity-ready") {
+      readyAt[selected] = performance.now();
+      showReady(readyAt[selected] - navStart);
+    } else if (ev.data.type === "taufinity-driver") {
+      /* the banner (another origin, sandboxed) tells what it offers; we never look inside it */
+      setupReady(ev.data.usesReady === true);
+      setupScrubber(ev.data.driver);
+    }
+  });
+
+  /* animation scrubber: __taufinitySeek first, then the global timeline, else nothing */
+  /* driver:start */
+  function findDriver(win) {
+    var seekFn = typeof win.__taufinitySeek === "function";
+    var tl = globalTimelineOf(win);
+    if (seekFn) {
+      return { kind: "seek", seek: function (t) { win.__taufinitySeek(t); }, duration: durationOf(win, tl) };
+    }
+    if (tl) {
+      return {
+        kind: "timeline",
+        seek: function (t) { tl.pause(); tl.seek(t); },
+        duration: durationOf(win, tl)
+      };
+    }
+    return null;
+  }
+  function globalTimelineOf(win) {
+    var g = win.gsap;
+    return g && g.globalTimeline ? g.globalTimeline : null;
+  }
+  function durationOf(win, tl) {
+    var d = win.__taufinityDuration;
+    if (typeof d === "function") { try { d = d(); } catch (e) { d = null; } }
+    if (typeof d === "number" && d > 0 && isFinite(d)) return d;
+    if (tl && typeof tl.duration === "function") {
+      var td = tl.duration();
+      if (td > 0 && isFinite(td)) return td;
+    }
+    return 10;
+  }
+  /* driver:end */
+  function setupScrubber(info) {
+    var wrap = $("scrubber"), note = $("scrubber-note"), range = $("scrubber-range");
+    var dur = info && typeof info.duration === "number" && isFinite(info.duration) && info.duration > 0 ? info.duration : 0;
+    if (!dur) { wrap.hidden = true; note.hidden = false; return; }
+    note.hidden = true;
+    wrap.hidden = false;
+    range.max = String(dur);
+    range.value = "0";
+    $("scrubber-time").textContent = "0.00 s";
+    range.oninput = function () {
+      var t = parseFloat(range.value);
+      $("scrubber-time").textContent = t.toFixed(2) + " s";
+      var w = $("banner-frame").contentWindow;
+      if (w) w.postMessage({ type: "taufinity-seek", t: t }, "*"); /* the banner decides what to do with it */
+    };
+  }
+
+  $("row-picker").addEventListener("change", function () {
+    selected = parseInt(this.value, 10);
+    render();
+  });
+  $("overview-toggle").addEventListener("click", function () {
+    view = view === "all" ? "row" : "all";
+    render();
+  });
+
+  /* real render: costs credits, asked once and then remembered in this browser */
+  var CONFIRM_KEY = "taufinity.preview.renderConfirmed";
+  var PRICES = { png: "1 credit per stilstaand beeld", gif: "2 credits voor een animatie van 10 frames" };
+  function chosenFormat() {
+    var r = document.querySelector('input[name="render-format"]:checked');
+    return r ? r.value : "png";
+  }
+  function isConfirmed() {
+    try { return localStorage.getItem(CONFIRM_KEY) === "1"; } catch (e) { return false; }
+  }
+  function renderError(msg) {
+    var b = $("render-error");
+    b.hidden = !msg;
+    b.textContent = msg || "";
+  }
+  function startRender() {
+    var btn = $("render-button");
+    var fmt = chosenFormat();
+    var token = (document.querySelector('meta[name="preview-token"]') || {}).content || "";
+    btn.disabled = true;
+    btn.textContent = "Bezig met renderen...";
+    renderError("");
+    fetch("/api/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Preview-Token": token },
+      body: JSON.stringify({ row: selected, format: fmt })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
+    }).then(function (res) {
+      if (!res.ok) { renderError(res.body.error || "De echte render is mislukt."); return; }
+      showRenderResult(res.body);
+    }).catch(function () {
+      renderError("Geen verbinding met de lokale preview.");
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = "Echte render (normale prijs)";
+    });
+  }
+  function showRenderResult(j) {
+    var box = $("render-result");
+    box.textContent = "";
+    box.hidden = false;
+    var status = j.status === "succeeded" ? "Gelukt" : "Niet gehaald";
+    box.appendChild(el("div", "Status: " + status + " | " + j.bytes + " bytes | " + String(j.format).toUpperCase()));
+    if (j.notes) box.appendChild(el("div", "Opmerkingen: " + j.notes, "muted"));
+    if (j.url) {
+      var img = document.createElement("img");
+      img.id = "render-image";
+      img.alt = "Echte render";
+      img.src = j.url;
+      box.appendChild(img);
+    }
+  }
+  $("render-button").addEventListener("click", function () {
+    if (isConfirmed()) { startRender(); return; }
+    $("render-modal-price").textContent = "Prijs: " + PRICES[chosenFormat()] + ".";
+    $("render-modal").hidden = false;
+  });
+  $("render-cancel").addEventListener("click", function () { $("render-modal").hidden = true; });
+  $("render-confirm").addEventListener("click", function () {
+    try { localStorage.setItem(CONFIRM_KEY, "1"); } catch (e) { /* not remembered */ }
+    $("render-modal").hidden = true;
+    startRender();
+  });
+
+  function load() {
+    return fetch("/api/state", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (s) {
+      var reload = state && s.report && s.version !== state.version && !s.failure;
+      state = s;
+      if (!s.report) return;
+      if (reload) { readyAt = {}; }
+      if (reload || !document.querySelector("#row-picker option")) render(); else renderFailure();
+    });
+  }
+
+  readHash();
+  load();
+  var es = new EventSource("/events");
+  es.addEventListener("reload", function () { load(); });
+  es.addEventListener("failure", function () { load(); });
+})();
+</script>
+</body>
+</html>

@@ -65,10 +65,57 @@ func (c *Client) setOrgHeader(req *http.Request) {
 
 // New creates a new API client for the given base URL.
 func New(baseURL string) *Client {
+	return newClient(baseURL, nil)
+}
+
+// PreviewMaxResponse caps the answer of the banner preview (64 MB).
+const PreviewMaxResponse = 64 << 20
+
+// NewPreview is the client of the banner preview. It never re-sends a template
+// on its own: no retry after a timeout or a 500, a 429 is returned at once, and
+// 502/503/504 get at most one retry after the server's Retry-After (default
+// 2 s, at most 30 s). The answer is capped at PreviewMaxResponse and a final
+// retryable status is returned as a normal response.
+func NewPreview(baseURL string) *Client {
+	return NewPreviewWithTimeout(baseURL, 60*time.Second)
+}
+
+// NewPreviewWithTimeout is NewPreview with its own request timeout.
+func NewPreviewWithTimeout(baseURL string, timeout time.Duration) *Client {
+	return newClient(baseURL, func(cfg *httpclient.Config) {
+		cfg.Timeout = timeout
+		cfg.MaxRetries = 1
+		cfg.NoTransportRetry = true
+		cfg.RetryStatusCodes = []int{502, 503, 504}
+		cfg.HonorRetryAfter = true
+		cfg.InitialBackoff = 2 * time.Second
+		cfg.MaxBackoff = 30 * time.Second
+		cfg.MaxResponseBytes = PreviewMaxResponse
+		cfg.ReturnFinalStatus = true
+	})
+}
+
+// NewRender is the client for a paid action such as a real render: it never
+// retries (a 504 from a proxy while Studio is still rendering would otherwise
+// send, and charge, the render twice) and waits as long as the caller says.
+func NewRender(baseURL string, timeout time.Duration) *Client {
+	return newClient(baseURL, func(cfg *httpclient.Config) {
+		cfg.Timeout = timeout
+		cfg.MaxRetries = 0
+		cfg.NoTransportRetry = true
+		cfg.MaxResponseBytes = PreviewMaxResponse
+		cfg.ReturnFinalStatus = true
+	})
+}
+
+func newClient(baseURL string, tweak func(*httpclient.Config)) *Client {
 	cfg := httpclient.DefaultConfig()
 	// CLI-friendly timeouts
 	cfg.MaxRetries = 3
 	cfg.LogRequests = false
+	if tweak != nil {
+		tweak(&cfg)
+	}
 
 	// Every request, including the unauthenticated device-code calls and the
 	// token refresh/revoke calls, goes through the Cloudflare Access transport:
@@ -95,6 +142,13 @@ func New(baseURL string) *Client {
 func refreshHTTPConfig(cfg httpclient.Config) httpclient.Config {
 	cfg.Timeout = 20 * time.Second
 	cfg.MaxRetries = 1
+	// The refresh must survive a lost response, so it keeps the shared retry
+	// behaviour whatever the main client was tuned for (e.g. the preview).
+	cfg.NoTransportRetry = false
+	cfg.HonorRetryAfter = false
+	cfg.ReturnFinalStatus = false
+	cfg.MaxResponseBytes = 0
+	cfg.RetryStatusCodes = httpclient.DefaultConfig().RetryStatusCodes
 	cfg.InitialBackoff = time.Second
 	cfg.MaxBackoff = time.Second
 	cfg.JitterFraction = 0
