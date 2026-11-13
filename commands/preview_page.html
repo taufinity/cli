@@ -2,6 +2,7 @@
 <html lang="nl">
 <head>
 <meta charset="utf-8">
+<meta name="preview-token" content="__PREVIEW_TOKEN__">
 <title>Banner bekijken</title>
 <style>
   body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #f2f3f5; color: #1c1e21; }
@@ -28,6 +29,14 @@
   #field-report h2 { font-size: 13px; margin: 8px 0 2px; }
   #field-report ul { margin: 0; padding-left: 18px; }
   .muted { color: #5b6068; }
+  #render-panel { margin-top: 16px; max-width: 760px; }
+  #render-panel .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #render-error { margin-top: 8px; background: #fdecea; color: #8a1c13; padding: 8px 12px; border: 1px solid #f3b8b2; }
+  #render-result { margin-top: 10px; background: #fff; padding: 10px 14px; border: 1px solid #d8dbe0; }
+  #render-result img { display: block; margin-top: 8px; max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  #render-modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
+  #render-modal .dialog { background: #fff; padding: 18px 22px; max-width: 420px; border-radius: 6px; }
+  #render-modal .buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -55,8 +64,28 @@
     <div id="scrubber-note" hidden>geen tijdlijn: als GIF of video wordt deze banner geweigerd</div>
   </section>
   <section id="overview" hidden></section>
+  <section id="render-panel">
+    <div class="controls">
+      <button id="render-button" type="button">Echte render (normale prijs)</button>
+      <label><input type="radio" name="render-format" value="png" checked> PNG</label>
+      <label><input type="radio" name="render-format" value="gif"> GIF (10 frames)</label>
+    </div>
+    <div id="render-error" hidden></div>
+    <div id="render-result" hidden></div>
+  </section>
   <section id="field-report"></section>
 </main>
+<div id="render-modal" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="render-modal-title">
+    <strong id="render-modal-title">Echte render</strong>
+    <p>Dit is een echte render tegen de normale prijs, geen gratis voorbeeld.</p>
+    <p id="render-modal-price"></p>
+    <div class="buttons">
+      <button id="render-cancel" type="button">Annuleren</button>
+      <button id="render-confirm" type="button">Bevestigen</button>
+    </div>
+  </div>
+</div>
 <script>
 (function () {
   "use strict";
@@ -292,6 +321,71 @@
   $("overview-toggle").addEventListener("click", function () {
     view = view === "all" ? "row" : "all";
     render();
+  });
+
+  /* real render: costs credits, asked once and then remembered in this browser */
+  var CONFIRM_KEY = "taufinity.preview.renderConfirmed";
+  var PRICES = { png: "1 credit per stilstaand beeld", gif: "2 credits voor een animatie van 10 frames" };
+  function chosenFormat() {
+    var r = document.querySelector('input[name="render-format"]:checked');
+    return r ? r.value : "png";
+  }
+  function isConfirmed() {
+    try { return localStorage.getItem(CONFIRM_KEY) === "1"; } catch (e) { return false; }
+  }
+  function renderError(msg) {
+    var b = $("render-error");
+    b.hidden = !msg;
+    b.textContent = msg || "";
+  }
+  function startRender() {
+    var btn = $("render-button");
+    var fmt = chosenFormat();
+    var token = (document.querySelector('meta[name="preview-token"]') || {}).content || "";
+    btn.disabled = true;
+    btn.textContent = "Bezig met renderen...";
+    renderError("");
+    fetch("/api/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Preview-Token": token },
+      body: JSON.stringify({ row: selected, format: fmt })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
+    }).then(function (res) {
+      if (!res.ok) { renderError(res.body.error || "De echte render is mislukt."); return; }
+      showRenderResult(res.body);
+    }).catch(function () {
+      renderError("Geen verbinding met de lokale preview.");
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = "Echte render (normale prijs)";
+    });
+  }
+  function showRenderResult(j) {
+    var box = $("render-result");
+    box.textContent = "";
+    box.hidden = false;
+    var status = j.status === "succeeded" ? "Gelukt" : "Niet gehaald";
+    box.appendChild(el("div", "Status: " + status + " | " + j.bytes + " bytes | " + String(j.format).toUpperCase()));
+    if (j.notes) box.appendChild(el("div", "Opmerkingen: " + j.notes, "muted"));
+    if (j.url) {
+      var img = document.createElement("img");
+      img.id = "render-image";
+      img.alt = "Echte render";
+      img.src = j.url;
+      box.appendChild(img);
+    }
+  }
+  $("render-button").addEventListener("click", function () {
+    if (isConfirmed()) { startRender(); return; }
+    $("render-modal-price").textContent = "Prijs: " + PRICES[chosenFormat()] + ".";
+    $("render-modal").hidden = false;
+  });
+  $("render-cancel").addEventListener("click", function () { $("render-modal").hidden = true; });
+  $("render-confirm").addEventListener("click", function () {
+    try { localStorage.setItem(CONFIRM_KEY, "1"); } catch (e) { /* not remembered */ }
+    $("render-modal").hidden = true;
+    startRender();
   });
 
   function load() {

@@ -3,9 +3,11 @@ package commands
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -18,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +50,15 @@ type bannerServer struct {
 	subMu sync.Mutex
 	subs  map[chan string]struct{}
 
+	// Real renders (see preview_render.go). token is random per process and only
+	// ever written into the page's HTML; the banner origin never serves it.
+	token      string
+	Renderer   *bannerRenderer
+	renderBusy atomic.Bool
+	renderMu   sync.Mutex
+	renderDir  string
+	renders    []*renderOutcome
+
 	httpSrv    *http.Server // the page, /api/state and /events
 	bannerSrv  *http.Server // only rows/<i>/..., on its own port and so its own origin
 	bannerLn   net.Listener
@@ -55,7 +67,11 @@ type bannerServer struct {
 }
 
 func newBannerServer() *bannerServer {
-	return &bannerServer{subs: map[chan string]struct{}{}}
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		panic("geen willekeurige bytes beschikbaar: " + err.Error())
+	}
+	return &bannerServer{subs: map[chan string]struct{}{}, token: hex.EncodeToString(raw)}
 }
 
 // Listen binds 127.0.0.1 only. port 0 picks a free one. A second listener on a
@@ -109,6 +125,13 @@ func (s *bannerServer) Close() {
 	} else if s.bannerLn != nil {
 		_ = s.bannerLn.Close()
 	}
+	s.renderMu.Lock()
+	if s.renderDir != "" {
+		os.RemoveAll(s.renderDir)
+		s.renderDir = ""
+	}
+	s.renders = nil
+	s.renderMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, d := range append(s.old, s.dir) {
@@ -171,6 +194,8 @@ func (s *bannerServer) Handler() http.Handler {
 	mux.HandleFunc("/", s.handlePage)
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/events", s.handleEvents)
+	mux.HandleFunc("/api/render", s.handleRender)
+	mux.HandleFunc("/render/", s.handleRenderFile)
 	return localOnly(nosniff(mux))
 }
 
@@ -217,7 +242,7 @@ func (s *bannerServer) handlePage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", bannerPageCSP(s.BannerOrigin()))
-	_, _ = w.Write(bannerPageHTML)
+	_, _ = w.Write(bytes.Replace(bannerPageHTML, []byte(renderTokenPlaceholder), []byte(s.token), 1))
 }
 
 func (s *bannerServer) handleState(w http.ResponseWriter, r *http.Request) {
