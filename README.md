@@ -308,6 +308,12 @@ precies wat een render krijgt, minus de capture. `--row 3` toont een regel uit d
 (kopregel = regel 1). Zie `taufinity preview --help`. Voor sjablonen van artikelen van
 een site is er `taufinity template preview`.
 
+**Echte render.** De knop "Echte render (normale prijs)" op de pagina vraagt Studio om een
+echte render van de regel die je ziet, tegen de normale prijs: PNG 1 credit, GIF van
+10 frames 2 credits. De pagina vraagt dat één keer in de browser en onthoudt je
+bevestiging (`localStorage`, sleutel `taufinity.preview.renderConfirmed`). Het resultaat
+verschijnt onder de banner.
+
 **Bewaken.** Na een wijziging wacht het commando 250 ms tot het stil is en vult dan
 opnieuw. Wat niet meegaat in de zip naar Studio (`.gitignore`, `.taufinityignore`,
 `.dockerignore`, de vaste uitsluitingen zoals `.env`) start ook geen nieuwe vulling, net

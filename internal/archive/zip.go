@@ -1,7 +1,9 @@
 package archive
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -195,4 +197,82 @@ func wrapZipErr(opts ZipOptions, what string, err error) error {
 		return fmt.Errorf("%w: meer dan %d MB; het maximum is %d MB", ErrTooLarge, opts.MaxBytes>>20, opts.MaxBytes>>20)
 	}
 	return fmt.Errorf("%s: %w", what, err)
+}
+
+// CreateTarGzWithOptions writes a tar.gz of srcDir into w: exactly the file set
+// CreateZipWithOptions would zip (same ignore rules, symlinks skipped, same
+// limits), through the same walker.
+func CreateTarGzWithOptions(ctx context.Context, srcDir string, w io.Writer, opts ZipOptions) (int, error) {
+	info, err := os.Stat(srcDir)
+	if err != nil {
+		return 0, fmt.Errorf("stat %s: %w", srcDir, err)
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("%s is not a directory", srcDir)
+	}
+	srcDir = filepath.Clean(srcDir)
+	matcher := ignore.CompileIgnoreLines(CollectIgnorePatterns(srcDir)...)
+
+	if opts.MaxFiles > 0 {
+		count := 0
+		if _, err := walkEligible(ctx, srcDir, matcher, func(_, _ string, _ os.FileInfo) error {
+			count++
+			if count > opts.MaxFiles {
+				return fmt.Errorf("%w: meer dan %d bestanden; pak de sjabloon in een eigen map", ErrTooManyFiles, opts.MaxFiles)
+			}
+			return nil
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	var out io.Writer = w
+	if opts.MaxBytes > 0 {
+		out = &limitWriter{w: w, limit: opts.MaxBytes}
+	}
+	gz := gzip.NewWriter(out)
+	tw := tar.NewWriter(gz)
+	fileCount := 0
+	links, err := walkEligible(ctx, srcDir, matcher, func(path, relPath string, info os.FileInfo) error {
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return fmt.Errorf("header for %s: %w", relPath, err)
+		}
+		hdr.Name = filepath.ToSlash(relPath)
+		if err := tw.WriteHeader(hdr); err != nil {
+			return wrapZipErr(opts, "create entry "+relPath, err)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", relPath, err)
+		}
+		_, copyErr := io.Copy(tw, f)
+		f.Close()
+		if copyErr != nil {
+			return wrapZipErr(opts, "copy "+relPath, copyErr)
+		}
+		fileCount++
+		return nil
+	})
+	if err != nil {
+		return fileCount, err
+	}
+	if err := tw.Close(); err != nil {
+		return fileCount, wrapZipErr(opts, "close tar", err)
+	}
+	if err := gz.Close(); err != nil {
+		return fileCount, wrapZipErr(opts, "close gzip", err)
+	}
+	if len(links) > 0 {
+		msg := "Waarschuwing: symbolische links worden niet meegenomen: " + strings.Join(links, ", ")
+		if opts.Warn != nil {
+			opts.Warn(msg)
+		} else {
+			fmt.Fprintln(os.Stderr, msg)
+		}
+	}
+	if fileCount == 0 {
+		return 0, fmt.Errorf("no files to archive in %s (all filtered or empty)", srcDir)
+	}
+	return fileCount, nil
 }

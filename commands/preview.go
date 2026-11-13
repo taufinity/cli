@@ -70,6 +70,11 @@ PRIJS
   HH:MM" of "binnen de sessie tot HH:MM, geen extra credit" (lokale tijd), en
   de pagina toont dezelfde tekst. De regel verschijnt alleen als hij verandert.
 
+  De knop "Echte render (normale prijs)" op de pagina vraagt Studio om een echte
+  render van de regel die je ziet, tegen de normale prijs: PNG 1 credit, GIF van
+  10 frames 2 credits. De pagina vraagt dit één keer in de browser en onthoudt
+  daarna je bevestiging.
+
 SLEUTEL
   Bij het eerste gebruik maakt dit commando .taufinity/preview.json in de
   sjabloonmap, met een willekeurige template_key. Bewaar dit bestand bij het
@@ -161,6 +166,7 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	srv := newBannerServer()
+	srv.Renderer = &bannerRenderer{Client: src.Client, Dir: dir, DataFlag: flagBannerData, Row: flagBannerRow}
 	defer srv.Close()
 	ln, err := srv.Listen(bannerPort)
 	if err != nil {
