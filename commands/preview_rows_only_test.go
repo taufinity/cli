@@ -39,6 +39,9 @@ func TestBannerServesRowFilesOnly(t *testing.T) {
 		"rows/0/a/b.css":    "b{}",
 		"report.json":       `{"rows":"customer data"}`,
 		"secret.txt":        "top level",
+		// a real file whose name holds a backslash (legal on macOS and Linux):
+		// served before the backslash guard, so the guard is tested on every OS
+		"rows/0/a\\b.css": "x{}",
 	})
 	key := "/" + s.bannerKey
 	for _, p := range []string{
@@ -49,6 +52,8 @@ func TestBannerServesRowFilesOnly(t *testing.T) {
 		"/rows/%2e%2e/%2e%2e/etc/passwd",
 		"/rows/x/index.html",
 		"/rows/0",
+		"/rows/0/..%5c..%5creport.json",
+		"/rows/0/a%5cb.css",
 	} {
 		if code := rawStatus(t, s.BannerOrigin(), key+p); code == http.StatusOK {
 			t.Errorf("%s: 200; only files of a row may be served", p)

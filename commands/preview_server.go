@@ -329,13 +329,17 @@ func (s *bannerServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	rel = strings.TrimPrefix(rel, "/") // rows/<i>/...
 	// Only a file of a row. The mux routes rows/ only, but an encoded ".."
 	// (%2e%2e, ..%2f) is decoded after routing, so a path can still clean up to
-	// the fill folder's own files (report.json, the lock file).
-	if seg := strings.SplitN(rel, "/", 3); len(seg) != 3 || seg[0] != "rows" || !isRowIndex(seg[1]) {
+	// the fill folder's own files (report.json, the lock file). The last check
+	// is on the joined OS path, not the URL path: on Windows a backslash
+	// (..%5c) is a separator that path.Clean does not see. A backslash is
+	// refused outright as well, so that holds without relying on the OS.
+	seg := strings.SplitN(rel, "/", 3)
+	if strings.ContainsRune(rel, '\\') || len(seg) != 3 || seg[0] != "rows" || !isRowIndex(seg[1]) {
 		http.NotFound(w, r)
 		return
 	}
 	full := filepath.Join(dir, filepath.FromSlash(rel))
-	if !strings.HasPrefix(full, filepath.Clean(dir)+string(os.PathSeparator)) {
+	if !strings.HasPrefix(full, filepath.Join(dir, "rows", seg[1])+string(os.PathSeparator)) {
 		http.NotFound(w, r)
 		return
 	}
@@ -347,8 +351,7 @@ func (s *bannerServer) handleFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 
 	// rows/<i>/<entry>: the one file that gets the ready hook.
-	parts := strings.SplitN(rel, "/", 3)
-	if len(parts) == 3 && path.Clean(parts[2]) == path.Clean(rep.Entry) {
+	if seg[2] == path.Clean(rep.Entry) {
 		data, err := os.ReadFile(full)
 		if err != nil {
 			http.NotFound(w, r)
