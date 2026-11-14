@@ -77,8 +77,9 @@ different org), use the --org flag:
     }
   }
 
-The --org value is sent as X-Organization-ID on every request, overriding the
-organization embedded in the JWT.
+The --org value (else TAUFINITY_ORG, else 'taufinity config set org') is sent
+as X-Organization-ID on every request, overriding the organization embedded in
+the JWT.
 
 All log output goes to stderr; JSON-RPC frames go to stdout.`,
 	RunE: runMCPStdio,
@@ -173,13 +174,16 @@ func runMCPStdio(cmd *cobra.Command, args []string) error {
 		UpstreamURL:      upstreamURL,
 		TokenSource:      clientTokenSource(client),
 		RenewAfterReject: clientRenewAfterReject(client),
-		OrgID:            flagOrg,
-		UserAgent:        userAgent,
-		Timeout:          flagMCPStdioTimeout,
-		MaxFrameBytes:    flagMCPStdioMaxFrameBytes,
-		Stdin:            os.Stdin,
-		Stdout:           os.Stdout,
-		Stderr:           stderr,
+		// GetOrg, not flagOrg: --org, TAUFINITY_ORG and `config set org` must
+		// mean the same thing here as in every other command. With flagOrg
+		// alone an entry without --org silently used the login's org.
+		OrgID:         GetOrg(),
+		UserAgent:     userAgent,
+		Timeout:       flagMCPStdioTimeout,
+		MaxFrameBytes: flagMCPStdioMaxFrameBytes,
+		Stdin:         os.Stdin,
+		Stdout:        os.Stdout,
+		Stderr:        stderr,
 	})
 }
 

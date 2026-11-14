@@ -4,9 +4,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"gopkg.in/yaml.v3"
 )
+
+// OrgIDPattern matches the org identifiers the CLI accepts as a default org
+// or embeds verbatim into MCP stdio-bridge args: numeric IDs in practice,
+// slugs for future-proofing. The value travels as an HTTP header and as a
+// client-config argument, so anything else (whitespace, quotes, a leading
+// dash that reads as a flag) is refused rather than stored.
+var OrgIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+const validKeys = "site, api_url, org, update_check, auto_update"
 
 // UserConfig holds user-level configuration stored in ~/.config/taufinity/config.yaml.
 type UserConfig struct {
@@ -90,6 +100,11 @@ func Set(key, value string) error {
 		cfg.Site = value
 	case "api_url":
 		cfg.APIURL = value
+	case "org":
+		if value != "" && !OrgIDPattern.MatchString(value) {
+			return fmt.Errorf("org must be a numeric organization ID or slug (got %q); see: taufinity org list", value)
+		}
+		cfg.Org = value
 	case "update_check":
 		if value != "" && value != "true" && value != "false" {
 			return fmt.Errorf("update_check must be true, false, or empty (got %q)", value)
@@ -101,7 +116,7 @@ func Set(key, value string) error {
 		}
 		cfg.AutoUpdate = value
 	default:
-		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check, auto_update)", key)
+		return fmt.Errorf("unknown config key: %s (valid: %s)", key, validKeys)
 	}
 
 	return cfg.Save()
@@ -119,12 +134,14 @@ func Get(key string) (string, error) {
 		return cfg.Site, nil
 	case "api_url":
 		return cfg.APIURL, nil
+	case "org":
+		return cfg.Org, nil
 	case "update_check":
 		return cfg.UpdateCheck, nil
 	case "auto_update":
 		return cfg.AutoUpdate, nil
 	default:
-		return "", fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check, auto_update)", key)
+		return "", fmt.Errorf("unknown config key: %s (valid: %s)", key, validKeys)
 	}
 }
 
@@ -138,6 +155,7 @@ func List() (map[string]string, error) {
 	return map[string]string{
 		"site":         cfg.Site,
 		"api_url":      cfg.APIURL,
+		"org":          cfg.Org,
 		"update_check": cfg.UpdateCheck,
 		"auto_update":  cfg.AutoUpdate,
 	}, nil
@@ -164,12 +182,14 @@ func Unset(key string) error {
 		cfg.Site = ""
 	case "api_url":
 		cfg.APIURL = ""
+	case "org":
+		cfg.Org = ""
 	case "update_check":
 		cfg.UpdateCheck = ""
 	case "auto_update":
 		cfg.AutoUpdate = ""
 	default:
-		return fmt.Errorf("unknown config key: %s (valid: site, api_url, update_check, auto_update)", key)
+		return fmt.Errorf("unknown config key: %s (valid: %s)", key, validKeys)
 	}
 
 	return cfg.Save()

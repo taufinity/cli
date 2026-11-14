@@ -237,6 +237,15 @@ taufinity mcp install --client print       # preview the JSON, write nothing
 taufinity --org 3 mcp install --client all --label taufinity-voorpositiviteit
 ```
 
+**Default org** — without `--org`, commands and the bridge use the org you logged in to, which is whichever org the login happened to land on. Pin your own instead; `--org` and `TAUFINITY_ORG` still override it, and `auth status` shows it as `Default org`:
+
+```bash
+taufinity org list                 # find the ID
+taufinity config set org 12        # org-scoped commands and `mcp install` now use org 12
+```
+
+**Transport** — `claude-desktop`, `claude-code` and `cursor` get the stdio bridge by default (`vscode` and `antigravity` stay on HTTP until their stdio entry is verified). The bridge reads your CLI credentials and renews them, so it keeps working; an HTTP entry carries a copy of the access token that stops working when that token expires. To upgrade an existing HTTP entry: `taufinity mcp install --client claude-code --label <name> --force`.
+
 After install, restart each client to load the new MCP server.
 
 Remove with `taufinity mcp uninstall --client <name> --label <name>` (also supports `--client all`).
