@@ -92,6 +92,30 @@ func TestRunTestSuitesFailsOnFailingCase(t *testing.T) {
 	}
 }
 
+// A completed run is only a pass when every case passed. A case the server
+// could not execute counts in error_count, not failed_count; before this the
+// gate printed "PASS (5/15)" for a run where ten cases never produced a verdict.
+func TestRunTestSuitesFailsOnIncompleteRun(t *testing.T) {
+	for name, run := range map[string]map[string]any{
+		"errored cases":   {"uuid": "u1", "status": "completed", "passed_count": 5, "failed_count": 0, "error_count": 10, "total_count": 15},
+		"missing verdict": {"uuid": "u1", "status": "completed", "passed_count": 5, "failed_count": 0, "total_count": 15},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := &suiteRunServer{
+				suites:   []map[string]any{{"id": 1, "uuid": "u1", "name": "recipes", "slug": "recipes-must"}},
+				outcomes: map[string]map[string]any{"u1": run},
+			}
+			ts := httptest.NewServer(srv.handler(t))
+			defer ts.Close()
+
+			c := newProvisionClient(ts.URL, "key", false)
+			if err := runTestSuites(c, 1, "acme", "all", 5*time.Second); err == nil {
+				t.Fatal("expected an error when not every case passed")
+			}
+		})
+	}
+}
+
 // A run that ends in a non-completed terminal state is a failure too — otherwise
 // an errored run would read as a pass.
 func TestRunTestSuitesFailsOnErroredRun(t *testing.T) {
