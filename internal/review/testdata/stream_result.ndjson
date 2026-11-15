@@ -1,0 +1,5 @@
+{"type":"accepted","request_id":"3f1c2a9e-7b4d-4e8a-9c21-5d6e7f8a9b0c"}
+{"stage":"reviewing","type":"progress"}
+{"type":"keepalive"}
+{"stage":"counter_investigation","type":"progress"}
+{"cost_usd":0.4213,"counts":{"critical":0,"high":1,"low":0,"medium":0},"findings":[{"file":"main.go","line":2,"severity":"high","title":"Missing check"}],"markdown":"## Summary\nOne problem.\n\n## Critical/High Priority Issues\n### Missing check\n**Severity:** High\n**File:** main.go:2\n**Issue:** unchecked\n**Recommendation:** check it\n","partial":false,"type":"result","verdict":"request_changes"}

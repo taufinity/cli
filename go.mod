@@ -4,6 +4,8 @@ go 1.25.0
 
 require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/chromedp/chromedp v0.14.2
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/getsentry/sentry-go v0.43.0
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
@@ -17,7 +19,13 @@ require (
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
+	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327 // indirect
+	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
+	github.com/go-json-experiment/json v0.0.0-20250725192818-e39067aee2d2 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-plugin v1.7.0 // indirect

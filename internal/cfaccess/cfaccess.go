@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"github.com/taufinity/cli/internal/config"
+	"github.com/taufinity/cli/internal/jsonresp"
 )
 
 const (
@@ -635,7 +636,11 @@ func blocked(req *http.Request, resp *http.Response) bool {
 	if IsAutoHost(req.URL.Hostname()) && isStudioAPIPath(req.URL.Path) {
 		mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 		if mt == "text/html" {
-			return true
+			// Cloudflare's firewall (WAF) block page is HTML too, but it judged
+			// the request, not the token: fetching a fresh token cannot help, and
+			// calling it "token refused" sends the reader the wrong way. It is
+			// passed on, and the API client reports it as a firewall block.
+			return !firewallPage(resp)
 		}
 	}
 	return false
@@ -661,6 +666,21 @@ func describe(be *BlockedError, req *http.Request, resp *http.Response) {
 			be.LocationHost = u.Hostname()
 		}
 	}
+}
+
+// firewallPage reports whether resp is Cloudflare's firewall block page. It
+// reads the start of the body and puts it back, so the caller still gets the
+// whole response.
+func firewallPage(resp *http.Response) bool {
+	if resp.StatusCode != http.StatusForbidden || resp.Body == nil {
+		return false
+	}
+	head, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
+	return err == nil && jsonresp.IsFirewallBlock(resp.StatusCode, head)
 }
 
 func isAccessLoginHost(h string) bool {

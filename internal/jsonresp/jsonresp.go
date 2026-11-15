@@ -24,9 +24,21 @@ type NonJSONError struct {
 	ContentType string
 	Status      int
 	Title       string // the page <title>, if any, trimmed and capped
+	// Firewall is set when the page is Cloudflare's firewall block page: the
+	// request was stopped at the edge and never reached Studio.
+	Firewall bool
+	RayID    string // the Cloudflare Ray ID on a firewall page, for support
 }
 
 func (e *NonJSONError) Error() string {
+	if e.Firewall {
+		ray := ""
+		if e.RayID != "" {
+			ray = ", Ray ID " + e.RayID
+		}
+		return fmt.Sprintf("blocked by the firewall: Cloudflare stopped the request to %s (HTTP %d%s) before it reached Studio. "+
+			"This is not a login or Access problem; the firewall judged the request itself. Report it to Taufinity with the Ray ID", e.URL, e.Status, ray)
+	}
 	ct := e.ContentType
 	if ct == "" {
 		ct = "no content type"
@@ -50,7 +62,34 @@ func Check(rawURL string, status int, contentType string, body []byte) error {
 	if mt == "" {
 		mt = contentType
 	}
-	return &NonJSONError{URL: stripQuery(rawURL), ContentType: mt, Status: status, Title: Title(body)}
+	e := &NonJSONError{URL: stripQuery(rawURL), ContentType: mt, Status: status, Title: Title(body)}
+	if IsFirewallBlock(status, body) {
+		e.Firewall, e.RayID = true, RayID(body)
+	}
+	return e
+}
+
+// IsFirewallBlock reports whether body is Cloudflare's firewall (WAF) block
+// page, "Sorry, you have been blocked". It is told apart from an Access login
+// or denial page, which means a missing or refused token, by the markup only
+// the block page has.
+func IsFirewallBlock(status int, body []byte) bool {
+	if status != 403 {
+		return false
+	}
+	head := firstN(body, 64<<10)
+	return bytes.Contains(head, []byte("cf-error-details")) &&
+		(bytes.Contains(head, []byte(`data-translate="block_headline"`)) || bytes.Contains(head, []byte("Sorry, you have been blocked")))
+}
+
+var rayRE = regexp.MustCompile(`Cloudflare Ray ID:\s*(?:<[^>]*>\s*)*([0-9a-f]{16})`)
+
+// RayID returns the Cloudflare Ray ID printed on a Cloudflare error page.
+func RayID(body []byte) string {
+	if m := rayRE.FindSubmatch(firstN(body, 64<<10)); m != nil {
+		return string(m[1])
+	}
+	return ""
 }
 
 // IsHTML reports whether a response is an HTML page.
