@@ -343,6 +343,7 @@ func diffPlaybookFields(payload map[string]interface{}, remote playbookDetailRem
 	// local side, so an unset remote column doesn't read as drift.
 	remoteVals := map[string]interface{}{
 		"name":               remote.Name,
+		"slug":               remote.Slug,
 		"description":        remote.Description,
 		"trigger_type":       defaultStr(remote.TriggerType, "manual"),
 		"output_key":         defaultStr(remote.OutputKey, "summary"),

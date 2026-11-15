@@ -250,19 +250,9 @@ func upsertPlaybook(c *provisionClient, orgID uint, cfg playbookConfig, yamlPath
 	if err := unmarshalListEnvelope(body, &existing); err != nil {
 		return fmt.Errorf("parse playbooks: %w (body=%s)", err, provisionSummarize(body))
 	}
-	var matches []provisionPlaybookListItem
-	for _, p := range existing {
-		if cfg.Slug != "" {
-			// Slug-leading: authoritative match when YAML has a slug.
-			if p.Slug == cfg.Slug {
-				matches = append(matches, p)
-			}
-		} else {
-			// Backwards-compat: name match when no slug in YAML.
-			if strings.EqualFold(p.Name, cfg.Name) {
-				matches = append(matches, p)
-			}
-		}
+	matches, adopt := matchPlaybooks(existing, cfg)
+	if adopt && len(matches) == 1 {
+		fmt.Printf("ADOPT playbook %q (id=%d): stored slug %q becomes %q\n", cfg.Name, matches[0].ID, matches[0].Slug, cfg.Slug)
 	}
 	if len(matches) > 1 {
 		names := make([]string, 0, len(matches))
@@ -303,6 +293,9 @@ func createPlaybook(c *provisionClient, orgID uint, cfg playbookConfig, yamlPath
 	}
 	pbID := created.ID
 	if created.Slug != "" {
+		if cfg.Slug != "" && created.Slug != cfg.Slug {
+			fmt.Printf("  WARN: Studio stored slug %q instead of %q (a server without slug support); pinning the YAML to the stored slug so the next apply matches\n", created.Slug, cfg.Slug)
+		}
 		if err := pinSlug(yamlPath, cfg.Slug, created.Slug); err != nil {
 			fmt.Printf("  WARN: could not pin slug for playbook %q: %v\n", cfg.Name, err)
 		}
@@ -550,6 +543,7 @@ func playbookCreatePayload(cfg playbookConfig) map[string]interface{} {
 		"trigger_type": defaultStr(cfg.TriggerType, "manual"),
 		"output_key":   defaultStr(cfg.OutputKey, "summary"),
 	}
+	addSlug(out, cfg)
 	if cfg.Schedule != nil {
 		out["schedule"] = *cfg.Schedule
 	}
@@ -582,6 +576,7 @@ func playbookUpdatePayload(cfg playbookConfig, knowledgeTagIDs []uint) map[strin
 		"output_key":        defaultStr(cfg.OutputKey, "summary"),
 		"schedule_timezone": defaultStr(cfg.ScheduleTimezone, "UTC"),
 	}
+	addSlug(out, cfg)
 	if cfg.Schedule != nil {
 		out["schedule"] = *cfg.Schedule
 	}
