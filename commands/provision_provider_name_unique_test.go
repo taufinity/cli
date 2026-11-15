@@ -134,3 +134,86 @@ func TestUpsertProvider_UniqueNameStillApplies(t *testing.T) {
 		t.Errorf("must update row 23, got %v", puts)
 	}
 }
+
+// A slug that no live row carries yet (the bootstrap case: none of WVS org 18's
+// rows has a slug) falls back to the name. The refusal must cover that path
+// too, or following the error's own advice ("add slug:") brings the bug back:
+// before this, the spec below updated row 23, the staging row, and wrote the
+// slug onto it.
+func TestUpsertProvider_UnmatchedSlugWithAmbiguousNameIsRefused(t *testing.T) {
+	var puts []string
+	srv := duplicateNameServer(t, &puts)
+	defer srv.Close()
+
+	err := applyProviderSpec(t, srv, "slug: wvs-bq\n"+dupNameSpecNoKey)
+	if err == nil {
+		t.Fatalf("a slug no row carries, with a name matching two rows, must be refused; provision sent %v", puts)
+	}
+	for _, want := range []string{"id=23", "id=25", "wvs-bq"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name %q; got: %v", want, err)
+		}
+	}
+	if len(puts) != 0 {
+		t.Errorf("refusal must write nothing, but provision sent %v", puts)
+	}
+}
+
+// When one row already carries the spec's slug, that row is the match, even if
+// a slug-less row with the same name is listed before it. Matching row by row
+// used to take the first name hit and update the wrong row.
+func TestUpsertProvider_SlugMatchWinsOverEarlierNameMatch(t *testing.T) {
+	var puts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/custom-ai-providers":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 23, "name": "WVS BQ Tracking"},
+				{"id": 25, "name": "WVS BQ Tracking", "slug": "wvs-bq"},
+			})
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/custom-ai-providers/"):
+			puts = append(puts, r.URL.Path)
+			w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	if err := applyProviderSpec(t, srv, "slug: wvs-bq\n"+dupNameSpecNoKey); err != nil {
+		t.Fatalf("a slug carried by exactly one row must apply: %v", err)
+	}
+	if len(puts) != 1 || puts[0] != "/api/custom-ai-providers/25" {
+		t.Errorf("must update row 25, which carries the slug; got %v", puts)
+	}
+}
+
+// The bootstrap case with a unique name keeps working: the one row with that
+// name is updated and gets the slug written onto it.
+func TestUpsertProvider_UnmatchedSlugWithUniqueNameBootstraps(t *testing.T) {
+	var puts []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/custom-ai-providers":
+			json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"id": 23, "name": "WVS BQ Tracking"},
+				{"id": 31, "name": "Iets anders"},
+			})
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/custom-ai-providers/"):
+			puts = append(puts, r.URL.Path)
+			w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	if err := applyProviderSpec(t, srv, "slug: wvs-bq\n"+dupNameSpecNoKey); err != nil {
+		t.Fatalf("bootstrap with a unique name must apply: %v", err)
+	}
+	if len(puts) != 1 || puts[0] != "/api/custom-ai-providers/23" {
+		t.Errorf("must update row 23, got %v", puts)
+	}
+}
