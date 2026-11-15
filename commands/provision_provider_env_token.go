@@ -15,6 +15,7 @@ package commands
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -32,43 +33,79 @@ const (
 
 // provisionEnvName reports which environment a {env} token resolves to.
 //
-// The flag is the primary signal, because it is the same one resolveAPIURL
-// reads when it picks the host. When no flag is set, the API URL the client is
-// actually pointed at decides, so a spec cannot resolve to prod while the
-// writes go to staging — which is the exact failure this token exists to
-// prevent, and --api-url outranks --env when the host is chosen.
+// The host the client is actually pointed at decides whenever it is one of the
+// two known hosts, because that is where the writes go. --env (or
+// TAUFINITY_ENV) does not pick the host on its own: resolveAPIURL lets
+// --api-url, TAUFINITY_API_URL and config api_url outrank it. So a flag that
+// contradicts a known host is refused, not obeyed: obeying it resolved
+// `--env staging --api-url https://studio.taufinity.io` to the staging dataset
+// while every write went to production, which is the exact failure this token
+// exists to prevent.
 //
-// An API URL that is neither known host is refused rather than guessed. A
-// custom host (a local server, a preview deployment) genuinely does not say
-// which dataset it belongs to, and guessing prod there is how the original bug
-// would come back.
+// The flag only decides for a host that is neither known one (a local server,
+// a preview deployment), which genuinely does not say which dataset it belongs
+// to. Without a flag such a host is refused rather than guessed: guessing prod
+// there is how the original bug would come back.
 func provisionEnvName(apiURL string) (string, error) {
 	envFlag := flagEnv
 	if envFlag == "" {
 		envFlag = os.Getenv("TAUFINITY_ENV")
 	}
+	var fromFlag string
 	switch strings.ToLower(strings.TrimSpace(envFlag)) {
 	case envNameStaging:
-		return envNameStaging, nil
+		fromFlag = envNameStaging
 	case "production", "prod":
-		return envNameProduction, nil
+		fromFlag = envNameProduction
 	case "":
-		// Fall through to the host.
 	default:
 		return "", fmt.Errorf("cannot resolve %s: unknown environment %q "+
 			"(expected \"staging\" or \"production\")", envToken, envFlag)
 	}
 
-	switch strings.TrimRight(apiURL, "/") {
-	case StagingAPIURL:
-		return envNameStaging, nil
-	case DefaultAPIURL:
-		return envNameProduction, nil
+	fromHost := knownHostEnv(apiURL)
+	switch {
+	case fromHost != "" && fromFlag != "" && fromHost != fromFlag:
+		return "", fmt.Errorf("cannot resolve %s: environment %q says %s, but the API URL %q "+
+			"is the %s host, which is where the writes go. Refusing to point this spec at "+
+			"one environment's data while writing to the other: drop --env/TAUFINITY_ENV "+
+			"or point --api-url at the matching host",
+			envToken, envFlag, fromFlag, apiURL, fromHost)
+	case fromHost != "":
+		return fromHost, nil
+	case fromFlag != "":
+		return fromFlag, nil
 	}
 	return "", fmt.Errorf("cannot resolve %s: --api-url %q is neither the production "+
 		"nor the staging host, so the environment is unknown. Pass --env staging or "+
 		"--env production to say which dataset this spec means",
 		envToken, apiURL)
+}
+
+// knownHostEnv names the environment of apiURL when its host is the production
+// or the staging Studio host, and returns "" for any other host. It compares
+// host names, not whole URLs, so a trailing slash, a path or a different scheme
+// cannot turn a known host into an "unknown" one that the flag would decide.
+func knownHostEnv(apiURL string) string {
+	u, err := url.Parse(strings.TrimSpace(apiURL))
+	if err != nil {
+		return ""
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case hostOf(StagingAPIURL):
+		return envNameStaging
+	case hostOf(DefaultAPIURL):
+		return envNameProduction
+	}
+	return ""
+}
+
+func hostOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
 }
 
 // resolveProviderEnvToken replaces {env} in cfg.EndpointURL. The spec file on

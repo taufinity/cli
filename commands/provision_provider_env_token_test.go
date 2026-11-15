@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/taufinity/cli/pkg/studioadmin"
 )
 
 const envTokenSpec = `id: 25
@@ -203,4 +205,124 @@ func TestProviderEnvToken_SpecWithoutTokenIsUntouched(t *testing.T) {
 	if cfg.EndpointURL != "content-gen-484211.feedback_prod" {
 		t.Errorf("endpoint_url must be untouched, got %q", cfg.EndpointURL)
 	}
+}
+
+// On a known host the host decides, and a flag that contradicts it is refused.
+// resolveAPIURL lets --api-url, TAUFINITY_API_URL and config api_url outrank
+// --env when it picks the host, so letting the flag win here resolved
+// `--env staging --api-url https://studio.taufinity.io` to the staging dataset
+// while every write went to production, and the reverse sent staging's writes
+// into feedback_prod.
+func TestProviderEnvToken_FlagContradictingTheHostIsRefused(t *testing.T) {
+	for _, tc := range []struct{ name, flag, apiURL string }{
+		{"staging flag on the production host", "staging", DefaultAPIURL},
+		{"production flag on the staging host", "production", StagingAPIURL},
+		{"prod flag on the staging host", "prod", StagingAPIURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withEnvFlag(t, tc.flag)
+			got, err := provisionEnvName(tc.apiURL)
+			if err == nil {
+				t.Fatalf("--env %s against %s must be refused, resolved to %q", tc.flag, tc.apiURL, got)
+			}
+			for _, want := range []string{tc.flag, tc.apiURL} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error must name %q so the operator sees the mismatch; got: %v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// The same mismatch set through TAUFINITY_ENV instead of the flag.
+func TestProviderEnvToken_EnvVarContradictingTheHostIsRefused(t *testing.T) {
+	withEnvFlag(t, "")
+	t.Setenv("TAUFINITY_ENV", "production")
+	if got, err := provisionEnvName(StagingAPIURL); err == nil {
+		t.Fatalf("TAUFINITY_ENV=production against the staging host must be refused, resolved to %q", got)
+	}
+}
+
+// A flag that agrees with the host is fine.
+func TestProviderEnvToken_FlagAgreeingWithTheHostApplies(t *testing.T) {
+	for _, tc := range []struct{ flag, apiURL, want string }{
+		{"staging", StagingAPIURL, envNameStaging},
+		{"production", DefaultAPIURL, envNameProduction},
+		{"prod", DefaultAPIURL + "/", envNameProduction},
+	} {
+		t.Run(tc.flag+" "+tc.apiURL, func(t *testing.T) {
+			withEnvFlag(t, tc.flag)
+			got, err := provisionEnvName(tc.apiURL)
+			if err != nil {
+				t.Fatalf("--env %s against %s: %v", tc.flag, tc.apiURL, err)
+			}
+			if got != tc.want {
+				t.Errorf("resolved %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Through applyProviders: the client's base URL is what decides, which pins
+// that applyProviders hands c.base in. The HTTP calls go to a fake server via
+// c.admin, so the test never reaches the real host whatever the outcome.
+func TestProviderEnvToken_ApplyUsesTheClientHost(t *testing.T) {
+	var puts []string
+	var sent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/custom-ai-providers":
+			json.NewEncoder(w).Encode([]map[string]interface{}{{"id": 25, "name": "WVS BQ Tracking"}})
+		case r.Method == http.MethodPut:
+			puts = append(puts, r.URL.Path)
+			if r.URL.Path == "/api/custom-ai-providers/25" {
+				var put map[string]interface{}
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &put)
+				sent, _ = put["endpoint_url"].(string)
+			}
+			w.Write([]byte(`{}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	apply := func(t *testing.T) error {
+		t.Helper()
+		dir := t.TempDir()
+		pd := filepath.Join(dir, "providers")
+		if err := os.MkdirAll(pd, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(pd, "p.yaml"), []byte(envTokenSpec), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		c := newProvisionClient(DefaultAPIURL, "key", false)
+		c.admin = studioadmin.New(srv.URL, "key", "", studioadmin.WithChangeSource("provision"))
+		_, _, err := applyProviders(c, dir, filepath.Dir(dir), 1)
+		return err
+	}
+
+	t.Run("no flag on the production host resolves to prod", func(t *testing.T) {
+		withEnvFlag(t, "")
+		puts, sent = nil, ""
+		if err := apply(t); err != nil {
+			t.Fatalf("applyProviders: %v", err)
+		}
+		if want := "content-gen-484211.feedback_prod"; sent != want {
+			t.Errorf("endpoint sent = %q, want %q", sent, want)
+		}
+	})
+	t.Run("staging flag on the production host is refused and writes nothing", func(t *testing.T) {
+		withEnvFlag(t, "staging")
+		puts, sent = nil, ""
+		if err := apply(t); err == nil {
+			t.Fatalf("must be refused; provision sent %v with endpoint %q", puts, sent)
+		}
+		if len(puts) != 0 {
+			t.Errorf("refusal must write nothing, but provision sent %v", puts)
+		}
+	})
 }
