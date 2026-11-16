@@ -170,29 +170,18 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 		return 0, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	// Match existing provider: slug (when both sides have one) → id → name.
-	// When cfg has a slug but the existing provider doesn't yet (bootstrap case),
-	// fall through to id/name so the first run writes the slug into the PUT
-	// payload. Subsequent runs then match by slug.
-	for _, existing := range items {
-		var matched bool
-		if cfg.Slug != "" && existing.Slug != "" {
-			matched = existing.Slug == cfg.Slug
-		} else if cfg.ID > 0 {
-			matched = existing.ID == cfg.ID
-		} else {
-			matched = strings.EqualFold(existing.Name, cfg.Name)
-		}
-		if !matched {
-			continue
-		}
+	existing, err := matchProvider(items, cfg)
+	if err != nil {
+		return 0, err
+	}
+	if existing != nil {
 		if cfg.ID > 0 && !strings.EqualFold(existing.Name, cfg.Name) {
 			fmt.Printf("provision: provider id=%d name changed %q → %q\n", existing.ID, existing.Name, cfg.Name)
 		}
 		fmt.Printf("provision: updating provider %q (id=%d)\n", cfg.Name, existing.ID)
 		// The dry-run payload line is truncated, so spell out map-field changes
 		// (a clear in particular) for provision diff.
-		for _, change := range providerMapFieldChanges(cfg, existing) {
+		for _, change := range providerMapFieldChanges(cfg, *existing) {
 			fmt.Printf("  %s\n", change)
 		}
 		diffTablePages(c, existing.ID, cfg.tablePageContents)
@@ -230,6 +219,84 @@ func upsertProvider(c *provisionClient, orgID uint, cfg providerConfig) (int, er
 	}
 	fmt.Printf("provision: created provider %q id=%d\n", cfg.Name, created.ID)
 	return created.ID, nil
+}
+
+// matchProvider picks the live row a spec means, or nil when it means a new
+// one. Order: slug, then id, then name.
+//
+// The slug is resolved across all rows before anything else, so a slug-less
+// row that happens to share the name can never win just by being listed first.
+// When no row carries the slug yet (the bootstrap case), the id and then the
+// name decide, and the update writes the slug onto that row. A row carrying a
+// different slug is a different provider and is never matched by id or name.
+//
+// A name that matches more than one row is refused rather than resolved,
+// whether or not the spec has a slug. Matching by name silently picked
+// whichever row the API listed first, which the spec does not state and the
+// operator does not see. WVS org 18 had four enabled providers all named "WVS
+// BQ Tracking", three pointing at the staging dataset and one at production's.
+// Provisioning updated one of them on every apply and left the rest, and the
+// platform's own lookup takes First() with no ordering, so which dataset a
+// quote's analytics went to was decided by row order. A slug that no row
+// carries yet falls back to that same name match, so it has to be refused
+// there too: otherwise following the advice "add slug:" brings the bug back.
+func matchProvider(items []providerItem, cfg providerConfig) (*providerItem, error) {
+	if cfg.Slug != "" {
+		var bySlug []providerItem
+		for _, existing := range items {
+			if existing.Slug == cfg.Slug {
+				bySlug = append(bySlug, existing)
+			}
+		}
+		switch len(bySlug) {
+		case 0:
+		case 1:
+			return &bySlug[0], nil
+		default:
+			return nil, fmt.Errorf("provider slug %q matches %d providers in this org (%s): "+
+				"remove the duplicates. Refusing to guess which one the spec means",
+				cfg.Slug, len(bySlug), providerIDList(bySlug))
+		}
+	}
+	eligible := func(existing providerItem) bool { return cfg.Slug == "" || existing.Slug == "" }
+
+	if cfg.ID > 0 {
+		for i := range items {
+			if eligible(items[i]) && items[i].ID == cfg.ID {
+				return &items[i], nil
+			}
+		}
+		return nil, nil
+	}
+
+	var byName []providerItem
+	for _, existing := range items {
+		if eligible(existing) && strings.EqualFold(existing.Name, cfg.Name) {
+			byName = append(byName, existing)
+		}
+	}
+	switch len(byName) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &byName[0], nil
+	}
+	because := "the spec has no slug and no id"
+	if cfg.Slug != "" {
+		because = fmt.Sprintf("no provider carries slug %q yet, so the spec falls back to its name", cfg.Slug)
+	}
+	return nil, fmt.Errorf("provider %q matches %d providers in this org (%s), and %s: "+
+		"add `id:` to the spec so it names one, or remove the duplicates. "+
+		"Refusing to guess which one the spec means",
+		cfg.Name, len(byName), providerIDList(byName), because)
+}
+
+func providerIDList(items []providerItem) string {
+	ids := make([]string, 0, len(items))
+	for _, m := range items {
+		ids = append(ids, fmt.Sprintf("id=%d", m.ID))
+	}
+	return strings.Join(ids, ", ")
 }
 
 // providerMapFieldChanges describes how the configured map fields differ from
