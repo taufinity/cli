@@ -44,11 +44,14 @@ var aiModelConfigKeys = map[string]bool{
 }
 
 // highRiskPlaybookFields are playbook-level fields whose change alters when, or
-// whether, the playbook runs at all.
+// whether, the playbook runs at all, or how it is found.
 var highRiskPlaybookFields = map[string]bool{
 	"schedule":        true,
 	"schedule_paused": true,
 	"enabled":         true,
+	// A new slug re-keys the playbook: provision and other playbooks find it by
+	// slug, so an adoption must be applied on purpose, with --allow-drift.
+	"slug": true,
 }
 
 type driftSeverity int
@@ -343,6 +346,7 @@ func diffPlaybookFields(payload map[string]interface{}, remote playbookDetailRem
 	// local side, so an unset remote column doesn't read as drift.
 	remoteVals := map[string]interface{}{
 		"name":               remote.Name,
+		"slug":               remote.Slug,
 		"description":        remote.Description,
 		"trigger_type":       defaultStr(remote.TriggerType, "manual"),
 		"output_key":         defaultStr(remote.OutputKey, "summary"),

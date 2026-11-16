@@ -175,6 +175,9 @@ type provisionPlaybookListItem struct {
 	ID   uint   `json:"id"`
 	Name string `json:"name"`
 	Slug string `json:"slug,omitempty"`
+	// OrganizationID tells the organisation's own playbooks from shared ones of
+	// other organisations, which the list also returns.
+	OrganizationID uint `json:"organization_id,omitempty"`
 }
 
 // provisionPlaybookStepRemote is the API shape for an existing step.
@@ -194,28 +197,25 @@ type provisionPlaybookStepRemote struct {
 //
 // allowDrift lets the operator opt in to a HIGH-drift apply (see updatePlaybook).
 func applyPlaybooks(c *provisionClient, dir string, orgID uint, allowDrift bool) error {
-	// single playbook.yaml at root
+	// A single playbook.yaml at the root and/or a playbooks/ directory.
+	var files []string
 	if pf := filepath.Join(dir, "playbook.yaml"); fileExists(pf) {
-		var cfg playbookConfig
-		mustReadYAML(pf, &cfg)
-		if err := upsertPlaybook(c, orgID, cfg, pf, allowDrift); err != nil {
-			return fmt.Errorf("playbook: %w", err)
-		}
+		files = append(files, pf)
 	}
-	// multi-playbook directory
-	pd := filepath.Join(dir, "playbooks")
-	if fileExists(pd) {
+	if pd := filepath.Join(dir, "playbooks"); fileExists(pd) {
 		entries, _ := os.ReadDir(pd)
 		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
-				continue
+			if !e.IsDir() && filepath.Ext(e.Name()) == ".yaml" {
+				files = append(files, filepath.Join(pd, e.Name()))
 			}
-			pf := filepath.Join(pd, e.Name())
-			var cfg playbookConfig
-			mustReadYAML(pf, &cfg)
-			if err := upsertPlaybook(c, orgID, cfg, pf, allowDrift); err != nil {
-				return fmt.Errorf("playbook %s: %w", e.Name(), err)
-			}
+		}
+	}
+	claimed := declaredPlaybookSlugs(files)
+	for _, pf := range files {
+		var cfg playbookConfig
+		mustReadYAML(pf, &cfg)
+		if err := upsertPlaybook(c, orgID, cfg, pf, allowDrift, claimed); err != nil {
+			return fmt.Errorf("playbook %s: %w", filepath.Base(pf), err)
 		}
 	}
 	return nil
@@ -225,7 +225,7 @@ func applyPlaybooks(c *provisionClient, dir string, orgID uint, allowDrift bool)
 // Match key: slug (when present in YAML) or case-insensitive name (fallback).
 // Refuses to apply if more than one match is found (ambiguous).
 // yamlPath is used to write the slug back after first CREATE.
-func upsertPlaybook(c *provisionClient, orgID uint, cfg playbookConfig, yamlPath string, allowDrift bool) error {
+func upsertPlaybook(c *provisionClient, orgID uint, cfg playbookConfig, yamlPath string, allowDrift bool, claimed map[string]bool) error {
 	if strings.TrimSpace(cfg.Name) == "" {
 		return fmt.Errorf("playbook: name is required")
 	}
@@ -250,19 +250,12 @@ func upsertPlaybook(c *provisionClient, orgID uint, cfg playbookConfig, yamlPath
 	if err := unmarshalListEnvelope(body, &existing); err != nil {
 		return fmt.Errorf("parse playbooks: %w (body=%s)", err, provisionSummarize(body))
 	}
-	var matches []provisionPlaybookListItem
-	for _, p := range existing {
-		if cfg.Slug != "" {
-			// Slug-leading: authoritative match when YAML has a slug.
-			if p.Slug == cfg.Slug {
-				matches = append(matches, p)
-			}
-		} else {
-			// Backwards-compat: name match when no slug in YAML.
-			if strings.EqualFold(p.Name, cfg.Name) {
-				matches = append(matches, p)
-			}
-		}
+	matches, adopt, err := matchPlaybooks(existing, cfg, orgID, claimed)
+	if err != nil {
+		return fmt.Errorf("playbook %q: %w", cfg.Name, err)
+	}
+	if adopt && len(matches) == 1 {
+		fmt.Printf("ADOPT playbook %q (id=%d): stored slug %q becomes %q\n", cfg.Name, matches[0].ID, matches[0].Slug, cfg.Slug)
 	}
 	if len(matches) > 1 {
 		names := make([]string, 0, len(matches))
@@ -303,6 +296,9 @@ func createPlaybook(c *provisionClient, orgID uint, cfg playbookConfig, yamlPath
 	}
 	pbID := created.ID
 	if created.Slug != "" {
+		if cfg.Slug != "" && created.Slug != cfg.Slug {
+			fmt.Printf("  WARN: Studio stored slug %q instead of %q (a server without slug support); pinning the YAML to the stored slug so the next apply matches\n", created.Slug, cfg.Slug)
+		}
 		if err := pinSlug(yamlPath, cfg.Slug, created.Slug); err != nil {
 			fmt.Printf("  WARN: could not pin slug for playbook %q: %v\n", cfg.Name, err)
 		}
@@ -550,6 +546,7 @@ func playbookCreatePayload(cfg playbookConfig) map[string]interface{} {
 		"trigger_type": defaultStr(cfg.TriggerType, "manual"),
 		"output_key":   defaultStr(cfg.OutputKey, "summary"),
 	}
+	addSlug(out, cfg)
 	if cfg.Schedule != nil {
 		out["schedule"] = *cfg.Schedule
 	}
@@ -582,6 +579,7 @@ func playbookUpdatePayload(cfg playbookConfig, knowledgeTagIDs []uint) map[strin
 		"output_key":        defaultStr(cfg.OutputKey, "summary"),
 		"schedule_timezone": defaultStr(cfg.ScheduleTimezone, "UTC"),
 	}
+	addSlug(out, cfg)
 	if cfg.Schedule != nil {
 		out["schedule"] = *cfg.Schedule
 	}
