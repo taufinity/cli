@@ -349,6 +349,23 @@
     if (!any) box.appendChild(el("p", "Geen opmerkingen.", "muted"));
   }
 
+  /* The session is one paid hour from its first fill. When it has run out the
+     line says so, because the next change starts a new hour at 1 credit; the
+     page checks every 20 seconds, it does not wait for a refill. */
+  function renderCharge() {
+    var c = state && state.report && state.report.charge;
+    var until = c && c.session_until ? Date.parse(c.session_until) : NaN;
+    var b = $("charge");
+    if (!isNaN(until) && Date.now() >= until) {
+      b.textContent = "sessie verlopen: de volgende wijziging start een nieuw uur (1 credit)";
+      b.setAttribute("data-expired", "true");
+    } else {
+      b.textContent = (state && state.charge) || "";
+      b.removeAttribute("data-expired");
+    }
+  }
+  setInterval(function () { if (state && state.report) renderCharge(); }, 20000);
+
   function render() {
     var r = state.report;
     $("size-label").textContent = r.width + " × " + r.height;
@@ -362,7 +379,7 @@
     $("overview").hidden = view !== "all";
     if (view === "all") renderOverview(); else renderSingle();
     renderReport();
-    $("charge").textContent = state.charge || "";
+    renderCharge();
     renderFailure();
     writeHash();
   }

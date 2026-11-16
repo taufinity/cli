@@ -197,3 +197,24 @@ func TestPreviewPageRenderStateBrowser(t *testing.T) {
 		}
 	})
 }
+
+// The charge line follows the clock: after session_until it says the next
+// change starts a new paid hour, instead of a time that has passed.
+func TestPreviewPageChargeExpiresBrowser(t *testing.T) {
+	for _, tc := range []struct{ name, until, want string }{
+		{"active", "2099-01-01T00:00:00Z", "1 credit voor deze template, sessie tot"},
+		{"expired", "2020-01-01T00:00:00Z", "sessie verlopen: de volgende wijziging start een nieuw uur (1 credit)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := threeRows()
+			rep.Charge = &bannerCharge{Credits: 1, SessionUntil: tc.until}
+			files := map[string]string{"rows/0/index.html": "<html></html>", "rows/1/index.html": "<html></html>", "rows/2/index.html": "<html></html>"}
+			_, base, _ := startBanner(t, rep, files)
+			ctx := browserFor(t)
+			openPage(t, ctx, base+"/")
+			if got := jsString(t, ctx, `document.getElementById("charge").textContent`); !strings.HasPrefix(got, tc.want) {
+				t.Fatalf("charge line = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
