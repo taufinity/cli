@@ -181,7 +181,13 @@ func (r *bannerRenderer) variablesFor(rep *bannerReport, index int) (map[string]
 	}
 	if len(rows) > 0 {
 		if index < 0 || index >= len(rows) {
-			return nil, &renderError{Msg: fmt.Sprintf("regel %d bestaat niet in het gegevensbestand", index)}
+			name := fmt.Sprintf("rij %d", index)
+			for _, row := range rep.Rows {
+				if row.Index == index {
+					name = row.Label // the CSV line, as the page shows it
+				}
+			}
+			return nil, &renderError{Msg: name + " bestaat niet (meer) in het gegevensbestand; vernieuw de preview"}
 		}
 		return rows[index], nil
 	}

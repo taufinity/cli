@@ -323,8 +323,8 @@ zoekveld filtert op een waarde in welke kolom dan ook, in beide weergaven. Een b
 zonder tijdlijn kan alleen als PNG worden gerenderd; GIF staat dan uit.
 
 **Echte render.** De knop "Echte render (normale prijs)" op de pagina vraagt Studio om een
-echte render van de regel die je ziet, tegen de normale prijs: PNG 1 credit, GIF van
-10 frames 2 credits. De pagina vraagt dat één keer in de browser en onthoudt je
+echte render van de regel die je ziet, tegen het normale tarief voor dat type banner
+(zie de prijslijst in de overeenkomst). De pagina vraagt dat één keer in de browser en onthoudt je
 bevestiging (`localStorage`, sleutel `taufinity.preview.renderConfirmed`). Het resultaat
 verschijnt onder de banner.
 

@@ -409,16 +409,17 @@ func labelRowsByLine(rep *bannerReport, lines []int) {
 // An Access refusal keeps its own text.
 func edgeBlockedText(err error) string {
 	var nj *jsonresp.NonJSONError
-	if errors.As(err, &nj) && nj.Firewall {
-		ray := ""
-		if nj.RayID != "" {
-			ray = ", Ray ID " + nj.RayID
-		}
-		return fmt.Sprintf("geblokkeerd door de firewall: Cloudflare hield het verzoek naar %s tegen (HTTP %d%s) "+
-			"voordat het Studio bereikte. Dit is geen inlog- of Access-probleem: de firewall beoordeelde het verzoek zelf. "+
-			"Meld het aan Taufinity met het Ray ID", nj.URL, nj.Status, ray)
+	if !errors.As(err, &nj) || !nj.Firewall {
+		return err.Error()
 	}
-	return err.Error()
+	ray, report := "", "Meld het aan Taufinity"
+	if nj.RayID != "" {
+		ray = ", Ray ID " + nj.RayID
+		report += " met het Ray ID"
+	}
+	return fmt.Sprintf("geblokkeerd door de firewall: Cloudflare hield het verzoek naar %s tegen (HTTP %d%s) "+
+		"voordat het Studio bereikte. Dit is geen inlog- of Access-probleem: de firewall beoordeelde het verzoek zelf. %s",
+		nj.URL, nj.Status, ray, report)
 }
 
 // edgeBlocked reports whether Cloudflare turned the request away before it

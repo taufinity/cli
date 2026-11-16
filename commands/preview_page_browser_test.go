@@ -218,3 +218,85 @@ func TestPreviewPageChargeExpiresBrowser(t *testing.T) {
 		})
 	}
 }
+
+// Review findings on the first version of this page.
+func TestPreviewPageReviewFindingsBrowser(t *testing.T) {
+	t.Run("result_stays_with_its_row", func(t *testing.T) {
+		// Render row 2, switch to row 3: the heading said row 3 while the
+		// image was row 2's.
+		fs := newFakeRenderStudio(t)
+		rep := renderReport()
+		rep.Rows = append(rep.Rows, bannerRow{Index: 1, Label: "leeg", Values: map[string]string{"titel": ""}})
+		s, base, _ := startBanner(t, rep, map[string]string{"rows/0/index.html": timelineBanner, "rows/1/index.html": timelineBanner})
+		s.Renderer = fs.renderer(templateDir(t, map[string]string{"index.html": "<html></html>"}))
+		ctx := browserFor(t)
+		openPage(t, ctx, base+"/")
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`localStorage.setItem("taufinity.preview.renderConfirmed","1")`, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if err := chromedp.Run(ctx, chromedp.Click("#render-button", chromedp.ByQuery)); err != nil {
+			t.Fatal(err)
+		}
+		waitJS(t, ctx, `!!document.getElementById("render-image")`)
+		selectRow(t, ctx, "1")
+		if !jsBool(t, ctx, `document.getElementById("render-result").hidden && !document.getElementById("render-image")`) {
+			t.Fatal("row 0's render shows under row 1")
+		}
+		if got := jsString(t, ctx, `document.getElementById("render-title").textContent`); got != "Echte render van leeg" {
+			t.Fatalf("title = %q", got)
+		}
+		selectRow(t, ctx, "0")
+		if !jsBool(t, ctx, `!!document.getElementById("render-image")`) {
+			t.Fatal("row 0's own render is gone after switching back")
+		}
+	})
+
+	t.Run("gif_switches_off_for_a_row_without_timeline", func(t *testing.T) {
+		rep := renderReport()
+		rep.Rows = append(rep.Rows, bannerRow{Index: 1, Label: "leeg"})
+		_, base, _ := startBanner(t, rep, map[string]string{"rows/0/index.html": timelineBanner, "rows/1/index.html": "<html></html>"})
+		ctx := browserFor(t)
+		openPage(t, ctx, base+"/")
+		waitJS(t, ctx, `!document.getElementById("scrubber").hidden`)
+		if err := chromedp.Run(ctx, chromedp.Click(`input[name="render-format"][value="gif"]`, chromedp.ByQuery)); err != nil {
+			t.Fatal(err)
+		}
+		selectRow(t, ctx, "1")
+		waitJS(t, ctx, `!document.getElementById("scrubber-note").hidden`)
+		if !jsBool(t, ctx, `document.querySelector('input[name="render-format"][value="png"]').checked && document.querySelector('input[name="render-format"][value="gif"]').disabled`) {
+			t.Fatal("GIF stays chosen for a row without a timeline")
+		}
+	})
+
+	t.Run("one_row_after_overview_search_is_a_match", func(t *testing.T) {
+		files := map[string]string{"rows/0/index.html": "<html></html>", "rows/1/index.html": "<html></html>", "rows/2/index.html": "<html></html>"}
+		_, base, _ := startBanner(t, threeRows(), files)
+		ctx := browserFor(t)
+		if err := chromedp.Run(ctx, chromedp.Navigate(base+"/#view=all")); err != nil {
+			t.Fatal(err)
+		}
+		waitJS(t, ctx, `document.querySelectorAll("#overview .cell").length === 3`)
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`(function(){var s=document.getElementById("row-search");s.value="molen";s.dispatchEvent(new Event("input"));})()`, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if err := chromedp.Run(ctx, chromedp.Click("#view-row", chromedp.ByQuery)); err != nil {
+			t.Fatal(err)
+		}
+		if got := jsString(t, ctx, `document.getElementById("row-picker").value + " " + document.getElementById("banner-frame").getAttribute("src")`); !strings.HasPrefix(got, "2 ") || !strings.Contains(got, "/rows/2/") {
+			t.Fatalf("picker value and frame = %q, want the only match, row index 2", got)
+		}
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`(function(){var s=document.getElementById("row-search");s.value="bestaat niet";s.dispatchEvent(new Event("input"));})()`, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if got := jsString(t, ctx, `document.getElementById("row-picker").options[0].textContent`); !strings.HasPrefix(got, "geen regel bevat") {
+			t.Fatalf("picker without a match = %q", got)
+		}
+	})
+}
+
+func selectRow(t *testing.T, ctx chromedpCtx, v string) {
+	t.Helper()
+	if err := chromedp.Run(ctx, chromedp.Evaluate(`(function(){var s=document.getElementById("row-picker");s.value=`+jsQuote(v)+`;s.dispatchEvent(new Event("change"));})()`, nil)); err != nil {
+		t.Fatal(err)
+	}
+}

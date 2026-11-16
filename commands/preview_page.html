@@ -77,7 +77,7 @@
   #overview { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-start; }
   #overview > p { margin: 0; }
   .cell { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px 14px; box-shadow: var(--shadow); }
-  .cell .label { font-size: 14px; font-weight: 500; margin-bottom: 8px; cursor: pointer; color: var(--text); }
+  .cell .label { display: block; font: inherit; font-size: 14px; font-weight: 500; margin: 0 0 8px; padding: 0; border: 0; background: none; cursor: pointer; color: var(--text); }
   .cell .label:hover { color: var(--brand); }
   .cell .label::after { content: " \2192"; color: var(--muted); }
   .cell .box { position: relative; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 1px 2px rgba(24,24,24,.08); }
@@ -97,6 +97,7 @@
   #render-result { margin-top: 14px; padding: 14px 16px; background: var(--raised); border-radius: 10px; font-size: 14px; }
   #render-result img { display: block; margin-top: 10px; max-width: 100%; border-radius: 4px; box-shadow: 0 1px 2px rgba(24,24,24,.08), 0 6px 20px rgba(24,24,24,.10); }
   .dots::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: dots 1.2s steps(4, end) infinite; }
+  @media (prefers-reduced-motion: reduce) { .dots::after { animation: none; content: "..."; } }
   @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
 
   /* field report: neutral information, warnings in amber */
@@ -136,7 +137,7 @@
     </div>
     <label class="inline-field">Regel <select id="row-picker"></select></label>
     <input id="row-search" type="search" placeholder="zoek in alle kolommen" aria-label="Zoek een regel op een waarde in een van de kolommen">
-    <span id="row-search-count" class="muted" hidden></span>
+    <span id="row-search-count" class="muted" aria-live="polite" hidden></span>
     <span id="ready-badge" hidden></span>
   </div>
   <section id="single" class="card">
@@ -261,11 +262,19 @@
       o.value = String(r.index);
       sel.appendChild(o);
     });
+    if (!rows.length) {
+      var none = el("option", "geen regel bevat \u201c" + query + "\u201d");
+      none.value = "";
+      none.disabled = true;
+      sel.appendChild(none);
+    }
     var count = $("row-search-count");
     count.hidden = !query;
     count.textContent = query ? (rows.length === 1 ? "1 regel" : rows.length + " regels") : "";
     if (view !== "all" && !state.report.rows.some(function (r) { return r.index === selected; })) selected = state.report.rows[0].index;
-    sel.value = view === "all" ? "" : String(selected);
+    /* one row shown while a search is on: it is one of the matches */
+    if (view !== "all" && rows.length && !rows.some(function (r) { return r.index === selected; })) selected = rows[0].index;
+    sel.value = view === "all" || !rows.length ? "" : String(selected);
   }
 
   function renderSingle() {
@@ -280,6 +289,7 @@
       ov.textContent = "";
       ov.appendChild(el("code", errText(row.error)));
       ov.appendChild(el("div", "Deze regel kan niet worden gevuld."));
+      setGifAllowed(false);
       f.hidden = true;
       f.removeAttribute("src");
     } else {
@@ -301,7 +311,8 @@
     if (!rows.length) box.appendChild(el("p", "Geen regel bevat “" + query + "”.", "muted"));
     rows.forEach(function (row) {
       var cell = el("div", null, "cell");
-      var lab = el("div", row.label, "label");
+      var lab = el("button", row.label, "label");
+      lab.type = "button";
       lab.title = "Toon alleen deze regel";
       lab.addEventListener("click", function () { selected = row.index; view = "row"; render(); });
       cell.appendChild(lab);
@@ -333,7 +344,7 @@
     var box = $("field-report");
     box.textContent = "";
     box.appendChild(el("strong", "Veldrapport"));
-    var rows = view === "all" ? state.report.rows : [rowOf(selected)];
+    var rows = view === "all" ? visibleRows() : [rowOf(selected)];
     var any = false;
     rows.forEach(function (row) {
       var has = (row.unfilled || []).length || (row.unused || []).length || (row.warnings || []).length;
@@ -375,6 +386,7 @@
     /* a real render is of one row: only offered where one row is shown */
     $("render-panel").hidden = view === "all";
     $("render-title").textContent = "Echte render van " + rowOf(selected).label;
+    if (view === "row") showResultFor(selected);
     $("single").hidden = view === "all";
     $("overview").hidden = view !== "all";
     if (view === "all") renderOverview(); else renderSingle();
@@ -513,9 +525,22 @@
     b.hidden = !msg;
     b.textContent = msg || "";
   }
+  /* Real render results belong to the row they were made of: switching rows
+     shows that row's own result (or none), and a render that finishes after a
+     switch is kept for its row instead of appearing under another. A refill
+     (the template changed) makes earlier results stale, so they are dropped. */
+  var results = {};
+  function showResultFor(index) {
+    var box = $("render-result"), r = results[index];
+    renderError(r && r.error ? r.error : "");
+    if (r && r.body) { showRenderResult(r.body); return; }
+    box.hidden = true;
+    box.textContent = "";
+  }
   function startRender() {
     var btn = $("render-button");
     var fmt = chosenFormat();
+    var row = selected;
     var token = (document.querySelector('meta[name="preview-token"]') || {}).content || "";
     btn.disabled = true;
     btn.textContent = "";
@@ -526,15 +551,15 @@
     fetch("/api/render", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Preview-Token": token },
-      body: JSON.stringify({ row: selected, format: fmt })
+      body: JSON.stringify({ row: row, format: fmt })
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
     }).then(function (res) {
-      if (!res.ok) { renderError(res.body.error || "De echte render is mislukt."); return; }
-      showRenderResult(res.body);
+      results[row] = res.ok ? { body: res.body } : { error: res.body.error || "De echte render is mislukt." };
     }).catch(function () {
-      renderError("Geen verbinding met de lokale preview.");
+      results[row] = { error: "Geen verbinding met de lokale preview." };
     }).then(function () {
+      if (selected === row && view === "row") showResultFor(row);
       btn.disabled = false;
       btn.textContent = "Echte render (normale prijs)";
     });
@@ -571,12 +596,13 @@
       var reload = state && s.report && s.version !== state.version && !s.failure;
       state = s;
       if (!s.report) return;
-      if (reload) { readyAt = {}; }
+      if (reload) { readyAt = {}; results = {}; }
       if (reload || !document.querySelector("#row-picker option")) render(); else renderFailure();
     });
   }
 
   readHash();
+  query = norm($("row-search").value.trim()); /* a value the browser restored */
   load();
   var es = new EventSource("/events");
   es.addEventListener("reload", function () { load(); });
