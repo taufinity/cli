@@ -127,45 +127,48 @@ func parseBannerCSV(raw []byte) (*bannerCSV, error) {
 
 // selectBannerRows applies --row (0 = all rows). The result is what is sent to
 // the server.
-func selectBannerRows(d *bannerCSV, row int) ([]map[string]string, error) {
+// The second result is the line number of each returned row in the file,
+// counted like the Product Layer (the header is line 1).
+func selectBannerRows(d *bannerCSV, row int) ([]map[string]string, []int, error) {
 	if row != 0 {
 		for i, l := range d.Lines {
 			if l == row {
-				return []map[string]string{d.Rows[i]}, nil
+				return []map[string]string{d.Rows[i]}, []int{l}, nil
 			}
 		}
 		last := 1
 		if n := len(d.Lines); n > 0 {
 			last = d.Lines[n-1]
 		}
-		return nil, fmt.Errorf("regel %d bestaat niet in het gegevensbestand (regel 1 is de kop, de laatste regel is %d)", row, last)
+		return nil, nil, fmt.Errorf("regel %d bestaat niet in het gegevensbestand (regel 1 is de kop, de laatste regel is %d)", row, last)
 	}
 	if len(d.Rows) == 0 {
-		return nil, fmt.Errorf("het gegevensbestand heeft een kop maar geen regels met gegevens")
+		return nil, nil, fmt.Errorf("het gegevensbestand heeft een kop maar geen regels met gegevens")
 	}
 	if len(d.Rows) > bannerMaxRows {
-		return nil, fmt.Errorf("het gegevensbestand heeft %d regels; een voorbeeld toont er maximaal %d. Kies een regel met --row <n> (regel 1 is de kop)", len(d.Rows), bannerMaxRows)
+		return nil, nil, fmt.Errorf("het gegevensbestand heeft %d regels; een voorbeeld toont er maximaal %d. Kies een regel met --row <n> (regel 1 is de kop)", len(d.Rows), bannerMaxRows)
 	}
-	return d.Rows, nil
+	return d.Rows, d.Lines, nil
 }
 
 // loadBannerRows combines the three steps. Rows is nil when there is no data
-// file, which makes the server generate its own rows.
-func loadBannerRows(dir, dataFlag string, row int) (rows []map[string]string, dataPath string, err error) {
+// file, which makes the server generate its own rows. Lines[i] is the line of
+// rows[i] in the file (header = 1), the number the page shows.
+func loadBannerRows(dir, dataFlag string, row int) (rows []map[string]string, lines []int, dataPath string, err error) {
 	dataPath, err = findBannerDataFile(dir, dataFlag)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
 	if dataPath == "" {
 		if row != 0 {
-			return nil, "", fmt.Errorf("--row heeft een gegevensbestand nodig, maar er is geen CSV gevonden (gebruik --data)")
+			return nil, nil, "", fmt.Errorf("--row heeft een gegevensbestand nodig, maar er is geen CSV gevonden (gebruik --data)")
 		}
-		return nil, "", nil
+		return nil, nil, "", nil
 	}
 	d, err := readBannerCSV(dataPath)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	rows, err = selectBannerRows(d, row)
-	return rows, dataPath, err
+	rows, lines, err = selectBannerRows(d, row)
+	return rows, lines, dataPath, err
 }

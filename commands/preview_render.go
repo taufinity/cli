@@ -71,6 +71,16 @@ func serverErrorText(body []byte) string {
 	return "onbekende fout"
 }
 
+// refusalText puts the renderer's known refusals in plain Dutch and keeps any
+// other text as the server wrote it.
+func refusalText(msg string) string {
+	if strings.Contains(msg, "exposes no timeline") {
+		return "deze banner heeft geen tijdlijn (geen window.__taufinitySeek en geen GSAP), dus als GIF of video " +
+			"zou de beweging gegokt zijn. Render hem als PNG, of geef het sjabloon een tijdlijn"
+	}
+	return msg
+}
+
 // renderHTTPError turns an error answer of Studio into one Dutch message that
 // carries the server's own text.
 func renderHTTPError(step string, status int, body []byte) *renderError {
@@ -86,7 +96,7 @@ func renderHTTPError(step string, status int, body []byte) *renderError {
 	case http.StatusRequestEntityTooLarge:
 		text = step + ": te groot: " + msg
 	case http.StatusUnprocessableEntity:
-		text = "de render is geweigerd: " + msg
+		text = "de render is geweigerd: " + refusalText(msg)
 	case http.StatusServiceUnavailable:
 		text = "Studio is nu niet beschikbaar: " + msg
 	default:
@@ -100,7 +110,7 @@ func renderTransportError(step string, err error) error {
 		return &renderError{Msg: step + ": het antwoord van Studio is te groot"}
 	}
 	if edgeBlocked(err) {
-		return &renderError{Msg: step + ": " + err.Error()}
+		return &renderError{Msg: step + ": " + edgeBlockedText(err)}
 	}
 	return &renderError{Msg: fmt.Sprintf("%s: geen verbinding met Studio: %v", step, err)}
 }
@@ -165,7 +175,7 @@ func (r *bannerRenderer) Upload(ctx context.Context) (string, error) {
 // variablesFor is the values of row index keyed by the CSV header names. Without
 // a data file the values the server generated for that row are used.
 func (r *bannerRenderer) variablesFor(rep *bannerReport, index int) (map[string]string, error) {
-	rows, _, err := loadBannerRows(r.Dir, r.DataFlag, r.Row)
+	rows, _, _, err := loadBannerRows(r.Dir, r.DataFlag, r.Row)
 	if err != nil {
 		return nil, err
 	}

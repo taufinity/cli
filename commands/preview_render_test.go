@@ -299,11 +299,20 @@ func TestPreviewRenderRequest(t *testing.T) {
 	})
 }
 
+// timelineBanner exposes a seek function, so the page offers GIF for it.
+const timelineBanner = `<html><body><script>window.__taufinitySeek = function (t) {}; window.__taufinityDuration = 2;</script></body></html>`
+
 // startRenderServer is a page server whose Renderer talks to the fake Studio.
+// Its banner has a timeline; startRenderServerWith takes another banner.
 func startRenderServer(t *testing.T, fs *fakeRenderStudio) (*bannerServer, string) {
 	t.Helper()
+	return startRenderServerWith(t, fs, timelineBanner)
+}
+
+func startRenderServerWith(t *testing.T, fs *fakeRenderStudio, banner string) (*bannerServer, string) {
+	t.Helper()
 	dir := templateDir(t, map[string]string{"index.html": "<html><body>hoi</body></html>"})
-	s, base, _ := startBanner(t, renderReport(), map[string]string{"rows/0/index.html": "<html></html>"})
+	s, base, _ := startBanner(t, renderReport(), map[string]string{"rows/0/index.html": banner})
 	s.Renderer = fs.renderer(dir)
 	return s, base
 }

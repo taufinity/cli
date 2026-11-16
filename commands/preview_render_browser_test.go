@@ -106,10 +106,16 @@ func TestPreviewRenderBrowser(t *testing.T) {
 		if err := chromedp.Run(ctx, chromedp.Text("#render-modal", &text, chromedp.ByQuery)); err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"echte render", "normale prijs", "1 credit per stilstaand beeld", "Bevestigen", "Annuleren"} {
+		for _, want := range []string{"echte render", "normale prijs", "normale tarief voor dit type banner", "Bevestigen", "Annuleren"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("modal lacks %q: %q", want, text)
 			}
+		}
+		// No figure: the agreement's price list is the one source, a number
+		// here only drifts from it (the GIF price was once shown wrong in
+		// a demo).
+		if strings.Contains(text, "credit") {
+			t.Errorf("modal names a price in credits: %q", text)
 		}
 		if u, r := fs.counts(); u != 0 || r != 0 {
 			t.Fatalf("studio saw %d uploads %d renders before confirming", u, r)
@@ -184,7 +190,7 @@ func TestPreviewRenderBrowser(t *testing.T) {
 		if err := chromedp.Run(ctx, chromedp.Text("#render-modal-price", &text, chromedp.ByQuery)); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(text, "2 credits voor een animatie van 10 frames") {
+		if !strings.Contains(text, "normale tarief voor dit type banner") {
 			t.Fatalf("price = %q", text)
 		}
 		click(t, ctx, "#render-confirm")

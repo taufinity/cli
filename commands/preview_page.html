@@ -5,53 +5,141 @@
 <meta name="preview-token" content="__PREVIEW_TOKEN__">
 <title>Banner bekijken</title>
 <style>
-  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: #f2f3f5; color: #1c1e21; }
-  header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px 16px; background: #fff; border-bottom: 1px solid #d8dbe0; }
-  header h1 { font-size: 15px; margin: 0 8px 0 0; }
-  select, button { font: inherit; padding: 4px 8px; }
-  button.active { background: #1c1e21; color: #fff; }
-  main { padding: 16px; }
-  #refill-error { background: #fdecea; color: #8a1c13; padding: 8px 16px; border-bottom: 1px solid #f3b8b2; }
-  #stage { position: relative; display: inline-block; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
-  #banner-frame, .cell iframe { border: 0; display: block; background: #fff; }
-  #error-overlay { position: absolute; inset: 0; background: rgba(138,28,19,.94); color: #fff; padding: 14px; overflow: auto; box-sizing: border-box; }
-  #error-overlay code { display: block; margin-bottom: 6px; font-weight: 600; }
-  #overview { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
-  .cell .label { font-weight: 600; margin-bottom: 4px; }
-  .cell .box { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
-  .cell .rowerr { position: absolute; inset: 0; background: rgba(138,28,19,.94); color: #fff; padding: 8px; overflow: auto; box-sizing: border-box; font-size: 12px; }
-  #ready-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #e3f4e6; color: #145a22; }
-  #ready-badge.late { background: #fff1d6; color: #7a4b00; }
-  #scrubber { margin-top: 12px; display: flex; gap: 10px; align-items: center; }
-  #scrubber-range { width: 360px; }
-  #scrubber-note { color: #5b6068; margin-top: 12px; }
-  #field-report { margin-top: 18px; background: #fff; padding: 10px 14px; max-width: 760px; border: 1px solid #d8dbe0; }
-  #field-report h2 { font-size: 13px; margin: 8px 0 2px; }
-  #field-report ul { margin: 0; padding-left: 18px; }
-  .muted { color: #5b6068; }
-  #render-panel { margin-top: 16px; max-width: 760px; }
-  #render-panel .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  #render-error { margin-top: 8px; background: #fdecea; color: #8a1c13; padding: 8px 12px; border: 1px solid #f3b8b2; }
-  #render-result { margin-top: 10px; background: #fff; padding: 10px 14px; border: 1px solid #d8dbe0; }
-  #render-result img { display: block; margin-top: 8px; max-width: 100%; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
-  #render-modal { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; }
-  #render-modal .dialog { background: #fff; padding: 18px 22px; max-width: 420px; border-radius: 6px; }
-  #render-modal .buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 14px; }
+  /* The look of DSlab's Product Layer (its globals.css): white page, coral bar,
+     near-black type, rounded cards. Same tokens, copied rather than linked,
+     because this page loads nothing from outside. Colour carries meaning:
+     green only for "met", red only for a failure, coral is the brand. */
+  :root {
+    --bg: #f6f7f9; --surface: #ffffff; --raised: #eef1f6; --line: #dfe4ec;
+    --text: #181818; --muted: #5f6977;
+    --brand: #f05f4b; --brand-dim: #e95a47; --brand-ink: #ffffff; --brand-soft: #fdeeeb;
+    --ok: #5f8a0f; --ok-bg: #eef5e1; --warn: #b87400; --warn-bg: #fdf3e3;
+    --bad: #d0021b; --bad-bg: #fdeaea; --bad-line: #f0bcbc;
+    --backdrop: rgba(24, 24, 24, 0.5); --radius: 14px;
+    --shadow: 0 1px 2px rgba(24, 24, 24, 0.04), 0 4px 16px rgba(24, 24, 24, 0.04);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1012; --surface: #16181c; --raised: #1d2026; --line: #2a2e36;
+      --text: #f2f4f7; --muted: #9aa3b0; --brand-soft: #3a1f1b;
+      --ok: #95c11f; --ok-bg: #1f2a10; --warn: #feaa1e; --warn-bg: #2e2410;
+      --bad: #ff5a6a; --bad-bg: #2e1418; --bad-line: #5c2229; --shadow: none;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 Poppins, system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; }
   [hidden] { display: none !important; }
+  .muted { color: var(--muted); }
+
+  .topbar { background: var(--brand); color: var(--brand-ink); }
+  .topbar .inner { max-width: 1280px; margin: 0 auto; padding: 12px 32px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .topbar h1 { font-size: 17px; font-weight: 600; margin: 0; }
+  .topbar .spacer { flex: 1; }
+  .topbar .meta { font-size: 14px; opacity: 0.9; white-space: nowrap; }
+
+  .page { max-width: 1280px; margin: 0 auto; padding: 24px 32px 64px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 22px; box-shadow: var(--shadow); }
+  .card + .card, .card + section, section + .card { margin-top: 18px; }
+  .card h2, #field-report > strong { display: block; font-size: 1.05rem; font-weight: 600; margin: 0 0 12px; }
+
+  /* toolbar: view, row, search */
+  .toolbar { display: flex; flex-wrap: wrap; gap: 14px 18px; align-items: center; }
+  .tabs { display: inline-flex; gap: 4px; padding: 3px; border-radius: 999px; background: var(--raised); }
+  .tabs button { padding: 5px 14px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 14px; cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--surface); border-color: var(--brand); color: var(--text); font-weight: 500; }
+  .tabs button:hover { color: var(--text); }
+  .inline-field { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+  select, input[type=search] { font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
+    padding: 7px 12px; border: 1px solid var(--line); border-radius: 10px; }
+  select { max-width: 340px; }
+  #row-search { width: 17em; }
+  select:focus, input[type=search]:focus, button:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+  #row-search-count { font-size: 13px; }
+
+  #refill-error { max-width: 1280px; margin: 18px auto 0; padding: 11px 15px; border-left: 3px solid var(--bad); background: var(--bad-bg); border-radius: 8px; }
+  #refill-error:not([hidden]) { display: block; }
+
+  /* the banner on a plain stage, like a proof sheet */
+  #single { display: flex; flex-direction: column; align-items: flex-start; }
+  #stage { position: relative; display: inline-block; background: #fff; box-shadow: 0 1px 2px rgba(24,24,24,.08), 0 6px 20px rgba(24,24,24,.10); border-radius: 4px; overflow: hidden; }
+  #banner-frame, .cell iframe { border: 0; display: block; background: #fff; }
+  #error-overlay { position: absolute; inset: 0; background: rgba(208, 2, 27, 0.94); color: #fff; padding: 14px; overflow: auto; font-size: 13px; }
+  #error-overlay code { display: block; margin-bottom: 6px; font-weight: 600; }
+  #scrubber { margin-top: 14px; display: flex; gap: 10px; align-items: center; font-size: 14px; }
+  #scrubber-range { width: 360px; accent-color: var(--brand); }
+  #scrubber-note { margin-top: 14px; font-size: 14px; color: var(--muted); }
+  #ready-badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; background: var(--ok-bg); color: var(--ok); }
+  #ready-badge.late { background: var(--warn-bg); color: var(--warn); }
+
+  #overview { display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-start; }
+  #overview > p { margin: 0; }
+  .cell { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px 14px; box-shadow: var(--shadow); }
+  .cell .label { font-size: 14px; font-weight: 500; margin-bottom: 8px; cursor: pointer; color: var(--text); }
+  .cell .label:hover { color: var(--brand); }
+  .cell .label::after { content: " \2192"; color: var(--muted); }
+  .cell .box { position: relative; background: #fff; border-radius: 4px; overflow: hidden; box-shadow: 0 1px 2px rgba(24,24,24,.08); }
+  .cell .rowerr { position: absolute; inset: 0; background: rgba(208, 2, 27, 0.94); color: #fff; padding: 8px; overflow: auto; font-size: 12px; }
+
+  /* real render */
+  #render-panel .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  #render-button { display: inline-flex; align-items: center; gap: 8px; padding: 9px 18px; border: 1px solid var(--brand); border-radius: 10px;
+    background: var(--brand); color: var(--brand-ink); font: inherit; font-weight: 500; cursor: pointer; }
+  #render-button:hover:not(:disabled) { background: var(--brand-dim); border-color: var(--brand-dim); }
+  #render-button:disabled { opacity: 0.6; cursor: progress; }
+  .format { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; font-size: 14px; cursor: pointer; background: var(--surface); }
+  .format:has(input:checked) { border-color: var(--brand); background: var(--brand-soft); }
+  .format:has(input:disabled) { opacity: 0.45; cursor: not-allowed; }
+  .format input { accent-color: var(--brand); margin: 0; }
+  #render-error { margin-top: 12px; padding: 11px 15px; border-left: 3px solid var(--bad); background: var(--bad-bg); border-radius: 8px; }
+  #render-result { margin-top: 14px; padding: 14px 16px; background: var(--raised); border-radius: 10px; font-size: 14px; }
+  #render-result img { display: block; margin-top: 10px; max-width: 100%; border-radius: 4px; box-shadow: 0 1px 2px rgba(24,24,24,.08), 0 6px 20px rgba(24,24,24,.10); }
+  .dots::after { content: ""; display: inline-block; width: 1.2em; text-align: left; animation: dots 1.2s steps(4, end) infinite; }
+  @keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+
+  /* field report: neutral information, warnings in amber */
+  #field-report h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 14px 0 6px; }
+  #field-report ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  #field-report li { padding: 3px 10px; border-radius: 999px; background: var(--raised); font-size: 13px; }
+  #field-report .warn li { background: var(--warn-bg); color: var(--warn); }
+  #field-report > div > h2:first-child { margin-top: 4px; }
+  #field-report h3 { font-size: 15px; font-weight: 600; margin: 18px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+  #field-report > div:first-of-type h3 { border-top: 0; padding-top: 0; margin-top: 4px; }
+
+  #render-modal { position: fixed; inset: 0; background: var(--backdrop); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #render-modal .dialog { background: var(--surface); padding: 22px 26px; max-width: 440px; border-radius: var(--radius); box-shadow: 0 12px 40px rgba(24,24,24,.25); }
+  #render-modal .dialog strong { font-size: 1.1rem; }
+  #render-modal .buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+  #render-modal .buttons button { padding: 8px 16px; border-radius: 10px; font: inherit; font-weight: 500; cursor: pointer; }
+  #render-cancel { border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+  #render-confirm { border: 1px solid var(--brand); background: var(--brand); color: var(--brand-ink); }
+  @media (max-width: 720px) { .page, .topbar .inner { padding-left: 16px; padding-right: 16px; } #scrubber-range { width: 200px; } }
 </style>
 </head>
 <body>
-<div id="refill-error" hidden></div>
-<header>
-  <h1>Banner bekijken</h1>
-  <label>Regel <select id="row-picker"></select></label>
-  <button id="overview-toggle" type="button">Alle regels</button>
-  <span id="size-label" class="muted"></span>
-  <span id="ready-badge" hidden></span>
-  <span id="charge" class="muted"></span>
+<header class="topbar">
+  <div class="inner">
+    <h1>Banner bekijken</h1>
+    <span class="spacer"></span>
+    <span id="size-label" class="meta"></span>
+    <span id="charge" class="meta"></span>
+  </div>
 </header>
-<main>
-  <section id="single">
+<div id="refill-error" hidden></div>
+<main class="page">
+  <div class="card toolbar">
+    <div class="tabs" role="group" aria-label="Weergave">
+      <button id="view-row" type="button" aria-pressed="true">Eén regel</button>
+      <button id="overview-toggle" type="button" aria-pressed="false">Alle regels</button>
+    </div>
+    <label class="inline-field">Regel <select id="row-picker"></select></label>
+    <input id="row-search" type="search" placeholder="zoek in alle kolommen" aria-label="Zoek een regel op een waarde in een van de kolommen">
+    <span id="row-search-count" class="muted" hidden></span>
+    <span id="ready-badge" hidden></span>
+  </div>
+  <section id="single" class="card">
     <div id="stage">
       <iframe id="banner-frame" title="Banner" sandbox="allow-scripts"></iframe>
       <div id="error-overlay" hidden></div>
@@ -64,16 +152,17 @@
     <div id="scrubber-note" hidden>geen tijdlijn: als GIF of video wordt deze banner geweigerd</div>
   </section>
   <section id="overview" hidden></section>
-  <section id="render-panel">
+  <section id="render-panel" class="card">
+    <h2 id="render-title">Echte render</h2>
     <div class="controls">
       <button id="render-button" type="button">Echte render (normale prijs)</button>
-      <label><input type="radio" name="render-format" value="png" checked> PNG</label>
-      <label><input type="radio" name="render-format" value="gif"> GIF (10 frames)</label>
+      <label class="format"><input type="radio" name="render-format" value="png" checked> PNG</label>
+      <label class="format"><input type="radio" name="render-format" value="gif"> GIF (10 frames)</label>
     </div>
     <div id="render-error" hidden></div>
     <div id="render-result" hidden></div>
   </section>
-  <section id="field-report"></section>
+  <section id="field-report" class="card"></section>
 </main>
 <div id="render-modal" hidden>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="render-modal-title">
@@ -127,16 +216,56 @@
     return err.file + (err.line ? ":" + err.line : "") + " " + err.message;
   }
 
+  /* search: a row matches when any of its values (or its label) contains the text */
+  var query = "";
+  function norm(t) { return String(t == null ? "" : t).toLowerCase(); }
+  function matchedValue(row) {
+    if (!query) return null;
+    var vals = row.values || {};
+    for (var k in vals) {
+      if (Object.prototype.hasOwnProperty.call(vals, k) && norm(vals[k]).indexOf(query) !== -1) return String(vals[k]);
+    }
+    return norm(row.label).indexOf(query) !== -1 ? "" : null;
+  }
+  function visibleRows() {
+    return state.report.rows.filter(function (r) { return !query || matchedValue(r) !== null; });
+  }
+  /* a short readable value for the picker: the first field that holds plain
+     text (no file, link or style), in the template's field order */
+  function summaryOf(row) {
+    var vals = row.values || {}, fields = state.report.fields || [];
+    for (var i = 0; i < fields.length; i++) {
+      var f = String(fields[i]), v = vals[f];
+      if (!v || /(_url|_file|_css)$/.test(f) || f === "id") continue;
+      v = String(v).trim();
+      if (v && !/^(https?:|#|[0-9.,]+$)/.test(v)) return v.length > 40 ? v.slice(0, 39) + "…" : v;
+    }
+    return "";
+  }
+  function optionText(row) {
+    var m = matchedValue(row), extra = m ? m : summaryOf(row);
+    if (extra && extra.length > 40) extra = extra.slice(0, 39) + "…";
+    return extra ? row.label + " · " + extra : row.label;
+  }
   function renderPicker() {
-    var sel = $("row-picker");
+    var sel = $("row-picker"), rows = visibleRows();
     sel.textContent = "";
-    state.report.rows.forEach(function (r) {
-      var o = el("option", r.label + " (" + r.index + ")");
+    if (view === "all") {
+      /* a placeholder, so choosing any row (also the last one shown) is a change */
+      var ph = el("option", "alle regels");
+      ph.value = "";
+      sel.appendChild(ph);
+    }
+    rows.forEach(function (r) {
+      var o = el("option", optionText(r));
       o.value = String(r.index);
       sel.appendChild(o);
     });
-    if (!state.report.rows.some(function (r) { return r.index === selected; })) selected = state.report.rows[0].index;
-    sel.value = String(selected);
+    var count = $("row-search-count");
+    count.hidden = !query;
+    count.textContent = query ? (rows.length === 1 ? "1 regel" : rows.length + " regels") : "";
+    if (view !== "all" && !state.report.rows.some(function (r) { return r.index === selected; })) selected = state.report.rows[0].index;
+    sel.value = view === "all" ? "" : String(selected);
   }
 
   function renderSingle() {
@@ -168,9 +297,14 @@
   function renderOverview() {
     var box = $("overview"), r = state.report;
     box.textContent = "";
-    r.rows.forEach(function (row) {
+    var rows = visibleRows();
+    if (!rows.length) box.appendChild(el("p", "Geen regel bevat “" + query + "”.", "muted"));
+    rows.forEach(function (row) {
       var cell = el("div", null, "cell");
-      cell.appendChild(el("div", row.label, "label"));
+      var lab = el("div", row.label, "label");
+      lab.title = "Toon alleen deze regel";
+      lab.addEventListener("click", function () { selected = row.index; view = "row"; render(); });
+      cell.appendChild(lab);
       var b = el("div", null, "box");
       b.style.width = r.width + "px"; b.style.height = r.height + "px";
       if (row.error) {
@@ -188,10 +322,10 @@
     });
   }
 
-  function list(parent, title, items) {
+  function list(parent, title, items, cls) {
     if (!items || !items.length) return;
     parent.appendChild(el("h2", title));
-    var ul = el("ul");
+    var ul = el("ul", null, cls);
     items.forEach(function (t) { ul.appendChild(el("li", t)); });
     parent.appendChild(ul);
   }
@@ -206,10 +340,10 @@
       if (!has) return;
       any = true;
       var sec = el("div");
-      if (rows.length > 1) sec.appendChild(el("h2", row.label));
+      if (rows.length > 1) sec.appendChild(el("h3", row.label));
       list(sec, "Velden zonder waarde", row.unfilled);
-      list(sec, "Kolommen die niets gebruikt", row.unused);
-      list(sec, "Waarschuwingen", row.warnings);
+      list(sec, "Kolommen die het sjabloon niet gebruikt", row.unused);
+      list(sec, "Waarschuwingen", row.warnings, "warn");
       box.appendChild(sec);
     });
     if (!any) box.appendChild(el("p", "Geen opmerkingen.", "muted"));
@@ -219,7 +353,11 @@
     var r = state.report;
     $("size-label").textContent = r.width + " × " + r.height;
     renderPicker();
-    $("overview-toggle").className = view === "all" ? "active" : "";
+    $("overview-toggle").setAttribute("aria-pressed", String(view === "all"));
+    $("view-row").setAttribute("aria-pressed", String(view !== "all"));
+    /* a real render is of one row: only offered where one row is shown */
+    $("render-panel").hidden = view === "all";
+    $("render-title").textContent = "Echte render van " + rowOf(selected).label;
     $("single").hidden = view === "all";
     $("overview").hidden = view !== "all";
     if (view === "all") renderOverview(); else renderSingle();
@@ -300,6 +438,7 @@
   function setupScrubber(info) {
     var wrap = $("scrubber"), note = $("scrubber-note"), range = $("scrubber-range");
     var dur = info && typeof info.duration === "number" && isFinite(info.duration) && info.duration > 0 ? info.duration : 0;
+    setGifAllowed(!!dur);
     if (!dur) { wrap.hidden = true; note.hidden = false; return; }
     note.hidden = true;
     wrap.hidden = false;
@@ -314,18 +453,37 @@
     };
   }
 
+  /* the server refuses a GIF or video of a banner without a timeline, so the
+     choice is not offered; PNG is chosen instead */
+  function setGifAllowed(ok) {
+    var gif = document.querySelector('input[name="render-format"][value="gif"]');
+    if (!gif) return;
+    gif.disabled = !ok;
+    gif.parentNode.title = ok ? "" : "Deze banner heeft geen tijdlijn, dus een GIF kan niet: kies PNG";
+    if (!ok && gif.checked) document.querySelector('input[name="render-format"][value="png"]').checked = true;
+  }
   $("row-picker").addEventListener("change", function () {
+    if (this.value === "") return;
     selected = parseInt(this.value, 10);
+    view = "row";
     render();
   });
-  $("overview-toggle").addEventListener("click", function () {
-    view = view === "all" ? "row" : "all";
+  $("row-search").addEventListener("input", function () {
+    query = norm(this.value.trim());
+    if (view === "row" && query) {
+      var rows = visibleRows();
+      if (rows.length && !rows.some(function (r) { return r.index === selected; })) selected = rows[0].index;
+    }
     render();
   });
+  $("overview-toggle").addEventListener("click", function () { view = "all"; render(); });
+  $("view-row").addEventListener("click", function () { view = "row"; render(); });
 
   /* real render: costs credits, asked once and then remembered in this browser */
   var CONFIRM_KEY = "taufinity.preview.renderConfirmed";
-  var PRICES = { png: "1 credit per stilstaand beeld", gif: "2 credits voor een animatie van 10 frames" };
+  /* no figure here: the price per type of banner is the one in the agreement,
+     and a number on this page would only drift from it */
+  var PRICE = "het normale tarief voor dit type banner (stilstaand beeld of animatie), zoals in de overeenkomst";
   function chosenFormat() {
     var r = document.querySelector('input[name="render-format"]:checked');
     return r ? r.value : "png";
@@ -343,8 +501,11 @@
     var fmt = chosenFormat();
     var token = (document.querySelector('meta[name="preview-token"]') || {}).content || "";
     btn.disabled = true;
-    btn.textContent = "Bezig met renderen...";
+    btn.textContent = "";
+    btn.appendChild(el("span", "Bezig met renderen", "dots"));
     renderError("");
+    $("render-result").hidden = true; /* an earlier result must not read as this one's */
+    $("render-result").textContent = "";
     fetch("/api/render", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Preview-Token": token },
@@ -378,7 +539,7 @@
   }
   $("render-button").addEventListener("click", function () {
     if (isConfirmed()) { startRender(); return; }
-    $("render-modal-price").textContent = "Prijs: " + PRICES[chosenFormat()] + ".";
+    $("render-modal-price").textContent = "Prijs: " + PRICE + ".";
     $("render-modal").hidden = false;
   });
   $("render-cancel").addEventListener("click", function () { $("render-modal").hidden = true; });

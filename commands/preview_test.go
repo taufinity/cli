@@ -282,7 +282,7 @@ func TestBannerPreviewRequest(t *testing.T) {
 			sb.WriteString("a\n")
 		}
 		d, _ := parseBannerCSV([]byte(sb.String()))
-		if _, err := selectBannerRows(d, 0); err == nil || !strings.Contains(err.Error(), "50") {
+		if _, _, err := selectBannerRows(d, 0); err == nil || !strings.Contains(err.Error(), "50") {
 			t.Fatalf("err: %v", err)
 		}
 	})
