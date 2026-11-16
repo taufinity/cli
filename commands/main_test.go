@@ -16,6 +16,7 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", home)
 	code := m.Run()
+	stopSharedBrowser()
 	os.RemoveAll(home)
 	os.Exit(code)
 }

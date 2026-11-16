@@ -11,10 +11,21 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// browserFor starts headless Chrome. Chrome is required: a machine without it
-// fails the test, it does not skip it.
-func browserFor(t *testing.T) context.Context {
-	t.Helper()
+// One headless Chrome serves every browser test in the package; each test
+// gets its own tab. Starting Chrome per test made the suite start it about
+// fifteen times, and on a loaded CI runner one of those starts took 54 s and
+// timed out (2026-11-16, run 43879693963). Every test serves its page on a port
+// of its own, so tabs never share an origin and therefore never share
+// localStorage.
+var shared struct {
+	once    sync.Once
+	browser context.Context
+	out     *lockedBuffer
+	err     error
+	stop    func()
+}
+
+func startSharedBrowser() {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
@@ -22,16 +33,37 @@ func browserFor(t *testing.T) context.Context {
 	opts = append(opts, chromedp.NoSandbox) // CI runners (root, containers) need it
 	// The first Chrome start on a fresh CI runner can take longer than
 	// chromedp's default 20 s to print its DevTools address (seen on the
-	// ubuntu-26.04 image of 2026-11-11, build 196); later starts are quick.
-	opts = append(opts, chromedp.WSURLReadTimeout(60*time.Second))
-	out := &lockedBuffer{}
-	opts = append(opts, chromedp.CombinedOutput(out))
+	// ubuntu-26.04 image of 2026-11-11, build 196).
+	opts = append(opts, chromedp.WSURLReadTimeout(90*time.Second))
+	shared.out = &lockedBuffer{}
+	opts = append(opts, chromedp.CombinedOutput(shared.out))
 	actx, cancelA := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctx, cancelC := chromedp.NewContext(actx)
-	ctx, cancelT := context.WithTimeout(ctx, 90*time.Second)
-	t.Cleanup(func() { cancelT(); cancelC(); cancelA() })
+	bctx, cancelB := chromedp.NewContext(actx)
+	shared.browser = bctx
+	shared.stop = func() { cancelB(); cancelA() }
+	shared.err = chromedp.Run(bctx) // starts Chrome and its first tab
+}
+
+// stopSharedBrowser is called from TestMain once every test has run.
+func stopSharedBrowser() {
+	if shared.stop != nil {
+		shared.stop()
+	}
+}
+
+// browserFor gives the test a fresh tab in the shared headless Chrome. Chrome
+// is required: a machine without it fails the test, it does not skip it.
+func browserFor(t *testing.T) context.Context {
+	t.Helper()
+	shared.once.Do(startSharedBrowser)
+	if shared.err != nil {
+		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v\nuitvoer van Chrome:\n%s", shared.err, shared.out.tail(4096))
+	}
+	tab, cancelTab := chromedp.NewContext(shared.browser)
+	ctx, cancelT := context.WithTimeout(tab, 90*time.Second)
+	t.Cleanup(func() { cancelT(); cancelTab() })
 	if err := chromedp.Run(ctx); err != nil {
-		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v\nuitvoer van Chrome:\n%s", err, out.tail(4096))
+		t.Fatalf("nieuw tabblad in Chrome: %v\nuitvoer van Chrome:\n%s", err, shared.out.tail(4096))
 	}
 	return ctx
 }
