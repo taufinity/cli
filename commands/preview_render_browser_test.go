@@ -38,7 +38,9 @@ func startSharedBrowser() {
 	shared.out = &lockedBuffer{}
 	opts = append(opts, chromedp.CombinedOutput(shared.out))
 	actx, cancelA := chromedp.NewExecAllocator(context.Background(), opts...)
-	bctx, cancelB := chromedp.NewContext(actx)
+	// The CI failure of 2026-11-16 was the connect to Chrome's DevTools
+	// address, which chromedp gives 10 s by default, not the address itself.
+	bctx, cancelB := chromedp.NewContext(actx, chromedp.WithBrowserOption(chromedp.WithDialTimeout(60*time.Second)))
 	shared.browser = bctx
 	shared.stop = func() { cancelB(); cancelA() }
 	shared.err = chromedp.Run(bctx) // starts Chrome and its first tab
@@ -59,6 +61,11 @@ func browserFor(t *testing.T) context.Context {
 	if shared.err != nil {
 		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v\nuitvoer van Chrome:\n%s", shared.err, shared.out.tail(4096))
 	}
+	// A tab, not a browser context of its own: headless Chrome refuses new
+	// tabs in a fresh context once the first one has closed ("no browser is
+	// open"). Tests do not share an origin, since every test server has its own
+	// port; a reused port could carry over the render confirmation in
+	// localStorage, which only a test that expects the dialog would notice.
 	tab, cancelTab := chromedp.NewContext(shared.browser)
 	ctx, cancelT := context.WithTimeout(tab, 90*time.Second)
 	t.Cleanup(func() { cancelT(); cancelTab() })
