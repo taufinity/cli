@@ -63,7 +63,19 @@ func openPage(t *testing.T, ctx context.Context, url string) {
 		t.Fatal(err)
 	}
 	waitJS(t, ctx, `document.querySelectorAll("#row-picker option").length > 0`)
+	// Wait for the banner to report as well. Its report shows the scrubber or
+	// the "geen tijdlijn" note above the render controls, which moves them down
+	// by about 32 px; a radio is 13 px high. A click whose coordinates were
+	// taken before that report and dispatched after it lands above the control,
+	// which is how gif_choice_sends_gif failed on CI with the PNG price.
+	waitJS(t, ctx, jsBannerReported)
 }
+
+// jsBannerReported is true once nothing above the render controls will still
+// appear: the banner sent its driver (scrubber or note), or the row is an error.
+const jsBannerReported = `!document.getElementById("scrubber").hidden ||
+	!document.getElementById("scrubber-note").hidden ||
+	!document.getElementById("error-overlay").hidden`
 
 func (f *fakeRenderStudio) counts() (uploads, renders int) {
 	f.mu.Lock()
