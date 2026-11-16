@@ -11,10 +11,21 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// browserFor starts headless Chrome. Chrome is required: a machine without it
-// fails the test, it does not skip it.
-func browserFor(t *testing.T) context.Context {
-	t.Helper()
+// One headless Chrome serves every browser test in the package; each test
+// gets its own tab. Starting Chrome per test made the suite start it about
+// fifteen times, and on a loaded CI runner one of those starts took 54 s and
+// timed out (2026-11-16, run 43879693963). Every test serves its page on a port
+// of its own, so tabs never share an origin and therefore never share
+// localStorage.
+var shared struct {
+	once    sync.Once
+	browser context.Context
+	out     *lockedBuffer
+	err     error
+	stop    func()
+}
+
+func startSharedBrowser() {
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", true),
 		chromedp.Flag("disable-gpu", true),
@@ -22,16 +33,44 @@ func browserFor(t *testing.T) context.Context {
 	opts = append(opts, chromedp.NoSandbox) // CI runners (root, containers) need it
 	// The first Chrome start on a fresh CI runner can take longer than
 	// chromedp's default 20 s to print its DevTools address (seen on the
-	// ubuntu-26.04 image of 2026-11-11, build 196); later starts are quick.
-	opts = append(opts, chromedp.WSURLReadTimeout(60*time.Second))
-	out := &lockedBuffer{}
-	opts = append(opts, chromedp.CombinedOutput(out))
+	// ubuntu-26.04 image of 2026-11-11, build 196).
+	opts = append(opts, chromedp.WSURLReadTimeout(90*time.Second))
+	shared.out = &lockedBuffer{}
+	opts = append(opts, chromedp.CombinedOutput(shared.out))
 	actx, cancelA := chromedp.NewExecAllocator(context.Background(), opts...)
-	ctx, cancelC := chromedp.NewContext(actx)
-	ctx, cancelT := context.WithTimeout(ctx, 90*time.Second)
-	t.Cleanup(func() { cancelT(); cancelC(); cancelA() })
+	// The CI failure of 2026-11-16 was the connect to Chrome's DevTools
+	// address, which chromedp gives 10 s by default, not the address itself.
+	bctx, cancelB := chromedp.NewContext(actx, chromedp.WithBrowserOption(chromedp.WithDialTimeout(60*time.Second)))
+	shared.browser = bctx
+	shared.stop = func() { cancelB(); cancelA() }
+	shared.err = chromedp.Run(bctx) // starts Chrome and its first tab
+}
+
+// stopSharedBrowser is called from TestMain once every test has run.
+func stopSharedBrowser() {
+	if shared.stop != nil {
+		shared.stop()
+	}
+}
+
+// browserFor gives the test a fresh tab in the shared headless Chrome. Chrome
+// is required: a machine without it fails the test, it does not skip it.
+func browserFor(t *testing.T) context.Context {
+	t.Helper()
+	shared.once.Do(startSharedBrowser)
+	if shared.err != nil {
+		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v\nuitvoer van Chrome:\n%s", shared.err, shared.out.tail(4096))
+	}
+	// A tab, not a browser context of its own: headless Chrome refuses new
+	// tabs in a fresh context once the first one has closed ("no browser is
+	// open"). Tests do not share an origin, since every test server has its own
+	// port; a reused port could carry over the render confirmation in
+	// localStorage, which only a test that expects the dialog would notice.
+	tab, cancelTab := chromedp.NewContext(shared.browser)
+	ctx, cancelT := context.WithTimeout(tab, 90*time.Second)
+	t.Cleanup(func() { cancelT(); cancelTab() })
 	if err := chromedp.Run(ctx); err != nil {
-		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v\nuitvoer van Chrome:\n%s", err, out.tail(4096))
+		t.Fatalf("nieuw tabblad in Chrome: %v\nuitvoer van Chrome:\n%s", err, shared.out.tail(4096))
 	}
 	return ctx
 }
@@ -106,10 +145,16 @@ func TestPreviewRenderBrowser(t *testing.T) {
 		if err := chromedp.Run(ctx, chromedp.Text("#render-modal", &text, chromedp.ByQuery)); err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"echte render", "normale prijs", "1 credit per stilstaand beeld", "Bevestigen", "Annuleren"} {
+		for _, want := range []string{"echte render", "normale prijs", "normale tarief voor dit type banner", "Bevestigen", "Annuleren"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("modal lacks %q: %q", want, text)
 			}
+		}
+		// No figure: the agreement's price list is the one source, a number
+		// here only drifts from it (the GIF price was once shown wrong in
+		// a demo).
+		if strings.Contains(text, "credit") {
+			t.Errorf("modal names a price in credits: %q", text)
 		}
 		if u, r := fs.counts(); u != 0 || r != 0 {
 			t.Fatalf("studio saw %d uploads %d renders before confirming", u, r)
@@ -184,7 +229,7 @@ func TestPreviewRenderBrowser(t *testing.T) {
 		if err := chromedp.Run(ctx, chromedp.Text("#render-modal-price", &text, chromedp.ByQuery)); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(text, "2 credits voor een animatie van 10 frames") {
+		if !strings.Contains(text, "normale tarief voor dit type banner") {
 			t.Fatalf("price = %q", text)
 		}
 		click(t, ctx, "#render-confirm")

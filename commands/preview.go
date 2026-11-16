@@ -172,7 +172,7 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 		return runBannerInit(ctx, src, bannerForce)
 	}
 
-	_, dataPath, err := loadBannerRows(dir, flagBannerData, flagBannerRow)
+	_, _, dataPath, err := loadBannerRows(dir, flagBannerData, flagBannerRow)
 	if err != nil {
 		return err
 	}

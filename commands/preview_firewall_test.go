@@ -22,7 +22,7 @@ func TestBannerPreviewFirewallBlockIsNamed(t *testing.T) {
 		t.Fatal("a firewall block filled a banner")
 	}
 	msg := err.Error()
-	if !strings.HasPrefix(msg, "blocked by the firewall") || !strings.Contains(msg, "Ray ID a5a146b38b78b95a") {
+	if !strings.HasPrefix(msg, "geblokkeerd door de firewall") || !strings.Contains(msg, "Ray ID a5a146b38b78b95a") {
 		t.Fatalf("message = %q, want a firewall block with its Ray ID", msg)
 	}
 	for _, wrong := range []string{"geen verbinding", "refused", "rotated"} {

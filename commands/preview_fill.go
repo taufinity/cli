@@ -344,9 +344,10 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 		return nil, err // cancelled: no work at all
 	}
 	var rows []map[string]string
+	var lines []int
 	if !s.NoRows {
 		var err error
-		rows, _, err = loadBannerRows(s.Dir, s.DataFlag, s.Row)
+		rows, lines, _, err = loadBannerRows(s.Dir, s.DataFlag, s.Row)
 		if err != nil {
 			return nil, err
 		}
@@ -365,7 +366,7 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 			return nil, fmt.Errorf("het antwoord van de server is groter dan %d MB en wordt geweigerd", bannerMaxAnswerBody>>20)
 		}
 		if edgeBlocked(err) {
-			return nil, err
+			return nil, errors.New(edgeBlockedText(err))
 		}
 		return nil, fmt.Errorf("geen verbinding met Studio: %w", err)
 	}
@@ -385,8 +386,40 @@ func (s *bannerSource) Fill(ctx context.Context) (*bannerResult, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
+	labelRowsByLine(rep, lines)
 	s.noteCharge(rep)
 	return &bannerResult{Dir: dir, Report: rep}, nil
+}
+
+// labelRowsByLine names each sent row after its line in the data file, the
+// number --row takes and the Product Layer shows (header = line 1). The server
+// only knows the rows' order and calls the first one "regel 1", which would be
+// line 2 in the file. Generated rows (voorbeeld, leeg, lang) keep their names.
+func labelRowsByLine(rep *bannerReport, lines []int) {
+	for i := range rep.Rows {
+		ix := rep.Rows[i].Index
+		if ix >= 0 && ix < len(lines) && strings.HasPrefix(rep.Rows[i].Label, "regel ") {
+			rep.Rows[i].Label = fmt.Sprintf("regel %d", lines[ix])
+		}
+	}
+}
+
+// edgeBlockedText says in Dutch, for the preview page and its terminal, that
+// Cloudflare's firewall stopped the request, with the Ray ID support needs.
+// An Access refusal keeps its own text.
+func edgeBlockedText(err error) string {
+	var nj *jsonresp.NonJSONError
+	if !errors.As(err, &nj) || !nj.Firewall {
+		return err.Error()
+	}
+	ray, report := "", "Meld het aan Taufinity"
+	if nj.RayID != "" {
+		ray = ", Ray ID " + nj.RayID
+		report += " met het Ray ID"
+	}
+	return fmt.Sprintf("geblokkeerd door de firewall: Cloudflare hield het verzoek naar %s tegen (HTTP %d%s) "+
+		"voordat het Studio bereikte. Dit is geen inlog- of Access-probleem: de firewall beoordeelde het verzoek zelf. %s",
+		nj.URL, nj.Status, ray, report)
 }
 
 // edgeBlocked reports whether Cloudflare turned the request away before it

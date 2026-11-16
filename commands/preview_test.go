@@ -282,7 +282,7 @@ func TestBannerPreviewRequest(t *testing.T) {
 			sb.WriteString("a\n")
 		}
 		d, _ := parseBannerCSV([]byte(sb.String()))
-		if _, err := selectBannerRows(d, 0); err == nil || !strings.Contains(err.Error(), "50") {
+		if _, _, err := selectBannerRows(d, 0); err == nil || !strings.Contains(err.Error(), "50") {
 			t.Fatalf("err: %v", err)
 		}
 	})
@@ -908,7 +908,9 @@ func TestBannerPreviewCharge(t *testing.T) {
 		if state.Charge != "binnen de sessie tot 17:46, geen extra credit" {
 			t.Fatalf("charge: %q", state.Charge)
 		}
-		if !strings.Contains(page, `$("charge").textContent = state.charge`) {
+		// renderCharge shows state.charge until the session ends (behaviour:
+		// TestPreviewPageChargeExpiresBrowser).
+		if !strings.Contains(page, `b.textContent = (state && state.charge) || ""`) {
 			t.Fatal("page does not render state.charge")
 		}
 	})
