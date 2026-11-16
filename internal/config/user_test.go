@@ -66,6 +66,43 @@ func TestUserConfig_Set(t *testing.T) {
 	}
 }
 
+// The org key was readable from config.yaml (GetOrg falls back to it) but
+// Set/Get/Unset/List rejected it, so the only way to pin a default org was to
+// hand-edit the file. Without a pin the default is whatever org the login
+// happened to land on.
+func TestUserConfig_Org(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	if err := Set("org", "12"); err != nil {
+		t.Fatalf("Set(org) failed: %v", err)
+	}
+	if got, err := Get("org"); err != nil || got != "12" {
+		t.Fatalf("Get(org) = %q, %v; want 12", got, err)
+	}
+	all, err := List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if all["org"] != "12" {
+		t.Errorf("List()[org] = %q, want 12", all["org"])
+	}
+	if err := Unset("org"); err != nil {
+		t.Fatalf("Unset(org) failed: %v", err)
+	}
+	if got, _ := Get("org"); got != "" {
+		t.Errorf("after Unset, Get(org) = %q, want empty", got)
+	}
+
+	// The value ends up as an HTTP header and in MCP client args: refuse
+	// anything that is not an ID or slug rather than store it.
+	for _, bad := range []string{"12 ", "1;2", "-12", "\"12\""} {
+		if err := Set("org", bad); err == nil {
+			t.Errorf("Set(org, %q) succeeded, want error", bad)
+		}
+	}
+}
+
 func TestUserConfig_Get(t *testing.T) {
 	tmpDir := t.TempDir()
 	oldHome := os.Getenv("HOME")

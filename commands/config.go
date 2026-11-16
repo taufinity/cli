@@ -24,6 +24,9 @@ var configSetCmd = &cobra.Command{
 Available properties:
   site          Default site ID (e.g., acme_nl)
   api_url       API base URL (default: https://studio.taufinity.io)
+  org           Default organization ID for org-scoped commands and the MCP
+                stdio bridge (see: taufinity org list). --org and
+                TAUFINITY_ORG override it. Unset, it is the org you logged in to.
   update_check  Background staleness check: "false" to disable`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {

@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/taufinity/cli/internal/api"
 	"github.com/taufinity/cli/internal/auth"
+	"github.com/taufinity/cli/internal/config"
 	"github.com/taufinity/cli/internal/desktopconfig"
 	"github.com/taufinity/cli/internal/telemetry"
 )
@@ -104,18 +104,16 @@ func init() {
 	mcpInstallCmd.Flags().StringVar(&flagMCPInstallLabel, "label", "taufinity-studio", "Server entry name in claude_desktop_config.json")
 	mcpInstallCmd.Flags().BoolVar(&flagMCPInstallForce, "force", false, "Overwrite existing entry without prompting")
 	mcpInstallCmd.Flags().StringVar(&flagMCPInstallTransport, "transport", "",
-		"MCP transport: stdio, http, or auto (default: stdio for claude-desktop, http for print)")
+		"MCP transport: stdio, http, or auto (default: stdio for claude-desktop, claude-code and cursor; http for vscode, antigravity and print)")
 
 	mcpUninstallCmd.Flags().StringVar(&flagMCPUninstallClient, "client", "claude-desktop", "Client to uninstall from: claude-desktop, claude-code, cursor, vscode, antigravity, all")
 	mcpUninstallCmd.Flags().StringVar(&flagMCPUninstallLabel, "label", "taufinity-studio", "Server entry name to remove")
 }
 
 // orgIDPattern matches the org identifiers we're willing to embed verbatim
-// into stdio-bridge args. The CLI uses numeric IDs in practice; we also
-// accept slugs (letters/digits/dash/underscore) for future-proofing. The
-// restriction prevents accidental config corruption from quoted values in
-// shell-config files and forecloses any future shell-out scenarios.
-var orgIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+// into stdio-bridge args. Shared with `config set org` so a default org that
+// config accepts is always one the bridge args accept.
+var orgIDPattern = config.OrgIDPattern
 
 func runMCPInstall(cmd *cobra.Command, args []string) error {
 	if !auth.HasCredentials() {
@@ -288,8 +286,16 @@ func runMCPInstallAll(cmd *cobra.Command, apiURL, label string) error {
 }
 
 // resolveTransport picks the on-disk shape. The explicit --transport flag
-// wins; otherwise the default depends on the client: stdio for claude-desktop
-// (the only shape it reliably launches today), http for print (neutral).
+// wins; otherwise the default depends on the client.
+//
+// stdio wherever the client is known to launch a local command: claude-desktop,
+// claude-code and cursor. The HTTP shape embeds the access token as a fixed
+// header, and that copy is never renewed: it works for about an hour, then the
+// client reports "login expired" while `taufinity auth status` on the same
+// machine says Authenticated. The bridge reads credentials.json and renews on
+// every start and on a 401, so it keeps working for the life of the refresh
+// token. vscode and antigravity stay on http until their stdio entry shape is
+// verified; print stays http because it has no binary path to embed.
 func resolveTransport(client, override string) (string, error) {
 	switch strings.ToLower(override) {
 	case "stdio":
@@ -297,7 +303,8 @@ func resolveTransport(client, override string) (string, error) {
 	case "http":
 		return "http", nil
 	case "", "auto":
-		if client == "claude-desktop" {
+		switch client {
+		case "claude-desktop", "claude-code", "cursor":
 			return "stdio", nil
 		}
 		return "http", nil
