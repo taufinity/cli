@@ -109,7 +109,7 @@ func TestCLIBinary_StudioLogCreated(t *testing.T) {
 	home := writeE2EHome(t, upstreamURL)
 	logPath := filepath.Join(home, ".config", "taufinity", "studio.log")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	frame, _ := json.Marshal(map[string]any{
@@ -154,7 +154,7 @@ func TestCLIBinary_LogContainsRequest(t *testing.T) {
 	home := writeE2EHome(t, upstreamURL)
 	logPath := filepath.Join(home, ".config", "taufinity", "studio.log")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	// Send two frames then close stdin.

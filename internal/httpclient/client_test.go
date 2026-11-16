@@ -250,3 +250,19 @@ func TestClient_CustomRetryStatusCodes(t *testing.T) {
 		t.Errorf("expected 2 attempts, got %d", attempts)
 	}
 }
+
+func TestMaxRetriesZeroMeansNoRetry(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	c := New(Config{MaxRetries: 0, InitialBackoff: time.Millisecond, RetryStatusCodes: []int{500}})
+	if _, err := c.Get(context.Background(), srv.URL); err == nil {
+		t.Fatal("expected an error")
+	}
+	if calls != 1 {
+		t.Fatalf("calls: %d", calls)
+	}
+}
