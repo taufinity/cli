@@ -211,11 +211,11 @@ func flakyPolls(next http.Handler, n int, mode string, polls *int32) http.Handle
 
 func fastTransportRetry(t *testing.T, budget time.Duration) {
 	t.Helper()
-	oi, ob, obo, om := runSuitesInterval, runSuitesTransportBudget, runSuitesTransportBackoff, runSuitesTransportMaxWait
-	runSuitesInterval, runSuitesTransportBudget = time.Millisecond, budget
+	oi, ob, obo, om, ot := runSuitesInterval, runSuitesTransportBudget, runSuitesTransportBackoff, runSuitesTransportMaxWait, runSuitesTransportTotalBudget
+	runSuitesInterval, runSuitesTransportBudget, runSuitesTransportTotalBudget = time.Millisecond, budget, budget
 	runSuitesTransportBackoff, runSuitesTransportMaxWait = time.Millisecond, 5*time.Millisecond
 	t.Cleanup(func() {
-		runSuitesInterval, runSuitesTransportBudget, runSuitesTransportBackoff, runSuitesTransportMaxWait = oi, ob, obo, om
+		runSuitesInterval, runSuitesTransportBudget, runSuitesTransportBackoff, runSuitesTransportMaxWait, runSuitesTransportTotalBudget = oi, ob, obo, om, ot
 	})
 }
 
@@ -308,5 +308,66 @@ func TestPollUntilDoneDoesNotRetryAuthErrors(t *testing.T) {
 	var terr *transportError
 	if err == nil || errors.As(err, &terr) || atomic.LoadInt32(&calls) != 1 {
 		t.Fatalf("401 must fail once, not as transport failure: err=%v calls=%d", err, calls)
+	}
+}
+
+// The outage wait must not count against the suite timeout: an outage longer
+// than --timeout, followed by a run that is still going and then completes, is
+// a pass. Removing the deadline extension turns this red.
+func TestPollUntilDoneOutageDoesNotConsumeSuiteTimeout(t *testing.T) {
+	fastTransportRetry(t, 5*time.Second)
+	runSuitesTransportBackoff, runSuitesTransportMaxWait = 20*time.Millisecond, 20*time.Millisecond
+	var polls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&polls, 1)
+		if n <= 6 { // about 120ms of outage, longer than the 60ms suite timeout
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close()
+			return
+		}
+		status := "running"
+		if n >= 9 {
+			status = "completed"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"run": map[string]any{"uuid": "u1", "status": status, "passed_count": 1, "total_count": 1}})
+	}))
+	defer ts.Close()
+
+	c := newProvisionClient(ts.URL, "key", false)
+	var run testSuiteRun
+	if err := pollUntilDone(c, 1, "u1", 60*time.Millisecond, &run); err != nil {
+		t.Fatalf("an outage must not consume the suite timeout: %v", err)
+	}
+	if !run.allPassed() {
+		t.Errorf("run = %+v, want passed", run)
+	}
+}
+
+// A flapping API (one bad poll, one good poll, repeat) must hit the overall cap
+// rather than extend the wait forever, and fail as a transport failure.
+func TestPollUntilDoneFlappingAPIHitsTotalCap(t *testing.T) {
+	fastTransportRetry(t, 5*time.Second)
+	runSuitesTransportTotalBudget = 100 * time.Millisecond
+	runSuitesTransportBackoff, runSuitesTransportMaxWait = 20*time.Millisecond, 20*time.Millisecond
+	var polls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&polls, 1)%2 == 1 {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"run": map[string]any{"uuid": "u1", "status": "running"}})
+	}))
+	defer ts.Close()
+
+	c := newProvisionClient(ts.URL, "key", false)
+	var run testSuiteRun
+	start := time.Now()
+	err := pollUntilDone(c, 1, "u1", 5*time.Second, &run)
+	var terr *transportError
+	if !errors.As(err, &terr) {
+		t.Fatalf("want *transportError from the total cap, got %v", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("flapping API extended the wait: %s", time.Since(start))
 	}
 }

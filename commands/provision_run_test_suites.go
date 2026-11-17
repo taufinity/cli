@@ -30,9 +30,13 @@ var (
 	// instance resets the connection or the proxy answers 502/503. That says
 	// nothing about the suite, so the poll is retried with backoff for up to
 	// runSuitesTransportBudget of continuous failure. Vars so tests can shorten them.
-	runSuitesTransportBudget  = 5 * time.Minute
-	runSuitesTransportBackoff = 2 * time.Second
-	runSuitesTransportMaxWait = 30 * time.Second
+	runSuitesTransportBudget = 5 * time.Minute
+	// Overall cap on time spent waiting out outages for one run, across all
+	// outages, so a flapping API (one good poll, one bad poll, repeat) cannot
+	// extend the wait forever. Worst case per run: --timeout + this.
+	runSuitesTransportTotalBudget = 8 * time.Minute
+	runSuitesTransportBackoff     = 2 * time.Second
+	runSuitesTransportMaxWait     = 30 * time.Second
 )
 
 // transportError marks a poll that never got an answer about the run: the
@@ -221,12 +225,14 @@ func (r testSuiteRun) allPassed() bool {
 
 // pollUntilDone polls the run until it reaches a terminal status or the timeout
 // expires. Transport failures and gateway errors are retried with backoff for up
-// to runSuitesTransportBudget of continuous failure, and the time spent waiting
+// to runSuitesTransportBudget of continuous failure (and runSuitesTransportTotalBudget
+// across all outages of the run), and the time spent waiting
 // out an outage does not count against the suite timeout. A poll that never
 // recovers returns a *transportError; any other non-200 is returned at once.
 func pollUntilDone(c *provisionClient, orgID uint, runUUID string, timeout time.Duration, out *testSuiteRun) error {
 	deadline := time.Now().Add(timeout)
 	var outageStart time.Time
+	var waitedBefore time.Duration // outage time from earlier, recovered outages
 	wait := runSuitesTransportBackoff
 	for {
 		body, status, err := c.getForOrg("/test-runs/"+runUUID, orgID)
@@ -236,7 +242,8 @@ func pollUntilDone(c *provisionClient, orgID uint, runUUID string, timeout time.
 				outageStart = now
 			}
 			last := provisionAPIErr("poll failed", status, body, err).Error()
-			if now.Sub(outageStart)+wait > runSuitesTransportBudget {
+			if now.Sub(outageStart)+wait > runSuitesTransportBudget ||
+				waitedBefore+now.Sub(outageStart)+wait > runSuitesTransportTotalBudget {
 				return &transportError{runUUID: runUUID, budget: runSuitesTransportBudget, last: last}
 			}
 			fmt.Printf("\n    poll interrupted (%s); retrying in %s ", last, wait)
@@ -247,7 +254,9 @@ func pollUntilDone(c *provisionClient, orgID uint, runUUID string, timeout time.
 			continue
 		}
 		if !outageStart.IsZero() {
-			deadline = deadline.Add(time.Since(outageStart))
+			outage := time.Since(outageStart)
+			deadline = deadline.Add(outage)
+			waitedBefore += outage
 			outageStart = time.Time{}
 			wait = runSuitesTransportBackoff
 		}
