@@ -2,10 +2,12 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -182,5 +184,129 @@ func TestSlugPriorityOf(t *testing.T) {
 		if got := slugPriorityOf(slug); got != want {
 			t.Errorf("slugPriorityOf(%q) = %q, want %q", slug, got, want)
 		}
+	}
+}
+
+// flakyPolls wraps a handler so the first n poll requests (GET /api/test-runs/)
+// fail the way a service does while it rolls over: mode "drop" closes the
+// connection without a response, mode "503" answers 503. Other routes pass through.
+func flakyPolls(next http.Handler, n int, mode string, polls *int32) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/test-runs/") {
+			if int(atomic.AddInt32(polls, 1)) <= n {
+				if mode == "503" {
+					http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					conn.Close()
+				}
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func fastTransportRetry(t *testing.T, budget time.Duration) {
+	t.Helper()
+	oi, ob, obo, om := runSuitesInterval, runSuitesTransportBudget, runSuitesTransportBackoff, runSuitesTransportMaxWait
+	runSuitesInterval, runSuitesTransportBudget = time.Millisecond, budget
+	runSuitesTransportBackoff, runSuitesTransportMaxWait = time.Millisecond, 5*time.Millisecond
+	t.Cleanup(func() {
+		runSuitesInterval, runSuitesTransportBudget, runSuitesTransportBackoff, runSuitesTransportMaxWait = oi, ob, obo, om
+	})
+}
+
+// A connection reset while polling (the revision rollover) must be retried and
+// the passed run reported as passed.
+func TestRunTestSuitesRetriesTransportFailures(t *testing.T) {
+	for _, mode := range []string{"drop", "503"} {
+		t.Run(mode, func(t *testing.T) {
+			fastTransportRetry(t, 5*time.Second)
+			srv := &suiteRunServer{
+				suites:   []map[string]any{{"id": 1, "uuid": "u1", "name": "must", "slug": "must__a"}},
+				outcomes: map[string]map[string]any{"u1": {"uuid": "u1", "status": "completed", "passed_count": 11, "total_count": 11}},
+			}
+			var polls int32
+			ts := httptest.NewServer(flakyPolls(srv.handler(t), 3, mode, &polls))
+			defer ts.Close()
+
+			c := newProvisionClient(ts.URL, "key", false)
+			if err := runTestSuites(c, 1, "acme", "all", 5*time.Second); err != nil {
+				t.Fatalf("transport failures must be retried, got: %v", err)
+			}
+			if got := atomic.LoadInt32(&polls); got != 4 {
+				t.Errorf("polls = %d, want 4 (3 dropped + 1 answered)", got)
+			}
+		})
+	}
+}
+
+// A genuine failing suite behind a flaky transport still fails, and says it
+// failed as a suite, not as a transport problem.
+func TestRunTestSuitesRealFailureStillFailsAfterRetries(t *testing.T) {
+	fastTransportRetry(t, 5*time.Second)
+	srv := &suiteRunServer{
+		suites:   []map[string]any{{"id": 1, "uuid": "u1", "name": "must", "slug": "must__a"}},
+		outcomes: map[string]map[string]any{"u1": {"uuid": "u1", "status": "completed", "passed_count": 10, "failed_count": 1, "total_count": 11}},
+	}
+	var polls int32
+	ts := httptest.NewServer(flakyPolls(srv.handler(t), 2, "drop", &polls))
+	defer ts.Close()
+
+	c := newProvisionClient(ts.URL, "key", false)
+	err := runTestSuites(c, 1, "acme", "all", 5*time.Second)
+	if err == nil {
+		t.Fatal("a failing suite must still fail the gate")
+	}
+	var run testSuiteRun
+	perr := pollUntilDone(c, 1, "u1", 5*time.Second, &run)
+	if perr != nil || run.allPassed() {
+		t.Fatalf("poll should deliver the real result (err=%v allPassed=%v)", perr, run.allPassed())
+	}
+}
+
+// A poll that never recovers fails within the budget, as a transport failure.
+func TestPollUntilDoneGivesUpAsTransportFailure(t *testing.T) {
+	fastTransportRetry(t, 50*time.Millisecond)
+	srv := &suiteRunServer{outcomes: map[string]map[string]any{"u1": {"uuid": "u1", "status": "completed", "passed_count": 1, "total_count": 1}}}
+	var polls int32
+	ts := httptest.NewServer(flakyPolls(srv.handler(t), 1<<30, "drop", &polls))
+	defer ts.Close()
+
+	c := newProvisionClient(ts.URL, "key", false)
+	var run testSuiteRun
+	start := time.Now()
+	err := pollUntilDone(c, 1, "u1", 5*time.Second, &run)
+	var terr *transportError
+	if !errors.As(err, &terr) {
+		t.Fatalf("want *transportError, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "TRANSPORT FAILURE, not a suite result") {
+		t.Errorf("message must say it was a transport failure: %v", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("gave up too slowly: %s", time.Since(start))
+	}
+}
+
+// Non-transient HTTP errors are not retried: a 401 is a real, immediate failure.
+func TestPollUntilDoneDoesNotRetryAuthErrors(t *testing.T) {
+	fastTransportRetry(t, 5*time.Second)
+	var calls int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	c := newProvisionClient(ts.URL, "key", false)
+	var run testSuiteRun
+	err := pollUntilDone(c, 1, "u1", 5*time.Second, &run)
+	var terr *transportError
+	if err == nil || errors.As(err, &terr) || atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("401 must fail once, not as transport failure: err=%v calls=%d", err, calls)
 	}
 }
