@@ -12,6 +12,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -24,7 +25,48 @@ var (
 	runSuitesTimeout  int
 	runSuitesPriority string
 	runSuitesInterval = 5 * time.Second // var so tests can shorten it
+
+	// A poll can land while the service rolls over to a new revision: the old
+	// instance resets the connection or the proxy answers 502/503. That says
+	// nothing about the suite, so the poll is retried with backoff for up to
+	// runSuitesTransportBudget of continuous failure. Vars so tests can shorten them.
+	runSuitesTransportBudget = 5 * time.Minute
+	// Overall cap on time spent waiting out outages for one run, across all
+	// outages, so a flapping API (one good poll, one bad poll, repeat) cannot
+	// extend the wait forever. Worst case per run: --timeout + this.
+	runSuitesTransportTotalBudget = 8 * time.Minute
+	runSuitesTransportBackoff     = 2 * time.Second
+	runSuitesTransportMaxWait     = 30 * time.Second
 )
+
+// transportError marks a poll that never got an answer about the run: the
+// connection failed or the service was briefly unavailable. It is deliberately
+// a different failure from a suite that did not pass.
+type transportError struct {
+	runUUID string
+	budget  time.Duration
+	last    string
+}
+
+func (e *transportError) Error() string {
+	return fmt.Sprintf("TRANSPORT FAILURE, not a suite result: could not reach the API to read run %s for %s (last error: %s); the suite outcome is unknown",
+		e.runUUID, e.budget, e.last)
+}
+
+// isTransientPoll reports whether a poll response says nothing about the run:
+// the request never completed (err set, or status 0), or a gateway answered
+// 408/429/502/503/504 while an instance was being replaced.
+func isTransientPoll(status int, err error) bool {
+	if err != nil || status == 0 {
+		return true
+	}
+	switch status {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
 
 // testSuiteRun is the subset of the trigger and poll responses we need.
 type testSuiteRun struct {
@@ -182,11 +224,42 @@ func (r testSuiteRun) allPassed() bool {
 }
 
 // pollUntilDone polls the run until it reaches a terminal status or the timeout
-// expires.
+// expires. Transport failures and gateway errors are retried with backoff for up
+// to runSuitesTransportBudget of continuous failure (and runSuitesTransportTotalBudget
+// across all outages of the run), and the time spent waiting
+// out an outage does not count against the suite timeout. A poll that never
+// recovers returns a *transportError; any other non-200 is returned at once.
 func pollUntilDone(c *provisionClient, orgID uint, runUUID string, timeout time.Duration, out *testSuiteRun) error {
 	deadline := time.Now().Add(timeout)
+	var outageStart time.Time
+	var waitedBefore time.Duration // outage time from earlier, recovered outages
+	wait := runSuitesTransportBackoff
 	for {
 		body, status, err := c.getForOrg("/test-runs/"+runUUID, orgID)
+		if isTransientPoll(status, err) {
+			now := time.Now()
+			if outageStart.IsZero() {
+				outageStart = now
+			}
+			last := provisionAPIErr("poll failed", status, body, err).Error()
+			if now.Sub(outageStart)+wait > runSuitesTransportBudget ||
+				waitedBefore+now.Sub(outageStart)+wait > runSuitesTransportTotalBudget {
+				return &transportError{runUUID: runUUID, budget: runSuitesTransportBudget, last: last}
+			}
+			fmt.Printf("\n    poll interrupted (%s); retrying in %s ", last, wait)
+			time.Sleep(wait)
+			if wait *= 2; wait > runSuitesTransportMaxWait {
+				wait = runSuitesTransportMaxWait
+			}
+			continue
+		}
+		if !outageStart.IsZero() {
+			outage := time.Since(outageStart)
+			deadline = deadline.Add(outage)
+			waitedBefore += outage
+			outageStart = time.Time{}
+			wait = runSuitesTransportBackoff
+		}
 		if err != nil || status != 200 {
 			return provisionAPIErr("poll failed", status, body, err)
 		}
