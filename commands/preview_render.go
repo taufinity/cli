@@ -178,37 +178,24 @@ func (r *bannerRenderer) Upload(ctx context.Context) (string, error) {
 }
 
 // variablesFor is the values of row index as the last successful fill showed
-// them (report.json "values"), not a fresh read of the data file: a CSV edited
-// since that fill must not make a paid render differ from the preview on screen.
-// A server that sends no values for the row (an older one) leaves only the data
-// file to go by, read as before.
+// them (report.json "values"), never a fresh read of the data file: a CSV
+// edited since that fill must not make a paid render differ from the preview on
+// screen. A row the fill sent no values for cannot be rendered faithfully, so
+// it is refused rather than guessed from the file.
 func (r *bannerRenderer) variablesFor(rep *bannerReport, index int) (map[string]string, error) {
-	var row *bannerRow
 	for i := range rep.Rows {
-		if rep.Rows[i].Index == index {
-			row = &rep.Rows[i]
-			break
+		row := &rep.Rows[i]
+		if row.Index != index {
+			continue
 		}
-	}
-	if row == nil {
-		return nil, &renderError{Msg: fmt.Sprintf("rij %d bestaat niet (meer) in de preview die je ziet; vernieuw de preview", index)}
-	}
-	if row.Values != nil {
+		if row.Values == nil {
+			return nil, &renderError{Msg: row.Label + ": Studio stuurde geen waarden mee voor deze regel, dus een echte render kan niet de regel op het scherm tonen; vernieuw de preview"}
+		}
 		vars := map[string]string{}
 		maps.Copy(vars, row.Values)
 		return vars, nil
 	}
-	rows, _, _, err := loadBannerRows(r.Dir, r.DataFlag, r.Row)
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) > 0 {
-		if index < 0 || index >= len(rows) {
-			return nil, &renderError{Msg: row.Label + " bestaat niet (meer) in het gegevensbestand; vernieuw de preview"}
-		}
-		return rows[index], nil
-	}
-	return map[string]string{}, nil
+	return nil, &renderError{Msg: fmt.Sprintf("rij %d bestaat niet (meer) in de preview die je ziet; vernieuw de preview", index)}
 }
 
 // renderRequest is the JSON body of POST /api/creatives/render.
