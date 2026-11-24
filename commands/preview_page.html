@@ -508,8 +508,7 @@
   $("overview-toggle").addEventListener("click", function () { view = "all"; render(); });
   $("view-row").addEventListener("click", function () { view = "row"; render(); });
 
-  /* real render: costs credits, asked once and then remembered in this browser */
-  var CONFIRM_KEY = "taufinity.preview.renderConfirmed";
+  /* real render: costs credits, asked once per template folder; the local server remembers the answer (state.render_confirmed) */
   /* no figure here: the price per type of banner is the one in the agreement,
      and a number on this page would only drift from it */
   var PRICE = "het normale tarief voor dit type banner (stilstaand beeld of animatie), zoals in de overeenkomst";
@@ -518,7 +517,7 @@
     return r ? r.value : "png";
   }
   function isConfirmed() {
-    try { return localStorage.getItem(CONFIRM_KEY) === "1"; } catch (e) { return false; }
+    return !!(state && state.render_confirmed);
   }
   function renderError(msg) {
     var b = $("render-error");
@@ -586,9 +585,17 @@
   });
   $("render-cancel").addEventListener("click", function () { $("render-modal").hidden = true; });
   $("render-confirm").addEventListener("click", function () {
-    try { localStorage.setItem(CONFIRM_KEY, "1"); } catch (e) { /* not remembered */ }
+    var token = (document.querySelector('meta[name="preview-token"]') || {}).content || "";
     $("render-modal").hidden = true;
-    startRender();
+    fetch("/api/render-confirm", { method: "POST", headers: { "X-Preview-Token": token } }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, body: j }; });
+    }).then(function (res) {
+      if (!res.ok) { renderError(res.body.error || "De bevestiging kon niet worden bewaard."); return; }
+      if (state) state.render_confirmed = true;
+      startRender();
+    }).catch(function () {
+      renderError("Geen verbinding met de lokale preview.");
+    });
   });
 
   function load() {

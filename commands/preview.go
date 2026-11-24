@@ -63,6 +63,9 @@ VERVERSEN
   opnieuw ingevuld en herlaadt de pagina, met dezelfde regel en weergave. Een
   fout laat de laatste goede banner staan onder een melding. --no-watch zet dit
   uit. Ctrl-C stopt en ruimt de tijdelijke mappen op.
+  Is er geen browsertabblad met de preview open, dan wordt er niets opnieuw
+  ingevuld: een wijziging markeert de preview alleen als verouderd, en zodra er
+  een tabblad opent volgt één vulling. De eerste vulling bij het starten blijft.
 
 PRIJS
   1 credit per ontwikkelaar, per sjabloon, per uur bekijken. De sessie loopt 60
@@ -73,8 +76,9 @@ PRIJS
 
   De knop "Echte render (normale prijs)" op de pagina vraagt Studio om een echte
   render van de regel die je ziet, tegen de normale prijs: PNG 1 credit, GIF van
-  10 frames 2 credits. De pagina vraagt dit één keer in de browser en onthoudt
-  daarna je bevestiging.
+  10 frames 2 credits. De pagina vraagt dit één keer; je bevestiging wordt per
+  sjabloonmap onthouden in .taufinity/preview.json (ook bij een volgende run op een
+  andere poort). De render gebruikt de waarden van de laatste geslaagde vulling.
 
 SLEUTEL
   Bij het eerste gebruik maakt dit commando .taufinity/preview.json in de
@@ -123,8 +127,9 @@ func init() {
 	f.BoolVar(&bannerForce, "force", false, "overschrijf een bestaand voorbeeld.csv (met --init)")
 }
 
-// bannerRenderClientTimeout covers the render endpoint's own wait plus the upload and
-// the download around it.
+// bannerRenderClientTimeout covers Studio's own render cap (renderTimeout) plus the
+// upload and the download around it. It is longer than that cap and shorter than
+// the local handler's deadline (renderHandlerTimeout); see preview_render_server.go.
 const bannerRenderClientTimeout = renderTimeout + 30*time.Second
 
 // newBannerRenderClient is the client of the "Echte render" button: a paid call,
@@ -185,6 +190,7 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	srv := newBannerServer()
+	srv.TemplateDir = dir
 	srv.Renderer = &bannerRenderer{Client: newBannerRenderClient(), Dir: dir, DataFlag: flagBannerData, Row: flagBannerRow}
 	defer srv.Close()
 	ln, err := srv.Listen(bannerPort)
@@ -208,9 +214,14 @@ func runBannerPreview(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	sess := &bannerSession{Fill: src.Fill, Srv: srv, Warn: func(m string) { fmt.Fprintln(os.Stderr, m) }}
+	sess.Attach(ctx)
 	Print("Wijzigingen worden bewaakt; Ctrl-C om te stoppen.\n")
 	err = watchBanner(ctx, dir, dataPath, bannerDebounce, latestOnly(ctx, func(c context.Context) {
-		if sess.Refresh(c) == nil {
+		filled, err := sess.Changed(c)
+		switch {
+		case !filled:
+			Print("Gewijzigd; de preview wordt ververst zodra er een browsertabblad opent.\n")
+		case err == nil:
 			Print("Ververst.\n")
 		}
 	}))

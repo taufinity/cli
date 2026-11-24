@@ -237,6 +237,49 @@ type bannerSession struct {
 	mu   sync.Mutex       // refills never overlap
 
 	pauseUntil time.Time // after a 429/503 no refill is sent before this moment
+
+	// stale: a file changed while no browser tab was open, so nothing was
+	// filled (a fill can cost a credit, and nobody would see it).
+	staleMu sync.Mutex
+	stale   bool
+}
+
+func (s *bannerSession) setStale(v bool) (was bool) {
+	s.staleMu.Lock()
+	defer s.staleMu.Unlock()
+	was, s.stale = s.stale, v
+	return was
+}
+
+// Changed handles a save: it refills when a tab is open to show the result, and
+// otherwise only marks the preview stale.
+// filled is false when it only marked the preview stale.
+func (s *bannerSession) Changed(ctx context.Context) (filled bool, err error) {
+	if s.Srv.Clients() == 0 {
+		s.setStale(true)
+		return false, nil
+	}
+	s.setStale(false) // this fill is as fresh as it gets
+	return true, s.Refresh(ctx)
+}
+
+// TabConnected refills once when a tab connects to a stale preview.
+func (s *bannerSession) TabConnected(ctx context.Context) error {
+	if !s.setStale(false) {
+		return nil
+	}
+	err := s.Refresh(ctx)
+	if errors.Is(err, errBannerPaused) {
+		s.setStale(true) // nothing was sent; try again at the next connect
+	}
+	return err
+}
+
+// Attach makes a connecting tab call TabConnected.
+func (s *bannerSession) Attach(ctx context.Context) {
+	s.Srv.OnClientConnect = func() {
+		go func() { _ = s.TabConnected(ctx) }()
+	}
 }
 
 // errBannerPaused is returned by Refresh while the server asked us to wait.

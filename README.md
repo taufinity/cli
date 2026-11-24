@@ -324,15 +324,20 @@ zonder tijdlijn kan alleen als PNG worden gerenderd; GIF staat dan uit.
 
 **Echte render.** De knop "Echte render (normale prijs)" op de pagina vraagt Studio om een
 echte render van de regel die je ziet, tegen het normale tarief voor dat type banner
-(zie de prijslijst in de overeenkomst). De pagina vraagt dat één keer in de browser en onthoudt je
-bevestiging (`localStorage`, sleutel `taufinity.preview.renderConfirmed`). Het resultaat
-verschijnt onder de banner.
+(zie de prijslijst in de overeenkomst). De pagina vraagt dat één keer en het commando onthoudt je
+bevestiging per sjabloonmap in `.taufinity/preview.json`, dus ook bij een volgende run
+op een andere poort; een gekopieerde of verplaatste map vraagt opnieuw. De render gebruikt de
+waarden van de laatste geslaagde vulling, dus precies de regel die je ziet, ook als de CSV
+sindsdien is gewijzigd. Het resultaat verschijnt onder de banner.
 
 **Bewaken.** Na een wijziging wacht het commando 250 ms tot het stil is en vult dan
 opnieuw. Wat niet meegaat in de zip naar Studio (`.gitignore`, `.taufinityignore`,
 `.dockerignore`, de vaste uitsluitingen zoals `.env`) start ook geen nieuwe vulling, net
 als tijdelijke bestanden van editors (`.swp`, `~`, `.DS_Store`) en `.git`/`node_modules`.
 Sla je op terwijl een vulling nog onderweg is, dan vervalt die en telt alleen de nieuwste.
+Is er geen browsertabblad met de preview open, dan wordt er niets opnieuw ingevuld (een vulling
+kan een credit kosten): een wijziging markeert de preview dan alleen als verouderd, en zodra er
+een tabblad opent volgt één vulling. De eerste vulling bij het starten blijft zoals ze was.
 
 **Prijs.** 1 credit per ontwikkelaar, per sjabloon, per uur bekijken. De sessie loopt 60
 minuten vanaf de eerste keer invullen; opslaan daarna in dat uur kost niets. Na elke
