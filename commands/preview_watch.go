@@ -260,7 +260,14 @@ func (s *bannerSession) Changed(ctx context.Context) (filled bool, err error) {
 		return false, nil
 	}
 	s.setStale(false) // this fill is as fresh as it gets
-	return true, s.Refresh(ctx)
+	err = s.Refresh(ctx)
+	if errors.Is(err, errBannerPaused) {
+		// Nothing was sent, so the preview on screen is older than the file.
+		// Same as TabConnected: keep it stale, so the next tab to connect
+		// refills instead of trusting a fill that never happened.
+		s.setStale(true)
+	}
+	return true, err
 }
 
 // TabConnected refills once when a tab connects to a stale preview.
