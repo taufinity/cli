@@ -271,7 +271,7 @@ func TestPreviewRenderRequest(t *testing.T) {
 		fs := newFakeRenderStudio(t)
 		dir := templateDir(t, map[string]string{"data.csv": "titel;prijs\nKoude Haven;9,95\nWarme Haven;12\n"})
 		rep := renderReport()
-		rep.Rows = append(rep.Rows, bannerRow{Index: 1, Label: "regel 3"})
+		rep.Rows = append(rep.Rows, bannerRow{Index: 1, Label: "regel 3", Values: map[string]string{"titel": "Warme Haven", "prijs": "12"}})
 		if _, err := fs.renderer(dir).Render(ctx, rep, 1, "png", filepath.Join(t.TempDir(), "r.png")); err != nil {
 			t.Fatal(err)
 		}

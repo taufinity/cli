@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/textproto"
 	"os"
@@ -112,6 +113,10 @@ func renderTransportError(step string, err error) error {
 	if edgeBlocked(err) {
 		return &renderError{Msg: step + ": " + edgeBlockedText(err)}
 	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return &renderError{Msg: step + ": Studio antwoordde niet binnen de tijd; de render is afgebroken"}
+	}
 	return &renderError{Msg: fmt.Sprintf("%s: geen verbinding met Studio: %v", step, err)}
 }
 
@@ -172,33 +177,25 @@ func (r *bannerRenderer) Upload(ctx context.Context) (string, error) {
 	return up.ArchiveID, nil
 }
 
-// variablesFor is the values of row index keyed by the CSV header names. Without
-// a data file the values the server generated for that row are used.
+// variablesFor is the values of row index as the last successful fill showed
+// them (report.json "values"), never a fresh read of the data file: a CSV
+// edited since that fill must not make a paid render differ from the preview on
+// screen. A row the fill sent no values for cannot be rendered faithfully, so
+// it is refused rather than guessed from the file.
 func (r *bannerRenderer) variablesFor(rep *bannerReport, index int) (map[string]string, error) {
-	rows, _, _, err := loadBannerRows(r.Dir, r.DataFlag, r.Row)
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) > 0 {
-		if index < 0 || index >= len(rows) {
-			name := fmt.Sprintf("rij %d", index)
-			for _, row := range rep.Rows {
-				if row.Index == index {
-					name = row.Label // the CSV line, as the page shows it
-				}
-			}
-			return nil, &renderError{Msg: name + " bestaat niet (meer) in het gegevensbestand; vernieuw de preview"}
+	for i := range rep.Rows {
+		row := &rep.Rows[i]
+		if row.Index != index {
+			continue
 		}
-		return rows[index], nil
-	}
-	for _, row := range rep.Rows {
-		if row.Index == index {
-			vars := map[string]string{}
-			maps.Copy(vars, row.Values)
-			return vars, nil
+		if row.Values == nil {
+			return nil, &renderError{Msg: row.Label + ": Studio stuurde geen waarden mee voor deze regel, dus een echte render kan niet de regel op het scherm tonen; vernieuw de preview"}
 		}
+		vars := map[string]string{}
+		maps.Copy(vars, row.Values)
+		return vars, nil
 	}
-	return nil, &renderError{Msg: fmt.Sprintf("regel %d bestaat niet", index)}
+	return nil, &renderError{Msg: fmt.Sprintf("rij %d bestaat niet (meer) in de preview die je ziet; vernieuw de preview", index)}
 }
 
 // renderRequest is the JSON body of POST /api/creatives/render.

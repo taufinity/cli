@@ -15,8 +15,7 @@ import (
 // gets its own tab. Starting Chrome per test made the suite start it about
 // fifteen times, and on a loaded CI runner one of those starts took 54 s and
 // timed out (2026-11-16, run 43879693963). Every test serves its page on a port
-// of its own, so tabs never share an origin and therefore never share
-// localStorage.
+// of its own, so tabs never share an origin.
 var shared struct {
 	once    sync.Once
 	browser context.Context
@@ -61,11 +60,9 @@ func browserFor(t *testing.T) context.Context {
 	if shared.err != nil {
 		t.Fatalf("Chrome kon niet starten (is Chrome geinstalleerd?): %v\nuitvoer van Chrome:\n%s", shared.err, shared.out.tail(4096))
 	}
-	// A tab, not a browser context of its own: headless Chrome refuses new
-	// tabs in a fresh context once the first one has closed ("no browser is
-	// open"). Tests do not share an origin, since every test server has its own
-	// port; a reused port could carry over the render confirmation in
-	// localStorage, which only a test that expects the dialog would notice.
+	// A tab, not a browser context of its own: headless Chrome refuses a new
+	// tab in a fresh browser context (-32000, no browser is open). Tests do not
+	// share an origin, since every test server has its own port.
 	tab, cancelTab := chromedp.NewContext(shared.browser)
 	ctx, cancelT := context.WithTimeout(tab, 90*time.Second)
 	t.Cleanup(func() { cancelT(); cancelTab() })
@@ -93,7 +90,6 @@ func waitJS(t *testing.T, ctx context.Context, expr string) {
 
 const (
 	jsModalOpen = `!document.getElementById("render-modal").hidden`
-	jsConfirmed = `localStorage.getItem("taufinity.preview.renderConfirmed")`
 )
 
 func openPage(t *testing.T, ctx context.Context, url string) {
@@ -123,12 +119,12 @@ func (f *fakeRenderStudio) counts() (uploads, renders int) {
 }
 
 func TestPreviewRenderBrowser(t *testing.T) {
-	setup := func(t *testing.T) (*fakeRenderStudio, string, context.Context) {
+	setup := func(t *testing.T) (*fakeRenderStudio, *bannerServer, context.Context) {
 		fs := newFakeRenderStudio(t)
-		_, base := startRenderServer(t, fs)
+		srv, base := startRenderServer(t, fs)
 		ctx := browserFor(t)
 		openPage(t, ctx, base+"/")
-		return fs, base, ctx
+		return fs, srv, ctx
 	}
 	click := func(t *testing.T, ctx context.Context, sel string) {
 		t.Helper()
@@ -162,7 +158,7 @@ func TestPreviewRenderBrowser(t *testing.T) {
 	})
 
 	t.Run("cancel_sends_nothing", func(t *testing.T) {
-		fs, _, ctx := setup(t)
+		fs, srv, ctx := setup(t)
 		click(t, ctx, "#render-button")
 		waitJS(t, ctx, jsModalOpen)
 		click(t, ctx, "#render-cancel")
@@ -171,13 +167,13 @@ func TestPreviewRenderBrowser(t *testing.T) {
 		if u, r := fs.counts(); u != 0 || r != 0 {
 			t.Fatalf("studio saw %d uploads %d renders", u, r)
 		}
-		if !jsBool(t, ctx, jsConfirmed+` === null`) {
+		if srv.renderConfirmed() {
 			t.Fatal("cancel stored a confirmation")
 		}
 	})
 
 	t.Run("confirm_renders_and_remembers", func(t *testing.T) {
-		fs, _, ctx := setup(t)
+		fs, srv, ctx := setup(t)
 		click(t, ctx, "#render-button")
 		waitJS(t, ctx, jsModalOpen)
 		click(t, ctx, "#render-confirm")
@@ -192,7 +188,7 @@ func TestPreviewRenderBrowser(t *testing.T) {
 		if !strings.Contains(text, "Gelukt") || !strings.Contains(text, "12345") {
 			t.Fatalf("result text = %q", text)
 		}
-		if !jsBool(t, ctx, jsConfirmed+` === "1"`) {
+		if !srv.renderConfirmed() {
 			t.Fatal("confirmation not remembered")
 		}
 		if !jsBool(t, ctx, `!document.getElementById("render-button").disabled`) {
@@ -201,7 +197,8 @@ func TestPreviewRenderBrowser(t *testing.T) {
 	})
 
 	t.Run("second_click_skips_modal", func(t *testing.T) {
-		fs, base, ctx := setup(t)
+		fs, srv, ctx := setup(t)
+		base := strings.TrimSuffix(srv.URL(), "/")
 		click(t, ctx, "#render-button")
 		waitJS(t, ctx, jsModalOpen)
 		click(t, ctx, "#render-confirm")

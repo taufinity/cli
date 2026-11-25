@@ -171,12 +171,12 @@ func TestPreviewPageRenderStateBrowser(t *testing.T) {
 
 	t.Run("rendering_shows_dots_and_hides_old_result", func(t *testing.T) {
 		fs := newFakeRenderStudio(t)
-		_, base := startRenderServer(t, fs)
-		ctx := browserFor(t)
-		openPage(t, ctx, base+"/")
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`localStorage.setItem("taufinity.preview.renderConfirmed","1")`, nil)); err != nil {
+		srv, base := startRenderServer(t, fs)
+		if err := srv.confirmRender(); err != nil {
 			t.Fatal(err)
 		}
+		ctx := browserFor(t)
+		openPage(t, ctx, base+"/")
 		if err := chromedp.Run(ctx, chromedp.Click("#render-button", chromedp.ByQuery)); err != nil {
 			t.Fatal(err)
 		}
@@ -229,11 +229,11 @@ func TestPreviewPageReviewFindingsBrowser(t *testing.T) {
 		rep.Rows = append(rep.Rows, bannerRow{Index: 1, Label: "leeg", Values: map[string]string{"titel": ""}})
 		s, base, _ := startBanner(t, rep, map[string]string{"rows/0/index.html": timelineBanner, "rows/1/index.html": timelineBanner})
 		s.Renderer = fs.renderer(templateDir(t, map[string]string{"index.html": "<html></html>"}))
-		ctx := browserFor(t)
-		openPage(t, ctx, base+"/")
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`localStorage.setItem("taufinity.preview.renderConfirmed","1")`, nil)); err != nil {
+		if err := s.confirmRender(); err != nil {
 			t.Fatal(err)
 		}
+		ctx := browserFor(t)
+		openPage(t, ctx, base+"/")
 		if err := chromedp.Run(ctx, chromedp.Click("#render-button", chromedp.ByQuery)); err != nil {
 			t.Fatal(err)
 		}

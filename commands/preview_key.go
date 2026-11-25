@@ -28,6 +28,10 @@ type bannerKeyDoc struct {
 	// file along, sees a different hash and gets a key, and a session, of its
 	// own. Moving a folder does the same. Decided by the owner, 13 Nov 2026.
 	Folder string `json:"folder,omitempty"`
+	// RenderConfirmed is set once the user confirmed that a real render costs
+	// credits. It lives here, per template folder, and not in the browser: the
+	// page origin changes with the port, which differs every run.
+	RenderConfirmed bool `json:"render_confirmed,omitempty"`
 }
 
 // bannerFolderID is the hash of a folder's real path, symlinks resolved.
@@ -205,4 +209,48 @@ func writeBannerKeyTemp(path string, doc bannerKeyDoc) (string, error) {
 		break
 	}
 	return tmp, nil
+}
+
+// readRenderConfirmed says whether the user confirmed real renders for this
+// template folder. A copied or moved folder gets a fresh file (see
+// templateKeyFor) and so starts unconfirmed.
+func readRenderConfirmed(dir string) (bool, error) {
+	if _, err := templateKeyFor(dir); err != nil {
+		return false, err
+	}
+	doc, err := readBannerKeyDoc(dir)
+	if err != nil {
+		return false, err
+	}
+	return doc.RenderConfirmed, nil
+}
+
+// writeRenderConfirmed remembers the confirmation, keeping the template key and
+// the folder as they are.
+func writeRenderConfirmed(dir string) error {
+	if _, err := templateKeyFor(dir); err != nil {
+		return err
+	}
+	doc, err := readBannerKeyDoc(dir)
+	if err != nil {
+		return err
+	}
+	if doc.RenderConfirmed {
+		return nil
+	}
+	doc.RenderConfirmed = true
+	return replaceBannerKey(filepath.Join(dir, bannerStateDir, bannerKeyFile), doc)
+}
+
+func readBannerKeyDoc(dir string) (bannerKeyDoc, error) {
+	var doc bannerKeyDoc
+	path := filepath.Join(dir, bannerStateDir, bannerKeyFile)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return doc, err
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return doc, fmt.Errorf("%s is onleesbaar", path)
+	}
+	return doc, nil
 }

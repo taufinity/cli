@@ -17,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,9 @@ type bannerState struct {
 	Failure string        `json:"failure"`
 	Charge  string        `json:"charge"`
 	Version int           `json:"version"`
+	// RenderConfirmed: the user already confirmed that a real render costs
+	// credits for this template folder. The page shows the dialog from this.
+	RenderConfirmed bool `json:"render_confirmed"`
 	// BannerOrigin is where the banner files are served from: a second
 	// listener, so the template runs on an origin of its own.
 	BannerOrigin string `json:"banner_origin"`
@@ -52,15 +56,26 @@ type bannerServer struct {
 
 	subMu sync.Mutex
 	subs  map[chan string]struct{}
+	// OnClientConnect is called (in the handler's goroutine, so it must not
+	// block) after a browser tab connected to the event stream.
+	OnClientConnect func()
 
 	// Real renders (see preview_render.go). token is random per process and only
 	// ever written into the page's HTML; the banner origin never serves it.
 	token      string
 	Renderer   *bannerRenderer
 	renderBusy atomic.Bool
-	renderMu   sync.Mutex
-	renderDir  string
-	renders    []*renderOutcome
+	// TemplateDir is the template folder; the render confirmation is kept in its
+	// .taufinity/preview.json. Empty (tests): remembered in memory only.
+	TemplateDir   string
+	confirmMu     sync.Mutex
+	confirmLoaded bool
+	confirmed     bool
+	// renderDeadline overrides renderHandlerTimeout; tests set a small one.
+	renderDeadline time.Duration
+	renderMu       sync.Mutex
+	renderDir      string
+	renders        []*renderOutcome
 
 	httpSrv    *http.Server // the page, /api/state and /events
 	bannerSrv  *http.Server // only rows/<i>/..., on its own port and so its own origin
@@ -183,7 +198,14 @@ func (s *bannerServer) Fail(msg string) {
 func (s *bannerServer) state() bannerState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return bannerState{Report: s.report, Charge: s.report.chargeText(), Failure: s.failure, Version: s.version, BannerOrigin: s.BannerOrigin(), BannerBase: s.BannerBase()}
+	return bannerState{RenderConfirmed: s.renderConfirmed(), Report: s.report, Charge: s.report.chargeText(), Failure: s.failure, Version: s.version, BannerOrigin: s.BannerOrigin(), BannerBase: s.BannerBase()}
+}
+
+// Clients is the number of browser tabs connected to the event stream.
+func (s *bannerServer) Clients() int {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return len(s.subs)
 }
 
 func (s *bannerServer) broadcast(event, data string) {
@@ -206,8 +228,9 @@ func (s *bannerServer) Handler() http.Handler {
 	mux.HandleFunc("/api/state", s.handleState)
 	mux.HandleFunc("/events", s.handleEvents)
 	mux.HandleFunc("/api/render", s.handleRender)
+	mux.HandleFunc("/api/render-confirm", s.handleRenderConfirm)
 	mux.HandleFunc("/render/", s.handleRenderFile)
-	return localOnly(nosniff(mux))
+	return recoverPanics(localOnly(nosniff(mux)))
 }
 
 // bannerHandler is the banner origin: only <key>/rows/<i>/... and nothing of
@@ -236,8 +259,58 @@ func (s *bannerServer) bannerHandler() http.Handler {
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/"+s.bannerKey+"/rows/", http.StripPrefix("/"+s.bannerKey, files))
-	return localOnly(nosniff(mux))
+	return recoverPanics(localOnly(nosniff(mux)))
 }
+
+// recoverPanics keeps a panic in one handler from taking the CLI down: it logs
+// the panic with its stack to stderr, answers 500 in Dutch when nothing was
+// written yet, and the server keeps serving. http.ErrAbortHandler is the
+// standard way to abort a response on purpose and is passed on.
+func recoverPanics(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tw := &trackedWriter{ResponseWriter: w}
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			fmt.Fprintf(os.Stderr, "Interne fout in de preview (%s %s): %v\n%s\n", r.Method, r.URL.Path, rec, debug.Stack())
+			if !tw.wrote {
+				http.Error(tw, "interne fout in de preview; probeer het opnieuw", http.StatusInternalServerError)
+			}
+		}()
+		next.ServeHTTP(tw, r)
+	})
+}
+
+// trackedWriter remembers whether the header went out, and keeps http.Flusher
+// working for the event stream.
+type trackedWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (t *trackedWriter) WriteHeader(code int) {
+	t.wrote = true
+	t.ResponseWriter.WriteHeader(code)
+}
+
+func (t *trackedWriter) Write(b []byte) (int, error) {
+	t.wrote = true
+	return t.ResponseWriter.Write(b)
+}
+
+func (t *trackedWriter) Flush() {
+	t.wrote = true
+	if f, ok := t.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (t *trackedWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }
 
 // nosniff stops browsers from guessing a content type.
 func nosniff(next http.Handler) http.Handler {
@@ -301,6 +374,9 @@ func (s *bannerServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	fmt.Fprint(w, ": verbonden\n\n")
 	fl.Flush()
+	if s.OnClientConnect != nil {
+		s.OnClientConnect()
+	}
 	keep := time.NewTicker(20 * time.Second)
 	defer keep.Stop()
 	for {
