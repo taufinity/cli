@@ -21,6 +21,13 @@ import (
 // ones are added. It does NOT prune surplus memberships — removing a real
 // admin should be a deliberate human action, not a YAML omission.
 //
+// Who is "added": a system-wide admin API key still adds the membership
+// directly (201). Any other caller (an organization's own key or a user) gets
+// an invitation instead (202 {"status":"invitation_sent"}): the person joins
+// only when they accept, and the answer is the same whether or not they have
+// an account. Addresses with a pending invitation for this organization are
+// skipped, so a re-run does not mail them again or revoke the link they have.
+//
 // Example (studio/access/org-members.yaml):
 //
 //	members:
@@ -82,6 +89,13 @@ func upsertOrgMembers(c *provisionClient, orgID uint, cfg orgMembersConfig) erro
 	if err != nil {
 		return fmt.Errorf("list org members: %w", err)
 	}
+	// Best effort: without the list a re-run re-invites (one extra mail and
+	// a fresh link), which is worse than skipping but not wrong.
+	pending, err := listPendingOrgInvites(c, orgID)
+	if err != nil {
+		c.Warn("org-members: could not list pending invitations for org %d (%v); members who have not accepted yet will be invited again", orgID, err)
+		pending = map[string]bool{}
+	}
 
 	for _, m := range normalized {
 		email := m.Email
@@ -96,6 +110,10 @@ func upsertOrgMembers(c *provisionClient, orgID uint, cfg orgMembersConfig) erro
 			}
 			continue
 		}
+		if pending[strings.ToLower(email)] {
+			fmt.Printf("provision: org-members %s already invited to org %d, waiting for them to accept\n", email, orgID)
+			continue
+		}
 
 		payload, _ := json.Marshal(map[string]string{
 			"email": email,
@@ -108,6 +126,10 @@ func upsertOrgMembers(c *provisionClient, orgID uint, cfg orgMembersConfig) erro
 			return fmt.Errorf("add org member %s: %w", email, err)
 		case status == 201:
 			fmt.Printf("provision: added %s as %s of org %d\n", email, role, orgID)
+		case status == 202:
+			// Not a system-admin key: Studio sent an invitation. Same answer
+			// whether or not the address has an account, by design.
+			fmt.Printf("provision: invited %s as %s of org %d (they join once they accept)\n", email, role, orgID)
 		case status == 404:
 			// User doesn't exist yet — typical pre-SSO-bootstrap. Warn and
 			// continue so the rest of the provision run completes; rerun
@@ -145,6 +167,37 @@ func listOrgMembers(c *provisionClient, orgID uint) (map[string]orgMemberRow, er
 		}
 	}
 	return out, nil
+}
+
+// listPendingOrgInvites returns the lower-cased emails with a pending
+// org_member invitation in orgID (GET /api/admin/invitations?status=pending,
+// paged at the server's cap of 200).
+func listPendingOrgInvites(c *provisionClient, orgID uint) (map[string]bool, error) {
+	const page = 200
+	out := map[string]bool{}
+	for offset := 0; ; offset += page {
+		body, status, err := c.getForOrg(fmt.Sprintf("/admin/invitations?status=pending&limit=%d&offset=%d", page, offset), orgID)
+		if err != nil || status != 200 {
+			return nil, fmt.Errorf("status=%d err=%v", status, err)
+		}
+		var resp struct {
+			Invitations []struct {
+				Email      string `json:"email"`
+				TargetType string `json:"target_type"`
+			} `json:"invitations"`
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode: %w", err)
+		}
+		for _, inv := range resp.Invitations {
+			if inv.TargetType == "org_member" {
+				out[strings.ToLower(inv.Email)] = true
+			}
+		}
+		if len(resp.Invitations) < page {
+			return out, nil
+		}
+	}
 }
 
 type orgMemberRow struct {
